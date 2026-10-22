@@ -44,6 +44,7 @@ jobs:
         run: |
           docker build --build-arg PRELOAD_MODELS=true --provenance=false -t "uter-$SERVICE-buildbase" "work/upstream/$SERVICE"
       - name: Compile and assemble final image
+        id: compiled
         env:
           SERVICE: ${{ matrix.service }}
           SOURCE_SHA: ${{ steps.candidate.outputs.sha }}
@@ -73,7 +74,9 @@ jobs:
             -v "$PWD/scripts/check_compiled_runtime.py:/checks/check.py:ro" \
             --entrypoint python "uter-$SERVICE-protected" /checks/check.py "$SERVICE" \
             > work/evidence/runtime-check.json
-      - name: Export and scan every layer
+      - name: Export and scan every layer (retain compiled image if runtime check fails)
+        id: exported
+        if: always() && steps.compiled.outcome == 'success'
         env:
           SERVICE: ${{ matrix.service }}
         run: |
@@ -82,6 +85,7 @@ jobs:
           gzip -1 work/image.tar
           sha256sum work/image.tar.gz > work/evidence/archive.sha256
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always() && steps.exported.outcome == 'success'
         with:
           name: protected-${{ matrix.service }}
           path: |
