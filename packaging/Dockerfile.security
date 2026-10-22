@@ -8,7 +8,7 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && python -m ensurepip \
     && case "$SERVICE" in \
          guardrail) python -m pip install --no-cache-dir PyJWT==2.14.0 ;; \
-         agent) python -m pip install --no-cache-dir Pillow==13.0.0 ;; \
+         agent) : ;; \
          *) exit 1 ;; \
        esac \
     && python -m pip check \
