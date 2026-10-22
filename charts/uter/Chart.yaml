@@ -1,0 +1,7 @@
+apiVersion: v2
+name: uter
+description: Uter core deployment with external customer LLM and persistent audit
+type: application
+version: 0.1.0
+appVersion: unconfigured
+kubeVersion: '>=1.27.0-0'

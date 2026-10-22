@@ -1,0 +1,9 @@
+bind 0.0.0.0
+protected-mode yes
+port 6379
+appendonly yes
+dir /data
+maxmemory 256mb
+maxmemory-policy noeviction
+# Set identical high-entropy password in this file and customer/redis-password.
+requirepass REPLACE

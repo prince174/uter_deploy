@@ -1,0 +1,6 @@
+{
+  "backend": "compose",
+  "name": "uter-pilot",
+  "namespace": "uter-pilot",
+  "smoke_command": ["python", "acceptance.py"]
+}

@@ -1,0 +1,135 @@
+{{- range $name := list "guardrail" "agent" "redis" }}
+{{- $image := index $.Values.images $name }}
+{{- if not (regexMatch "^[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}$" $image) }}
+{{- fail (printf "images.%s must be an immutable digest reference" $name) }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/name: {{ $name }}}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/name: {{ $name }}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/name: {{ $name }}}
+      annotations:
+        uter.io/product-version: {{ $.Values.productVersion | quote }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ if eq $name "redis" }}999{{ else }}10001{{ end }}
+        runAsGroup: {{ if eq $name "redis" }}1000{{ else }}10001{{ end }}
+        fsGroup: {{ if eq $name "redis" }}1000{{ else }}10001{{ end }}
+        seccompProfile: {type: RuntimeDefault}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ $image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            {{- toYaml (index $.Values.resources $name) | nindent 12 }}
+          {{- if eq $name "redis" }}
+          command: [sh, -ec]
+          args: ['exec redis-server --appendonly yes --dir /data --maxmemory 256mb --maxmemory-policy noeviction --requirepass "$REDIS_PASSWORD"']
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "redisSecret required" $.Values.redisSecret }}
+                  key: password
+          readinessProbe:
+            exec: {command: [sh, -ec, 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG']}
+            periodSeconds: 10
+          {{- else }}
+          envFrom:
+            - secretRef:
+                name: {{ required (printf "%sSecret required" $name) (index $.Values (printf "%sSecret" $name)) }}
+          env:
+            {{- $custom := $.Values.guardrailEnv }}
+            {{- if eq $name "agent" }}{{- $custom = $.Values.agentEnv }}{{- end }}
+            {{- range $key, $value := $custom }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- if eq $name "guardrail" }}
+            - {name: REDIS_HOST, value: {{ printf "%s-redis" $.Release.Name | quote }}}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ required "redisSecret required" $.Values.redisSecret }}, key: password}
+            - {name: AGENT_RUNTIME_URL, value: {{ printf "http://%s-agent:8001" $.Release.Name | quote }}}
+            - {name: SECURITY_POLICY_PATH, value: /app/policies/customer.toml}
+            - {name: MODEL_PROFILE_PATH, value: /app/profiles/model_profiles.toml}
+            - {name: AUDIT_LOG_PATH, value: /var/lib/uter/audit/audit.jsonl}
+            - {name: AUDIT_LOG_VERIFY_ON_STARTUP, value: 'true'}
+            - {name: AUDIT_LOG_READY_FAIL_ON_INTEGRITY_ERROR, value: 'true'}
+            - {name: AUDIT_LOG_READY_FAIL_ON_WRITE_ERROR, value: 'true'}
+            - {name: AUDIT_LOG_FSYNC, value: 'true'}
+            - {name: READINESS_REQUIRE_UPSTREAM, value: 'true'}
+            - {name: READINESS_REQUIRE_AGENT_RUNTIME, value: 'true'}
+            - {name: RATE_LIMIT_FAIL_OPEN, value: 'false'}
+            - {name: API_DOCS_ENABLED, value: 'false'}
+            - {name: HF_HUB_OFFLINE, value: '1'}
+            - {name: TRANSFORMERS_OFFLINE, value: '1'}
+            {{- else }}
+            - {name: GUARDRAIL_URL, value: {{ printf "http://%s-guardrail:8000" $.Release.Name | quote }}}
+            - {name: AGENT_CHAT_MODE, value: tools_retrieval}
+            {{- end }}
+          readinessProbe:
+            httpGet: {path: /ready, port: {{ if eq $name "guardrail" }}8000{{ else }}8001{{ end }}}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          startupProbe:
+            httpGet: {path: /ready, port: {{ if eq $name "guardrail" }}8000{{ else }}8001{{ end }}}
+            periodSeconds: 10
+            failureThreshold: 30
+            timeoutSeconds: 5
+          {{- end }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            {{- if eq $name "redis" }}
+            - {name: data, mountPath: /data}
+            {{- else if eq $name "guardrail" }}
+            - {name: data, mountPath: /var/lib/uter/audit}
+            - {name: policies, mountPath: /app/policies, readOnly: true}
+            - {name: profiles, mountPath: /app/profiles, readOnly: true}
+            - {name: models, mountPath: /app/models, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+        {{- if ne $name "agent" }}
+        - name: data
+          persistentVolumeClaim: {claimName: {{ $.Release.Name }}-{{ $name }}}
+        {{- end }}
+        {{- if eq $name "guardrail" }}
+        - name: policies
+          configMap: {name: {{ required "policyConfigMap required" $.Values.policyConfigMap }}}
+        - name: profiles
+          configMap: {name: {{ required "profileConfigMap required" $.Values.profileConfigMap }}}
+        - name: models
+          persistentVolumeClaim: {claimName: {{ required "modelsClaim required" $.Values.modelsClaim }}}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/name: {{ $name }}}
+  ports:
+    - port: {{ if eq $name "redis" }}6379{{ else if eq $name "guardrail" }}8000{{ else }}8001{{ end }}
+{{- end }}

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "version": "0.1.0",
+  "status": "example",
+  "source_commit": "214e5b20226b9f0a8d8c6d1915115763a0ba76dc",
+  "upgrade_from": [],
+  "data_epoch": 1,
+  "config_schema": 1,
+  "images": {
+    "guardrail": "ghcr.io/prince174/uter-guardrail@sha256:REPLACE_AFTER_BUILD",
+    "agent": "ghcr.io/prince174/uter-agent@sha256:REPLACE_AFTER_BUILD",
+    "redis": "redis@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf"
+  },
+  "notes": "Non-installable example. Replace commit with verified full SHA and images with tested source-free artifacts."
+}

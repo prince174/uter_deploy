@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.tools/
+work/
+dist/
+customer/
+*.key
+*.pem
+!examples/*.example

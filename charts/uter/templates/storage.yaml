@@ -1,0 +1,17 @@
+{{- range $name := list "guardrail" "redis" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if $.Values.storageClass }}
+  storageClassName: {{ $.Values.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ if eq $name "redis" }}{{ $.Values.redisSize }}{{ else }}{{ $.Values.auditSize }}{{ end }}
+{{- end }}

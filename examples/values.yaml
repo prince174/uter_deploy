@@ -1,0 +1,12 @@
+# Create these resources separately in the target namespace.
+guardrailSecret: uter-guardrail-env
+agentSecret: uter-agent-env
+redisSecret: uter-redis
+policyConfigMap: uter-policies
+profileConfigMap: uter-profiles
+modelsClaim: uter-models
+ingressNamespace: ingress-nginx
+guardrailEnv:
+  UPSTREAM_MODE: litellm_openai
+  UPSTREAM_URL: https://llm.customer.example
+  UPSTREAM_OPENAI_MODEL: customer-model

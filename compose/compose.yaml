@@ -1,0 +1,103 @@
+name: uter
+x-runtime: &runtime
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  init: true
+  tmpfs: [/tmp:size=128m,mode=1777]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '5'}
+services:
+  redis:
+    <<: *runtime
+    image: ${REDIS_IMAGE:?release manifest required}
+    user: '999:1000'
+    command: [redis-server, /usr/local/etc/redis/redis.conf]
+    volumes:
+      - ${CUSTOMER_DIR:?}/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    networks: [backend]
+    mem_limit: 512m
+    cpus: 1
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH=$$(cat /run/secrets/redis_password) redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    secrets: [redis_password]
+  agent:
+    <<: *runtime
+    image: ${AGENT_IMAGE:?release manifest required}
+    user: '10001:10001'
+    env_file:
+      - path: ${CUSTOMER_DIR:?}/agent.env
+        format: raw
+    environment:
+      GUARDRAIL_URL: http://guardrail:8000
+      AGENT_CHAT_MODE: tools_retrieval
+    networks: [backend, outbound]
+    mem_limit: 1536m
+    cpus: 2
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8001/ready', timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 60s
+  guardrail:
+    <<: *runtime
+    image: ${GUARDRAIL_IMAGE:?release manifest required}
+    user: '10001:10001'
+    env_file:
+      - path: ${CUSTOMER_DIR:?}/guardrail.env
+        format: raw
+    environment:
+      REDIS_HOST: redis
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      AGENT_RUNTIME_URL: http://agent:8001
+      SECURITY_POLICY_PATH: /app/policies/customer.toml
+      MODEL_PROFILE_PATH: /app/profiles/model_profiles.toml
+      AUDIT_LOG_PATH: /var/lib/uter/audit/audit.jsonl
+      AUDIT_LOG_HMAC_KEY_FILE: /run/secrets/audit_hmac_key
+      AUDIT_LOG_VERIFY_ON_STARTUP: 'true'
+      AUDIT_LOG_READY_FAIL_ON_INTEGRITY_ERROR: 'true'
+      AUDIT_LOG_READY_FAIL_ON_WRITE_ERROR: 'true'
+      AUDIT_LOG_FSYNC: 'true'
+      READINESS_REQUIRE_UPSTREAM: 'true'
+      READINESS_REQUIRE_AGENT_RUNTIME: 'true'
+      RATE_LIMIT_FAIL_OPEN: 'false'
+      API_DOCS_ENABLED: 'false'
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+    ports: ['127.0.0.1:${GUARDRAIL_PORT:-8000}:8000']
+    volumes:
+      - ${CUSTOMER_DIR:?}/policies:/app/policies:ro
+      - ${CUSTOMER_DIR:?}/profiles:/app/profiles:ro
+      - ${CUSTOMER_DIR:?}/models:/app/models:ro
+      - audit-data:/var/lib/uter/audit
+    secrets: [redis_password, audit_hmac_key]
+    networks: [backend, outbound]
+    mem_limit: 3g
+    cpus: 4
+    depends_on:
+      redis: {condition: service_healthy}
+      agent: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 120s
+networks:
+  backend: {internal: true}
+  outbound: {}
+volumes:
+  redis-data: {}
+  audit-data: {}
+secrets:
+  redis_password:
+    file: ${CUSTOMER_DIR:?}/redis-password
+  audit_hmac_key:
+    file: ${CUSTOMER_DIR:?}/audit-hmac-key

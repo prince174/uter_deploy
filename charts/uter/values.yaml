@@ -1,0 +1,33 @@
+productVersion: unconfigured
+images:
+  guardrail: ''
+  agent: ''
+  redis: ''
+imagePullSecrets: []
+# Existing customer resources, never packaged with a release.
+guardrailSecret: ''
+agentSecret: ''
+redisSecret: ''
+policyConfigMap: ''
+profileConfigMap: ''
+modelsClaim: ''
+storageClass: ''
+auditSize: 10Gi
+redisSize: 2Gi
+guardrailEnv:
+  UPSTREAM_MODE: litellm_openai
+  UPSTREAM_URL: https://llm.customer.example
+  UPSTREAM_OPENAI_MODEL: customer-model
+agentEnv: {}
+resources:
+  guardrail:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {cpu: '4', memory: 3Gi}
+  agent:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {cpu: '2', memory: 1536Mi}
+  redis:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: '1', memory: 512Mi}
+# NetworkPolicy requires a supporting CNI. Permit ingress only from designated namespace.
+ingressNamespace: ingress-nginx
