@@ -43,7 +43,7 @@ def main():
     override = {"services": {
         "fixture": {"image": "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
             "command": ["python", "/fixture.py"], "volumes": [str(ROOT / "tests/fixtures/upstream.py") + ":/fixture.py:ro"], "networks": ["outbound"]},
-        "guardrail": {"deploy": {"resources": {"limits": {"cpus": "2"}}},
+        "guardrail": {"cpus": 2,
             "depends_on": {"fixture": {"condition": "service_started"}}}}}
     (home / "override.json").write_text(json.dumps(override))
     env = os.environ.copy()
