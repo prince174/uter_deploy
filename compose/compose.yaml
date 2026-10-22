@@ -5,7 +5,7 @@ x-runtime: &runtime
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   init: true
-  tmpfs: [/tmp:size=128m,mode=1777]
+  tmpfs: ['/tmp:size=128m,mode=1777']
   logging:
     driver: json-file
     options: {max-size: 10m, max-file: '5'}

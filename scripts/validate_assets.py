@@ -24,6 +24,8 @@ def main():
         compose = json.loads(raw)
         assert set(compose["services"]) == set(images)
         assert all("build" not in s for s in compose["services"].values())
+        for service in compose["services"].values():
+            assert service["tmpfs"] == ["/tmp:size=128m,mode=1777"], "tmpfs options must remain one absolute mount"
         assert not any("ports" in compose["services"][x] for x in ["redis", "agent"])
         values = d / "images.json"
         values.write_text(json.dumps({"images": images, "productVersion": "1.0.0"}))
