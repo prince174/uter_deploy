@@ -4,7 +4,7 @@
 ARG SOURCE_IMAGE
 FROM ${SOURCE_IMAGE} AS compiler
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends gcc patchelf \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential patchelf \
     && python -m ensurepip && python -m pip install --no-cache-dir Nuitka==2.8.10
 WORKDIR /app
 RUN mkdir /compiled && for f in *.py; do \

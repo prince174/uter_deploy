@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 service = sys.argv[1]
+sys.path.insert(0, "/app")
 modules = sorted(p.name.split(".")[0] for p in Path("/app").glob("*.so"))
 assert modules and "main" in modules
 assert not list(Path("/app").rglob("*.py"))
