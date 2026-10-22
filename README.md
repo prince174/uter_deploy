@@ -72,3 +72,5 @@ python uterctl.py rollback --home /srv/uter --key /etc/uter/publisher.pub --back
 4. Клиент выбирает конкретную версию. Автоустановки вслед за push нет.
 
 [Настройка автоматизации](docs/automation.md) · [Выпуск версии](docs/releasing.md)
+
+[Сборка и проверка реальных защищённых образов](docs/image-validation.md)
