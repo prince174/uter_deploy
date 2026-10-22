@@ -1,0 +1,121 @@
+name: Build and verify protected Uter images
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: protected-images
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        service: [guardrail, agent]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Read merged candidate
+        id: candidate
+        run: |
+          python - <<'PY'
+          import json, os, re
+          data = json.load(open('candidates/source.json'))
+          sha = data['source_commit']
+          assert re.fullmatch('[0-9a-f]{40}', sha)
+          assert data['source_repository'] == 'prince174/uter'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('sha=' + sha + '\n')
+          PY
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: prince174/uter
+          ref: ${{ steps.candidate.outputs.sha }}
+          token: ${{ secrets.SOURCE_READ_TOKEN }}
+          path: work/upstream
+          persist-credentials: false
+      - name: Build source-containing intermediate (runner only)
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          docker build --build-arg PRELOAD_MODELS=true --provenance=false -t "uter-$SERVICE-buildbase" "work/upstream/$SERVICE"
+      - name: Compile and assemble final image
+        env:
+          SERVICE: ${{ matrix.service }}
+          SOURCE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          docker build --provenance=false --build-arg "SOURCE_IMAGE=uter-$SERVICE-buildbase" -f packaging/Dockerfile.protected -t "uter-$SERVICE-protected" packaging
+          if [ "$SERVICE" = agent ]; then
+            docker tag uter-agent-protected uter-agent-protected-base
+            docker build --provenance=false --build-arg PROTECTED_IMAGE=uter-agent-protected-base -f packaging/Dockerfile.agent -t uter-agent-protected packaging
+          fi
+          mkdir -p work/evidence
+          cp -r work/upstream/policies work/upstream/profiles work/evidence/
+          docker image inspect "uter-$SERVICE-protected" --format '{{.Id}}' > work/evidence/image-id.txt
+          printf '%s\n' "$SOURCE_SHA" > work/evidence/source-sha.txt
+      - name: Import compiled modules and test real model offline
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:size=256m --memory=4g --cpus=2 \
+            -e JWT_SECRET=ci-only-secret-not-a-customer-credential \
+            -e AGENT_INTERNAL_SHARED_SECRET=ci-only-internal-secret \
+            -e GUARDRAIL_SERVICE_PASSWORD=ci-only-service-password \
+            -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+            -e AUDIT_LOG_ENABLED=false -e JUDGE_ENABLED=false \
+            -e SECURITY_POLICY_PATH=/app/policies/default.toml \
+            -v "$PWD/work/upstream/policies:/app/policies:ro" \
+            -v "$PWD/work/upstream/profiles:/app/profiles:ro" \
+            -v "$PWD/scripts/check_compiled_runtime.py:/checks/check.py:ro" \
+            --entrypoint python "uter-$SERVICE-protected" /checks/check.py "$SERVICE" \
+            > work/evidence/runtime-check.json
+      - name: Export and scan every layer
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          docker save "uter-$SERVICE-protected" -o work/image.tar
+          python scripts/scan_image_archive.py work/image.tar | tee work/evidence/source-scan.txt
+          gzip -1 work/image.tar
+          sha256sum work/image.tar.gz > work/evidence/archive.sha256
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: protected-${{ matrix.service }}
+          path: |
+            work/image.tar.gz
+            work/evidence/
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+  integration:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: protected-*
+          path: work/images
+      - name: Load exactly the verified images
+        run: |
+          for service in guardrail agent; do
+            docker load -i "work/images/protected-$service/image.tar.gz"
+            actual=$(docker image inspect "uter-$service-protected" --format '{{.Id}}')
+            expected=$(cat "work/images/protected-$service/evidence/image-id.txt")
+            test "$actual" = "$expected"
+          done
+      - name: Exercise real services in disposable Compose project
+        run: python scripts/image_integration.py
+      - uses: actions/upload-artifact@b7c566a772e6b6b58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: protected-integration-evidence
+          path: work/integration-evidence/
+          retention-days: 7
+          if-no-files-found: warn

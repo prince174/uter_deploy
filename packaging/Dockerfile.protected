@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc patchelf \
 WORKDIR /app
 RUN mkdir /compiled && for f in *.py; do \
       case "$f" in __init__.py|build_training*|xlmr_finetune.py|xlmr_checkpoint_eval.py|training_corpus.py|release_review.py) continue ;; esac; \
-      python -m nuitka --module --nofollow-imports --no-pyi-file --output-dir=/compiled "$f" || exit 1; \
+      python -m nuitka --module --nofollow-imports --no-pyi-file --jobs=2 --low-memory --remove-output --output-dir=/compiled "$f" || exit 1; \
     done
 
 FROM ${SOURCE_IMAGE} AS dependencies
