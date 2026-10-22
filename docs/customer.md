@@ -50,9 +50,60 @@ Redis password в `redis.conf` и `redis-password` должен совпадат
 Для RAG настройте реальные интеграции: продукт содержит встроенные демонстрационные
 registry, поэтому готовность HTTP сама по себе не подтверждает реальные данные.
 
+## Первая установка Compose
+
+Инструкция предназначена для отдельного сервера заказчика после выпуска настоящего
+комплекта. Не выполнять её в каталоге или под именем работающего стенда разработки.
+Tooling должен включать `examples/`, `requirements.txt` и `uterctl.py`; bundle и
+runtime-ресурсы поставляются отдельно. Нынешний bundle builder не включает examples.
+
+От имени оператора с правами подготовки `/srv/uter`, из каталога tooling:
+
+```bash
+umask 077
+mkdir -p /srv/uter/customer/{policies,profiles,models}
+cp -n examples/site.json /srv/uter/customer/site.json
+cp -n examples/guardrail.env.example /srv/uter/customer/guardrail.env
+cp -n examples/agent.env.example /srv/uter/customer/agent.env
+cp -n examples/redis.conf.example /srv/uter/customer/redis.conf
+```
+
+Заполнить до `check`:
+
+| Файл | Что подготовить |
+|---|---|
+| `site.json` | Уникальное постоянное name, backend=compose, smoke_command с рабочим интерпретатором и acceptance.py |
+| `guardrail.env` | JWT_SECRET, bcrypt-хеши трёх паролей, общий секрет Agent, реальные URL/model/key LLM и ingress secret |
+| `agent.env` | Тот же общий секрет и plaintext пароль SERVICE, соответствующий SERVICE_PASSWORD_HASH |
+| `redis.conf`, `redis-password` | Один и тот же случайный пароль; в redis-password только значение |
+| `audit-hmac-key` | Отдельный случайный ключ; сохранить для проверки существующей цепочки при обновлении |
+| `policies/customer.toml` | Согласованная политика из runtime-поставки |
+| `profiles/model_profiles.toml` | Согласованные профили моделей |
+| `models/` | Согласованные локальные модели при необходимости; каталог обязателен даже пустой |
+| `acceptance.py` | Проверки клиента с ненулевым exit code при ошибке; готового универсального файла в examples нет |
+
+Секреты создавать криптографическим генератором, отдельно друг от друга, не использовать
+пароли из CI. Bcrypt-хеш строится из того пароля, которым будет выполняться вход;
+не вставлять plaintext вместо хеша. Не использовать `source guardrail.env`: это raw
+Compose env, символы `$` в bcrypt должны оставаться буквальными.
+
+После `umask 077` назначить минимальные права чтения нужным пользователям контейнера:
+Guardrail/Agent UID 10001, Redis UID 999 (GID 1000). Redis password читают и Redis,
+и Guardrail; аудитный ключ — Guardrail. Для совместного доступа применить ACL или
+согласованную схему групп. Политики, профили и модели должны читаться UID 10001.
+Не делать весь customer доступным всем. Env-файлы читает оператор Compose; файлы,
+смонтированные через secrets/volumes, должны читаться соответствующим UID внутри.
+
+Если образы в private registry, оператор предварительно выполняет `docker login`
+с ограниченным read-only credential. Затем выполнить команды verify/check/apply
+из README. Они используют digest из подписанного bundle, а не тег latest.
+Первый запуск должен завершиться успешным acceptance; один ответ `/ready` недостаточен.
+
 ## Helm
 
-Создайте ресурсы из `examples/values.yaml` в целевом namespace:
+Установите `"backend": "helm"` в site.json,
+задайте постоянные name/namespace. Создайте namespace и ресурсы из `examples/values.yaml`
+до запуска apply; modelsClaim должен быть Bound, а выбранный StorageClass — рабочим:
 
 - `guardrailSecret`: env-ключи из guardrail.env плюс `AUDIT_LOG_HMAC_KEY`.
 - `agentSecret`: env-ключи из agent.env.
