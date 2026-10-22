@@ -1,5 +1,7 @@
 """Executed inside the final image with networking disabled. No source imports."""
 import importlib
+import importlib.util
+import importlib.machinery
 import json
 from pathlib import Path
 import sys
@@ -11,8 +13,12 @@ assert modules and "main" in modules
 assert not list(Path("/app").rglob("*.py"))
 assert not list(Path("/app").rglob("*.pyc"))
 for name in modules:
+    spec = importlib.util.find_spec(name)
+    assert spec and isinstance(spec.loader, importlib.machinery.ExtensionFileLoader), (name, spec)
+    assert spec.origin.endswith(".so") and Path(spec.origin).is_file(), (name, spec.origin)
     module = importlib.import_module(name)
-    assert str(module.__file__).endswith(".so"), (name, module.__file__)
+    # Nuitka intentionally exposes a diagnostic .py __file__; it is not a source file.
+    assert not Path("/app", name + ".py").exists(), name
 app = importlib.import_module("main").app
 schema = app.openapi()
 assert schema["paths"], "FastAPI schema missing"

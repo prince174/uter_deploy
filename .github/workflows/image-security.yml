@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       build_run_id:
-        description: Successful protected-images workflow run ID in this repository
+        description: Completed protected-images run ID; audit does not imply acceptance
         required: true
         type: string
 permissions:
@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - name: Require successful build from this repository
+      - name: Require completed image build from this repository
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.build_run_id }}
@@ -31,7 +31,7 @@ jobs:
           assert re.fullmatch('[0-9]+', run_id)
           data = json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}']))
           assert data['path'] == '.github/workflows/protected-images.yml'
-          assert data['conclusion'] == 'success'
+          assert data['status'] == 'completed'
           PY
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:

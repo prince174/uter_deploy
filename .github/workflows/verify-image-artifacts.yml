@@ -1,0 +1,77 @@
+name: Verify existing protected image artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Completed protected-images run containing both scanned image archives
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Verify source workflow identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          python - <<'PY'
+          import os, re, json, subprocess
+          run_id = os.environ['RUN_ID']
+          assert re.fullmatch('[0-9]+', run_id)
+          data = json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}']))
+          assert data['path'] == '.github/workflows/protected-images.yml'
+          assert data['status'] == 'completed'
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: protected-*
+          path: work/images
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify archives, scan layers and load exact images
+        run: |
+          mkdir -p work/validation-evidence
+          for service in guardrail agent; do
+            image="work/images/protected-$service"
+            expected=$(cut -d ' ' -f1 "$image/evidence/archive.sha256")
+            test "$(sha256sum "$image/image.tar.gz" | cut -d ' ' -f1)" = "$expected"
+            python scripts/scan_image_archive.py "$image/image.tar.gz" > "work/validation-evidence/$service-layers.txt"
+            docker load -i "$image/image.tar.gz"
+            test "$(docker image inspect "uter-$service-protected" --format '{{.Id}}')" = "$(cat "$image/evidence/image-id.txt")"
+          done
+          cmp work/images/protected-agent/evidence/source-sha.txt work/images/protected-guardrail/evidence/source-sha.txt
+      - name: Compiled imports, OpenAPI and offline toxicity inference
+        run: |
+          for service in guardrail agent; do
+            docker run --rm --network none --read-only --tmpfs /tmp:size=256m --memory=4g --cpus=2 \
+              -e JWT_SECRET=ci-only-secret-not-a-customer-credential \
+              -e AGENT_INTERNAL_SHARED_SECRET=ci-only-internal-secret \
+              -e GUARDRAIL_SERVICE_PASSWORD=ci-only-service-password \
+              -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+              -e AUDIT_LOG_ENABLED=false -e JUDGE_ENABLED=false \
+              -e SECURITY_POLICY_PATH=/app/policies/default.toml \
+              -v "$PWD/work/images/protected-$service/evidence/policies:/app/policies:ro" \
+              -v "$PWD/work/images/protected-$service/evidence/profiles:/app/profiles:ro" \
+              -v "$PWD/scripts/check_compiled_runtime.py:/checks/check.py:ro" \
+              --entrypoint python "uter-$service-protected" /checks/check.py "$service" \
+              > "work/validation-evidence/$service-runtime.json"
+          done
+      - name: Disposable Compose acceptance and restart
+        run: python scripts/image_integration.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: revalidation-evidence
+          path: |
+            work/validation-evidence/
+            work/integration-evidence/
+          retention-days: 14
+          if-no-files-found: error
