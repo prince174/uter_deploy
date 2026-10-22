@@ -74,3 +74,24 @@ Guardrail — 4 CRITICAL / 63 HIGH (число findings, не уникальны
 Pillow 13 конфликтует с требованием fastembed 0.8.0 `pillow<13`; принудительное
 обновление отключено. Уязвимости Pillow остаются открытыми до совместимого решения.
 Ни успешная сборка, ни успешный workflow формирования отчёта не означают security approval.
+
+## Проверенный кандидат после обновления зависимостей
+
+- Сборка derivative-образов: [39742696325](https://github.com/prince174/uter_deploy/actions/runs/39742696325), success.
+- Runtime и Compose: [39743034459](https://github.com/prince174/uter_deploy/actions/runs/39743034459), success.
+  Проверены compiled imports, OpenAPI, offline toxicity inference, auth, normal chat,
+  input injection block, output PII block, OpenAI API, Agent auth, HMAC audit chain;
+  после restart Guardrail проверки повторены успешно.
+- Security: [39742961298](https://github.com/prince174/uter_deploy/actions/runs/39742961298).
+  Guardrail: 0 CRITICAL / 44 HIGH; Agent: 3 CRITICAL / 60 HIGH. Secrets findings: 0.
+  Все три CRITICAL Agent относятся к Pillow 12.3.0; рекомендуемая сканером 13.0.0
+  несовместима с объявленным ограничением fastembed. Это открытый release blocker,
+  а не автоматически принятый риск. HIGH также требуют разбора.
+
+Тестовый runner имеет 2 CPU: отдельный CI override снижает лимит Guardrail с 4 до 2.
+Проверка не измеряет производительность. Пользовательский Compose сохраняет свой лимит.
+LLM fixture не подтверждает качество реальной модели и внешних RAG-интеграций.
+Helm проверен только lint/template. Публикация registry, release-подпись и проверка
+перехода между версиями не выполнены. Этот кандидат не объявлен клиентским релизом.
+
+Локальные копии архивов и отчётов лежат в игнорируемом `dist/`; они не входят в Git.
