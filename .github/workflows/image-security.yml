@@ -1,0 +1,80 @@
+name: Audit protected image artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful protected-images workflow run ID in this repository
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        service: [guardrail, agent]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Require successful build from this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          python - <<'PY'
+          import os, re, json, subprocess
+          run_id = os.environ['RUN_ID']
+          assert re.fullmatch('[0-9]+', run_id)
+          data = json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}']))
+          assert data['path'] == '.github/workflows/protected-images.yml'
+          assert data['conclusion'] == 'success'
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: protected-${{ matrix.service }}
+          path: work/image
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify archive and image identity
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          expected=$(cut -d ' ' -f1 work/image/evidence/archive.sha256)
+          actual=$(sha256sum work/image/image.tar.gz | cut -d ' ' -f1)
+          test "$actual" = "$expected"
+          docker load -i work/image/image.tar.gz
+          test "$(docker image inspect "uter-$SERVICE-protected" --format '{{.Id}}')" = "$(cat work/image/evidence/image-id.txt)"
+          mkdir -p work/security
+          cp work/image/evidence/image-id.txt work/image/evidence/source-sha.txt work/security/
+      - name: SBOM for the final image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: uter-${{ matrix.service }}-protected
+          format: cyclonedx
+          output: work/security/sbom.cdx.json
+          exit-code: '0'
+          timeout: 10m
+      - name: Vulnerability and secret findings (report, not a release approval)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: uter-${{ matrix.service }}-protected
+          scanners: vuln,secret
+          format: json
+          output: work/security/findings.json
+          exit-code: '0'
+          timeout: 10m
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: security-${{ matrix.service }}
+          path: work/security/
+          retention-days: 14
+          if-no-files-found: error
