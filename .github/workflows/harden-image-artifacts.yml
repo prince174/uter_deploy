@@ -1,0 +1,71 @@
+name: Harden compiled image dependencies
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Completed protected-images run ID with compiled archives
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  harden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        service: [guardrail, agent]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Verify original build identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          python - <<'PY'
+          import os, re, json, subprocess
+          run_id = os.environ['RUN_ID']
+          assert re.fullmatch('[0-9]+', run_id)
+          data = json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}']))
+          assert data['path'] == '.github/workflows/protected-images.yml'
+          assert data['status'] == 'completed'
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: protected-${{ matrix.service }}
+          path: work/original
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify original identity and apply dependency fixes
+        env:
+          SERVICE: ${{ matrix.service }}
+          RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          expected=$(cut -d ' ' -f1 work/original/evidence/archive.sha256)
+          test "$(sha256sum work/original/image.tar.gz | cut -d ' ' -f1)" = "$expected"
+          docker load -i work/original/image.tar.gz
+          test "$(docker image inspect "uter-$SERVICE-protected" --format '{{.Id}}')" = "$(cat work/original/evidence/image-id.txt)"
+          docker tag "uter-$SERVICE-protected" "uter-$SERVICE-before-security"
+          docker build --provenance=false --build-arg "PROTECTED_IMAGE=uter-$SERVICE-before-security" --build-arg "SERVICE=$SERVICE" -f packaging/Dockerfile.security -t "uter-$SERVICE-protected" packaging
+          mkdir -p work/evidence
+          cp -r work/original/evidence/policies work/original/evidence/profiles work/evidence/
+          cp work/original/evidence/source-sha.txt work/evidence/
+          cp work/original/evidence/image-id.txt work/evidence/parent-image-id.txt
+          printf '%s\n' "$RUN_ID" > work/evidence/parent-run-id.txt
+          docker image inspect "uter-$SERVICE-protected" --format '{{.Id}}' > work/evidence/image-id.txt
+          docker save "uter-$SERVICE-protected" -o work/image.tar
+          python scripts/scan_image_archive.py work/image.tar > work/evidence/source-scan.txt
+          gzip -1 work/image.tar
+          sha256sum work/image.tar.gz > work/evidence/archive.sha256
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: protected-${{ matrix.service }}
+          path: |
+            work/image.tar.gz
+            work/evidence/
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error

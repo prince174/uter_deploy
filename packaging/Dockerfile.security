@@ -1,0 +1,17 @@
+# Apply dependency-only fixes to an already compiled image. No product source input.
+ARG PROTECTED_IMAGE
+FROM ${PROTECTED_IMAGE}
+ARG SERVICE
+USER root
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m ensurepip \
+    && case "$SERVICE" in \
+         guardrail) python -m pip install --no-cache-dir PyJWT==2.14.0 ;; \
+         agent) python -m pip install --no-cache-dir Pillow==13.0.0 ;; \
+         *) exit 1 ;; \
+       esac \
+    && python -m pip check \
+    && python -m pip uninstall -y pip wheel
+LABEL io.uter.security-overlay="2026-10-22.1"
+USER 10001:10001

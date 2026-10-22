@@ -27,7 +27,7 @@ jobs:
           run_id = os.environ['RUN_ID']
           assert re.fullmatch('[0-9]+', run_id)
           data = json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}']))
-          assert data['path'] == '.github/workflows/protected-images.yml'
+          assert data['path'] in ('.github/workflows/protected-images.yml', '.github/workflows/harden-image-artifacts.yml')
           assert data['status'] == 'completed'
           PY
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
