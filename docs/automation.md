@@ -17,7 +17,10 @@ python scripts/watch_source.py --source G:\code\uter\llm-guardrail --command-jso
 
 Команда тестов из JSON запускается в снимке, не в Uter. Укажите абсолютный путь Python
 из отдельного test venv и установите туда requirements продукта и requirements-test.txt.
-Пример использует python из PATH. Watcher не устанавливает зависимости автоматически.
+Пример использует python из PATH и абсолютный путь к scripts/check_source.py в uter_deploy.
+Если репозиторий расположен иначе, измените этот путь. Helper запускает unit и API
+тесты отдельными процессами, как штатный CI продукта, чтобы их mocks не смешивались.
+Watcher не устанавливает зависимости автоматически.
 Он отслеживает текстовые исходники и конфигурацию, включая неигнорируемые новые файлы;
 игнорирует .env, certs, secrets, logs, models, venv и symlink.
 Он не отслеживает веса моделей и не подтверждает воспроизводимость dirty-снимка.

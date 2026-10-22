@@ -1,1 +1,1 @@
-["python", "-m", "pytest", "tests/unit", "tests/api", "-q"]
+["python", "G:/code/uter_deploy/scripts/check_source.py"]
