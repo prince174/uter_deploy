@@ -15,7 +15,8 @@
 ## Изолированная сборка продукта
 
 Рецепт `packaging/Dockerfile.protected` — экспериментальная компиляция Nuitka-модулей
-под Linux amd64 / CPython 3.12. Он не проверен на реальной сборке ML-стека.
+под Linux amd64 / CPython 3.12. На реальных образах проверены imports/OpenAPI и офлайн toxicity inference;
+полный выпуск требует всех проверок ниже (см. image-validation.md).
 Никакого docker build в активном основном стенде не выполнять.
 
 На отдельном Linux builder клонируйте `prince174/uter` в рабочую папку и checkout
