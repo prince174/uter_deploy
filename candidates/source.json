@@ -1,0 +1,7 @@
+{
+  "source_repository": "prince174/uter",
+  "source_commit": "04c13238e2182ddb870d39d499d677e0a539d21f",
+  "status": "source-tests-passed",
+  "evidence": "https://github.com/prince174/uter_deploy/actions/runs/39736195067",
+  "next": "Build source-free images, record real digests, test upgrade, approve and sign release."
+}
