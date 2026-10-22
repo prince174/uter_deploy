@@ -12,10 +12,15 @@ modules = sorted(p.name.split(".")[0] for p in Path("/app").glob("*.so"))
 assert modules and "main" in modules
 assert not list(Path("/app").rglob("*.py"))
 assert not list(Path("/app").rglob("*.pyc"))
-for name in modules:
-    spec = importlib.util.find_spec(name)
+# Resolve all on-disk extension specs before importing any Nuitka module:
+# Nuitka replaces metadata of transitively imported modules with its own loader.
+specs = {name: importlib.util.find_spec(name) for name in modules}
+for name, spec in specs.items():
     assert spec and isinstance(spec.loader, importlib.machinery.ExtensionFileLoader), (name, spec)
     assert spec.origin.endswith(".so") and Path(spec.origin).is_file(), (name, spec.origin)
+    with Path(spec.origin).open("rb") as binary:
+        assert binary.read(4) == b"\x7fELF", name
+for name in modules:
     module = importlib.import_module(name)
     # Nuitka intentionally exposes a diagnostic .py __file__; it is not a source file.
     assert not Path("/app", name + ".py").exists(), name
