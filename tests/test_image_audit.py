@@ -70,3 +70,39 @@ class BinaryExposureTests(unittest.TestCase):
 
     def test_invalid_binary_is_not_reported_as_clean(self):
         with self.assertRaises(ValueError):load('audit_binary_exposure').sections(b'not ELF')
+
+
+class ModelExportTests(unittest.TestCase):
+    def exporter(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('model_export',Path(__file__).resolve().parents[1]/'packaging/copy_model_cache.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        return module
+
+    def prepare(self,root):
+        m=self.exporter();hub=root/'hub';model=hub/m.MODEL;rev='a'*40
+        (model/'refs').mkdir(parents=True);(model/'refs/main').write_text(rev)
+        snapshot=model/'snapshots'/rev;snapshot.mkdir(parents=True)
+        for name in m.REQUIRED:(snapshot/name).write_bytes(b'model-fixture')
+        (snapshot/'unrelated.py').write_text('must not ship')
+        return m,hub,snapshot
+
+    def test_only_named_resources_are_exported(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);m,hub,snapshot=self.prepare(root)
+            self.assertEqual(m.export(hub,root/'out'),len(m.REQUIRED))
+            self.assertFalse(list((root/'out').rglob('*.py')))
+            self.assertEqual(len(list((root/'out').rglob('model.safetensors'))),1)
+
+    def test_shared_blob_is_materialized_and_escape_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);m,hub,snapshot=self.prepare(root)
+            blob=hub/'blobs/shared';blob.parent.mkdir();blob.write_bytes(b'shared')
+            weight=snapshot/'model.safetensors';weight.unlink()
+            try:weight.symlink_to(blob)
+            except OSError:self.skipTest('Symlink creation unavailable; exercised on Linux CI')
+            m.export(hub,root/'out')
+            output=next((root/'out').rglob('model.safetensors'))
+            self.assertFalse(output.is_symlink());self.assertEqual(output.read_bytes(),b'shared')
+            weight.unlink();outside=root/'secret';outside.write_bytes(b'not-a-model');weight.symlink_to(outside)
+            with self.assertRaises(ValueError):m.export(hub,root/'bad')

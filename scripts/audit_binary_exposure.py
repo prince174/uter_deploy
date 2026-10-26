@@ -68,3 +68,6 @@ if __name__ == '__main__':
     args.output.write_text(json.dumps(result, indent=2), encoding='utf-8')
     print(json.dumps({'modules': len(result['modules']), 'modules_with_debug': sum(bool(x['debug_sections']) for x in result['modules']),
                       'plaintext_literal_hits': sum(x['plaintext_source_literals_found'] for x in result['modules'])}))
+
+    if any(x['debug_sections'] for x in result['modules']):
+        raise SystemExit('Product ELF debug sections remain; see exposure report')
