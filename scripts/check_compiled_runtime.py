@@ -1,6 +1,8 @@
 """Executed inside the final image with networking disabled. No source imports."""
 import importlib
 import inspect
+import hashlib
+import re
 import importlib.util
 import importlib.machinery
 import json
@@ -40,13 +42,20 @@ assert exposure['inspect_source_recovered'] == 0, 'Own source recovered through 
 app = importlib.import_module("main").app
 schema = app.openapi()
 assert schema["paths"], "FastAPI schema missing"
+recovery = {'attempted': False}
 if service == "guardrail":
+    # Controlled source-free recovery of an accessible rule table from a compiled class.
+    from output_guard import OutputGuard
+    patterns = getattr(OutputGuard, 'PII_PATTERNS', {})
+    recovery = {'attempted': True, 'readable_pii_rules': len(patterns),
+                'replayed_email_rule': bool(re.search(patterns.get('email', r'(?!)'), 'alice@example.com')),
+                'rules_sha256': hashlib.sha256(json.dumps(patterns, sort_keys=True).encode()).hexdigest()}
     from toxicity_guard import ToxicityGuard
     guard = ToxicityGuard()
     guard.load()
     assert guard.available, "Real toxicity model unavailable without network"
     result = guard._pipeline("Have a nice day")
     assert result, "No model inference result"
-print(json.dumps({"service": service, "compiled_modules": modules, "introspection_exposure": exposure,
+print(json.dumps({"service": service, "compiled_modules": modules, "introspection_exposure": exposure, "controlled_rule_recovery": recovery,
                   "openapi_paths": len(schema["paths"]),
                   "offline_toxicity_inference": service == "guardrail"}))
