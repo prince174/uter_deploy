@@ -43,7 +43,8 @@ jobs:
             image="work/images/protected-$service"
             expected=$(cut -d ' ' -f1 "$image/evidence/archive.sha256")
             test "$(sha256sum "$image/image.tar.gz" | cut -d ' ' -f1)" = "$expected"
-            python scripts/scan_image_archive.py "$image/image.tar.gz" > "work/validation-evidence/$service-layers.txt"
+            python scripts/scan_image_archive.py "$image/image.tar.gz" --report "work/validation-evidence/$service-image-scan.json" > "work/validation-evidence/$service-layers.txt"
+            python scripts/audit_binary_exposure.py "$image/image.tar.gz" --output "work/validation-evidence/$service-binary-exposure.json"
             docker load -i "$image/image.tar.gz"
             test "$(docker image inspect "uter-$service-protected" --format '{{.Id}}')" = "$(cat "$image/evidence/image-id.txt")"
           done
