@@ -13,17 +13,23 @@ RUN mkdir /compiled && for f in *.py; do \
     done
 
 FROM ${SOURCE_IMAGE} AS dependencies
+USER root
+# Explicit runtime resource allowlist: never copy the whole user's home.
+RUN mkdir -p /runtime-models/hub \
+    && if [ -d /home/uter/.cache/huggingface/hub/models--cointegrated--rubert-tiny-toxicity ]; then \
+         cp -a /home/uter/.cache/huggingface/hub/models--cointegrated--rubert-tiny-toxicity /runtime-models/hub/; \
+       fi
 
 FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 uter && useradd -u 10001 -g 10001 -m uter \
     && mkdir -p /app /var/lib/uter/audit && chown -R uter:uter /app /var/lib/uter
-COPY --from=dependencies /usr/local /usr/local
-COPY --from=dependencies --chown=10001:10001 /home/uter /home/uter
+COPY --from=dependencies /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=dependencies --chown=10001:10001 /runtime-models /home/uter/.cache/huggingface
 COPY --from=compiler --chown=10001:10001 /compiled/*.so /app/
 ENV HOME=/home/uter HF_HOME=/home/uter/.cache/huggingface PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 USER 10001:10001
 # Agent image: override the final command to port 8001 when building its wrapper image.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--no-date-header"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--no-date-header"]
