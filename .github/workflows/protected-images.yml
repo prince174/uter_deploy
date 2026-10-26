@@ -81,7 +81,7 @@ jobs:
           SERVICE: ${{ matrix.service }}
         run: |
           docker save "uter-$SERVICE-protected" -o work/image.tar
-          python scripts/scan_image_archive.py work/image.tar | tee work/evidence/source-scan.txt
+          python scripts/scan_image_archive.py work/image.tar --source-root work/upstream --report work/evidence/full-image-scan.json | tee work/evidence/source-scan.txt
           gzip -1 work/image.tar
           sha256sum work/image.tar.gz > work/evidence/archive.sha256
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
