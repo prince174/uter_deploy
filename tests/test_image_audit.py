@@ -53,3 +53,20 @@ class WholeImageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'i.tar';self.image(p,{'../escape':b'data'})
             self.assertIn('unsafe',load('scan_image_archive').scan(p)[0])
+
+
+class BinaryExposureTests(unittest.TestCase):
+    def test_elf_section_parser_reports_debug(self):
+        import struct
+        data=bytearray(64+3*64+24)
+        data[:6]=b'\x7fELF\x02\x01'
+        struct.pack_into('<Q',data,40,64)
+        struct.pack_into('<HHH',data,58,64,3,1)
+        names=b'\0.shstrtab\0.debug_info\0'
+        struct.pack_into('<IIQQQQIIQQ',data,128,1,3,0,0,256,len(names),0,0,1,0)
+        struct.pack_into('<IIQQQQIIQQ',data,192,11,1,0,0,0,0,0,0,1,0)
+        data[256:256+len(names)]=names
+        self.assertIn('.debug_info',load('audit_binary_exposure').sections(data))
+
+    def test_invalid_binary_is_not_reported_as_clean(self):
+        with self.assertRaises(ValueError):load('audit_binary_exposure').sections(b'not ELF')
