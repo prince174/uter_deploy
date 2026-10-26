@@ -117,7 +117,7 @@ jobs:
           done
       - name: Exercise real services in disposable Compose project
         run: python scripts/image_integration.py
-      - uses: actions/upload-artifact@b7c566a772e6b6b58ed0dc250532a479d7789f
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
           name: protected-integration-evidence

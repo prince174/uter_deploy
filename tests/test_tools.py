@@ -25,6 +25,14 @@ class ToolTests(unittest.TestCase):
             workflow = yaml.safe_load(path.read_text())
             self.assertIn("jobs", workflow)
 
+    def test_remote_action_pins_are_full_commit_shas(self):
+        import re
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            for action in re.findall(r'uses:\s*([^\s]+)', path.read_text()):
+                if action.startswith('./'):
+                    continue
+                self.assertRegex(action, r'^[^@]+@[0-9a-f]{40}$', str(path))
+
     def test_scan_detects_deleted_source_in_old_layer(self):
         scanner = load("scan_image_archive")
         with tempfile.TemporaryDirectory() as tmp:
