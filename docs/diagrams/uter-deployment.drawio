@@ -1,0 +1,144 @@
+<mxfile host="app.diagrams.net" version="24.7.17">
+  <diagram id="compose" name="Compose">
+    <mxGraphModel grid="1" gridSize="10" page="1" pageWidth="1500" pageHeight="1050" dx="1500" dy="1050">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="Uter · развёртывание через Compose" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#E3F5F5;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="350" y="20" width="800" height="55" />
+        </mxCell>
+        <mxCell id="registry" value="Docker Hub · приватные образы&#10;docker.io/prince174/uter-guardrail&#10;docker.io/prince174/uter-agent&#10;docker.io/prince174/uter-redis" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#EAF3FA;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="100" y="110" width="510" height="130" />
+        </mxCell>
+        <mxCell id="config" value="prepare → check&#10;LLM URL / модель / API-ключ&#10;Пароли, политики, ключ HMAC аудита" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#EAF3FA;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="860" y="110" width="480" height="130" />
+        </mxCell>
+        <mxCell id="engine" value="install · Docker Compose&#10;Новый project, без сборки" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#E3F5F5;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="570" y="310" width="360" height="100" />
+        </mxCell>
+        <mxCell id="entry" value="Точка входа&#10;127.0.0.1:18000&#10;Внешний TLS reverse proxy — отдельно" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#FFFFFF;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="80" y="500" width="340" height="100" />
+        </mxCell>
+        <mxCell id="guard" value="Guardrail&#10;API · проверки ввода/вывода&#10;Toxicity · аудит" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#E3F5F5;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="570" y="500" width="360" height="110" />
+        </mxCell>
+        <mxCell id="llm" value="Внешний LLM&#10;OpenAI-совместимый API&#10;Не устанавливается автоматически" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#FFFFFF;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="1080" y="500" width="330" height="100" />
+        </mxCell>
+        <mxCell id="redis" value="Redis&#10;Сессии и rate limit&#10;Без внешнего порта" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#FFF4DE;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="280" y="700" width="300" height="100" />
+        </mxCell>
+        <mxCell id="agent" value="Agent&#10;Инструменты / retrieval&#10;Внутренний общий секрет" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#FFF4DE;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="920" y="700" width="300" height="100" />
+        </mxCell>
+        <mxCell id="store" value="Постоянные данные&#10;redis-data + audit-data volumes&#10;Резервировать данные и ключи" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#EAF3FA;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="550" y="890" width="400" height="110" />
+        </mxCell>
+        <mxCell id="registry-engine" value="pull по digest" edge="1" source="registry" target="engine" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="config-engine" value="конфигурация" edge="1" source="config" target="engine" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="engine-guard" value="запуск + readiness" edge="1" source="engine" target="guard" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="engine-redis" value="" edge="1" source="engine" target="redis" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="engine-agent" value="" edge="1" source="engine" target="agent" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="entry-guard" value="JWT + ingress-secret" edge="1" source="entry" target="guard" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="guard-llm" value="LLM API" edge="1" source="guard" target="llm" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="guard-redis" value="состояние" edge="1" source="guard" target="redis" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="guard-agent" value="внутренний API" edge="1" source="guard" target="agent" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="guard-store" value="HMAC-аудит" edge="1" source="guard" target="store" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="redis-store" value="AOF" edge="1" source="redis" target="store" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="kubernetes" name="Kubernetes">
+    <mxGraphModel grid="1" gridSize="10" page="1" pageWidth="1500" pageHeight="1050" dx="1500" dy="1050">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="Uter · развёртывание через Kubernetes" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#E3F5F5;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="350" y="20" width="800" height="55" />
+        </mxCell>
+        <mxCell id="registry" value="Docker Hub · приватные образы&#10;docker.io/prince174/uter-guardrail&#10;docker.io/prince174/uter-agent&#10;docker.io/prince174/uter-redis" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#EAF3FA;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="100" y="110" width="510" height="130" />
+        </mxCell>
+        <mxCell id="config" value="prepare → check&#10;LLM URL / модель / API-ключ&#10;Пароли, политики, ключ HMAC аудита" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#EAF3FA;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="860" y="110" width="480" height="130" />
+        </mxCell>
+        <mxCell id="engine" value="install · Helm&#10;Явный context + новый namespace" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#E3F5F5;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="570" y="310" width="360" height="100" />
+        </mxCell>
+        <mxCell id="entry" value="Точка входа&#10;ClusterIP :8000&#10;port-forward / внешний Ingress" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#FFFFFF;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="80" y="500" width="340" height="100" />
+        </mxCell>
+        <mxCell id="guard" value="Guardrail&#10;API · проверки ввода/вывода&#10;Toxicity · аудит" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#E3F5F5;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="570" y="500" width="360" height="110" />
+        </mxCell>
+        <mxCell id="llm" value="Внешний LLM&#10;OpenAI-совместимый API&#10;Не устанавливается автоматически" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#FFFFFF;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="1080" y="500" width="330" height="100" />
+        </mxCell>
+        <mxCell id="redis" value="Redis&#10;Сессии и rate limit&#10;Без внешнего порта" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#FFF4DE;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="280" y="700" width="300" height="100" />
+        </mxCell>
+        <mxCell id="agent" value="Agent&#10;Инструменты / retrieval&#10;Внутренний общий секрет" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#FFF4DE;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="920" y="700" width="300" height="100" />
+        </mxCell>
+        <mxCell id="store" value="Постоянные данные&#10;PVC: Redis 2 GiB + аудит 10 GiB&#10;Резервировать данные и ключи" vertex="1" parent="1" style="rounded=1;whiteSpace=wrap;html=0;fontSize=16;fillColor=#EAF3FA;strokeColor=#91A7B8;spacing=12;">
+          <mxGeometry as="geometry" x="550" y="890" width="400" height="110" />
+        </mxCell>
+        <mxCell id="registry-engine" value="pull по digest" edge="1" source="registry" target="engine" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="config-engine" value="конфигурация" edge="1" source="config" target="engine" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="engine-guard" value="запуск + readiness" edge="1" source="engine" target="guard" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="engine-redis" value="" edge="1" source="engine" target="redis" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="engine-agent" value="" edge="1" source="engine" target="agent" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;dashed=1;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="entry-guard" value="JWT + ingress-secret" edge="1" source="entry" target="guard" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="guard-llm" value="LLM API" edge="1" source="guard" target="llm" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="guard-redis" value="состояние" edge="1" source="guard" target="redis" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="guard-agent" value="внутренний API" edge="1" source="guard" target="agent" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="guard-store" value="HMAC-аудит" edge="1" source="guard" target="store" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="redis-store" value="AOF" edge="1" source="redis" target="store" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;endArrow=block;html=0;fontSize=13;strokeColor=#237A86;">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

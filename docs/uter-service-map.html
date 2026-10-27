@@ -1,0 +1,1296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Uter — карта работы сервиса</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #627184;
+      --line: #d7dde5;
+      --line-strong: #6d7c8e;
+      --focus: #1f7a8c;
+      --ingress: #d9504f;
+      --guardrail: #1f7a8c;
+      --agent: #8a6f1e;
+      --model: #3f6fb6;
+      --data: #2c7a4b;
+      --ops: #9b5c22;
+      --risk: #a73737;
+      --ok: #256d3f;
+      --warn: #9b6a00;
+      --shadow: 0 14px 34px rgba(31, 41, 55, 0.12);
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 20px;
+      background: #ffffff;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .title {
+      min-width: 260px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .toolbar {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .search {
+      width: min(460px, 100%);
+      min-width: 220px;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 12px;
+      background: #fbfcfd;
+      color: var(--text);
+    }
+
+    .btn {
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 12px;
+      color: var(--text);
+      background: #ffffff;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn:hover,
+    .btn.active {
+      border-color: var(--focus);
+      color: var(--focus);
+      background: #eef8fa;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 16px;
+      padding: 16px;
+      min-height: 0;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      min-height: 0;
+    }
+
+    .left,
+    .right {
+      overflow: auto;
+    }
+
+    .panel-section {
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-section:last-child {
+      border-bottom: 0;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .legend {
+      display: grid;
+      gap: 8px;
+    }
+
+    .toggle {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      border-radius: 6px;
+      padding: 9px 10px;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .toggle.inactive {
+      opacity: 0.46;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      flex: 0 0 auto;
+    }
+
+    .scenario-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .scenario {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #ffffff;
+      padding: 10px;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .scenario:hover,
+    .scenario.active {
+      border-color: var(--focus);
+      background: #eef8fa;
+    }
+
+    .scenario strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
+
+    .scenario span {
+      display: none;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .right { grid-column: 1 / -1; display:grid; grid-template-columns:1fr 1fr; max-height:none; }
+    .map-panel {
+      display: grid;
+      grid-template-rows: auto auto;
+      align-self:start;
+      overflow: hidden;
+    }
+
+    .map-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .status-line {
+      color: var(--muted);
+      font-size: 13px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .map-wrap {
+      overflow: auto;
+      background:
+        linear-gradient(#eef2f6 1px, transparent 1px),
+        linear-gradient(90deg, #eef2f6 1px, transparent 1px);
+      background-size: 32px 32px;
+    }
+
+    svg {
+      display: block;
+      width:100%;
+      min-width:850px;
+      height:auto;
+      aspect-ratio:1180/860;
+    }
+
+    .zone {
+      fill: rgba(255, 255, 255, 0.68);
+      stroke: var(--line);
+      stroke-width: 1;
+      rx: 8;
+    }
+
+    .zone-title {
+      fill: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .edge {
+      fill: none;
+      stroke: #9aa7b4;
+      stroke-width: 2;
+      marker-end: url(#arrow);
+      opacity: 0.7;
+    }
+
+    .edge.scenario-active {
+      stroke: var(--focus);
+      stroke-width: 4;
+      opacity: 1;
+    }
+
+    .node {
+      cursor: pointer;
+      transition: opacity 120ms ease;
+    }
+
+    .node rect {
+      stroke-width: 2;
+      rx: 7;
+      filter: drop-shadow(0 6px 9px rgba(31, 41, 55, 0.12));
+    }
+
+    .node text {
+      pointer-events: none;
+      fill: var(--text);
+      font-size: 12px;
+      letter-spacing: 0;
+    }
+
+    .node .node-title {
+      font-size: 14px;
+      font-weight: 750;
+    }
+
+    .node.hidden {
+      opacity: 0.14;
+    }
+
+    .node.selected rect,
+    .node.scenario-active rect {
+      stroke: #0d4e5c;
+      stroke-width: 4;
+    }
+
+    .node.search-miss {
+      opacity: 0.18;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      border-radius: 6px;
+      padding: 2px 8px;
+      background: #eef2f6;
+      color: #39485a;
+      font-size: 12px;
+      margin: 0 6px 6px 0;
+    }
+
+    .badge.ok {
+      background: #e8f5ec;
+      color: var(--ok);
+    }
+
+    .badge.warn {
+      background: #fff4d7;
+      color: var(--warn);
+    }
+
+    .badge.risk {
+      background: #fae7e5;
+      color: var(--risk);
+    }
+
+    .detail-title {
+      margin: 0 0 8px;
+      font-size: 19px;
+      letter-spacing: 0;
+    }
+
+    .detail-kind {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    .detail-text {
+      color: #344255;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 108px 1fr;
+      gap: 8px;
+      font-size: 13px;
+      margin: 8px 0;
+    }
+
+    .kv div:first-child {
+      color: var(--muted);
+    }
+
+    code {
+      font-family: "Cascadia Mono", Consolas, "SFMono-Regular", monospace;
+      font-size: 12px;
+      background: #f1f4f7;
+      border: 1px solid #e1e6ed;
+      border-radius: 5px;
+      padding: 1px 5px;
+    }
+
+    ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: #344255;
+      line-height: 1.45;
+      font-size: 13px;
+    }
+
+    li + li {
+      margin-top: 4px;
+    }
+
+    .file-link {
+      color: #1b6978;
+      text-decoration: none;
+    }
+
+    .file-link:hover {
+      text-decoration: underline;
+    }
+
+    .scenario-steps {
+      counter-reset: step;
+      display: grid;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    .scenario-step {
+      display: grid;
+      grid-template-columns: 26px 1fr;
+      gap: 8px;
+      align-items: start;
+      color: #344255;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .scenario-step::before {
+      counter-increment: step;
+      content: counter(step);
+      width: 22px;
+      height: 22px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #edf4f6;
+      color: var(--focus);
+      font-weight: 700;
+    }
+
+    @media (max-width: 1180px) {
+      main {
+        grid-template-columns: 240px minmax(520px, 1fr);
+      }
+
+      .right {
+        grid-column: 1 / -1;
+        max-height: 420px;
+      }
+    }
+
+    @media (max-width: 760px) {
+      header {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .toolbar {
+        flex-wrap: wrap;
+      }
+
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      .left,
+      .right {
+        max-height: none;
+      }
+
+      .map-panel {
+        min-height: 560px;
+      }
+    }
+  </style>
+</head>
+<body><div style="padding:14px 24px;background:#e3f5f5;color:#17384a;font:14px/1.5 system-ui">Архитектурная справка. Базовая установка включает Guardrail, Agent и Redis; LLM подключается отдельно. RAG, PKI, Ingress и другие интеграции требуют отдельной настройки. Исторические заметки этой карты не подтверждают состояние текущего окружения. <a href="uter-deployment.html">Схема развёртывания</a></div>
+  <div class="app">
+    <header>
+      <div class="title">
+        <h1>Uter — карта работы сервиса</h1>
+        <div class="subtitle">Расширенная архитектура: пути запросов, проверки и интеграции. Не все компоненты входят в базовую установку.</div>
+      </div>
+      <div class="toolbar">
+        <input id="search" class="search" type="search" placeholder="Поиск компонентов, API и проверок..." />
+        <button id="clearSearch" class="btn" type="button">Очистить</button>
+        <button id="resetView" class="btn" type="button">Сбросить</button>
+      </div>
+    </header>
+
+    <main>
+      <aside class="panel left">
+        <section class="panel-section">
+          <h2>Слои</h2>
+          <div id="layers" class="legend"></div>
+        </section>
+        <section class="panel-section">
+          <h2>Сценарии</h2>
+          <div id="scenarios" class="scenario-list"></div>
+        </section>
+        <section class="panel-section">
+          <h2>Как читать</h2>
+          <div class="hint">
+            Выберите компонент: API, проверки и ограничения.
+            Сценарии подсвечивают маршрут запроса.
+          </div>
+        </section>
+      </aside>
+
+      <section class="panel map-panel">
+        <div class="map-head">
+          <div id="mapStatus" class="status-line">Select a node or scenario.</div>
+          <button id="selectProd" class="btn" type="button">Расширенный контур</button>
+        </div>
+        <div class="map-wrap" id="mapWrap">
+          <svg id="map" viewBox="0 0 1180 860" role="img" aria-label="Uter service architecture map">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#9aa7b4"></path>
+              </marker>
+            </defs>
+            <g id="zones"></g>
+            <g id="edges"></g>
+            <g id="nodes"></g>
+          </svg>
+        </div>
+      </section>
+
+      <aside class="panel right">
+        <section class="panel-section" id="details"></section>
+        <section class="panel-section" id="scenarioDetails"></section>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    const layers = {
+      ingress: { label: "Northbound & Edge", color: "#d9504f" },
+      guardrail: { label: "Guardrail Core", color: "#1f7a8c" },
+      agent: { label: "Agent Runtime", color: "#8a6f1e" },
+      model: { label: "Model Stack", color: "#3f6fb6" },
+      data: { label: "Tools & RAG Data", color: "#2c7a4b" },
+      ops: { label: "Ops, Evidence, Gates", color: "#9b5c22" }
+    };
+
+    const zones = [
+      { x: 24, y: 28, w: 1132, h: 96, label: "Приложения и точка входа" },
+      { x: 214, y: 152, w: 604, h: 410, label: "Uter / Guardrail service" },
+      { x: 846, y: 152, w: 284, h: 410, label: "Agent runtime and downstream" },
+      { x: 214, y: 590, w: 916, h: 220, label: "Evidence, policy, and validation gates" }
+    ];
+
+    const nodes = {
+      clients: {
+        label: "Приложения / ассистенты",
+        layer: "ingress",
+        x: 58, y: 54, w: 152, h: 54,
+        summary: "Northbound callers: apps, assistants, validation agents, and API callers.",
+        endpoints: ["POST /v1/chat/completions", "GET /v1/models", "legacy POST /chat"],
+        controls: ["JWT bearer token", "X-Client-ID policy", "Ingress shared secret"],
+        files: [],
+        risks: ["Clients must not call LiteLLM, vLLM, tools, RAG sources, or agent runtime directly."]
+      },
+      edge: {
+        label: "gateway-edge",
+        layer: "ingress",
+        x: 258, y: 54, w: 152, h: 54,
+        summary: "Optional HAProxy edge for OpenAI-compatible traffic and controlled emergency fallback.",
+        endpoints: ["GET /edge-health", "POST /v1/chat/completions"],
+        controls: ["Manual fallback unlock", "Fail-closed fallback when disabled", "Caller LiteLLM key required; no master-key injection", "Only chat completions and models in fallback", "Injects ingress secret on normal path"],
+        files: [],
+        risks: ["Fallback must stay a controlled exception, not the normal route."]
+      },
+      ingress: {
+        label: "OpenAI Ingress",
+        layer: "guardrail",
+        x: 248, y: 182, w: 152, h: 64,
+        summary: "OpenAI-compatible northbound API surface inside Uter.",
+        endpoints: ["POST /v1/chat/completions", "GET /v1/models"],
+        controls: ["Auth and rate limit", "Client allowlist", "Ingress secret", "Model alias enforcement"],
+        files: [],
+        risks: ["Production profiles should be secure-by-default for caller id, secret, and alias enforcement."]
+      },
+      authRate: {
+        label: "Auth + Rate Limit",
+        layer: "guardrail",
+        x: 452, y: 182, w: 150, h: 64,
+        summary: "Identity, roles, JWT tokens, IP/user rate limits, and Redis-backed counters.",
+        endpoints: ["POST /auth/token", "GET /health", "GET /ready"],
+        controls: ["User/admin/service roles", "JWT validation", "Redis rate limiter", "Atomic recovery of TTL-less counters"],
+        files: [],
+        risks: ["Local mode may remain fail-open; hardened/prod-test uses Redis TLS/ACL, fail-closed rate limiting, backup state, readiness blocking, and runtime-verified TTL repair without resetting accumulated counters."]
+      },
+      chatPipeline: {
+        label: "ChatPipeline",
+        layer: "guardrail",
+        x: 346, y: 288, w: 166, h: 72,
+        summary: "Main request path for safe chat input, upstream call, and output controls.",
+        endpoints: ["POST /chat", "POST /v1/chat/completions"],
+        controls: ["Normalization", "Input guard", "Semantic input", "Toxicity guard", "Session risk", "LLM judge", "Output guard"],
+        files: [],
+        risks: ["Long multi-turn agentic attack chains need a dedicated corpus before real-data go-live."]
+      },
+      policy: {
+        label: "Policy Runtime",
+        layer: "guardrail",
+        x: 606, y: 288, w: 152, h: 72,
+        summary: "Hot-reloaded policy engines for tool, retrieval, approval, and semantic controls.",
+        endpoints: ["GET /policy/status", "POST /policy/reload", "GET /rules", "GET /profiles/models"],
+        controls: ["Policy-as-code", "Model profiles", "Dynamic rules", "Policy status in evidence"],
+        files: [],
+        risks: ["Policy drift must be monitored during long-running validations."]
+      },
+      toolGateway: {
+        label: "Tool Gateway",
+        layer: "guardrail",
+        x: 248, y: 418, w: 152, h: 72,
+        summary: "Mandatory policy decision point before any tool execution.",
+        endpoints: ["POST /tools/evaluate", "GET /tools/policy"],
+        controls: ["Tool allowlist", "Argument validation", "Dangerous payload checks", "Admin-issued one-use Redis approval bound to user/tool/arguments"],
+        files: [],
+        risks: ["Production v1 should keep only read-only tools in normal traffic."]
+      },
+      retrievalGateway: {
+        label: "Retrieval Gateway",
+        layer: "guardrail",
+        x: 452, y: 418, w: 152, h: 72,
+        summary: "Two-phase retrieval and RAG policy before and after document fetch.",
+        endpoints: ["POST /retrieval/evaluate", "GET /retrieval/policy"],
+        controls: ["Source allowlist", "Suspicious query checks", "Restricted source block", "Document filtering", "Citations and grounding policy"],
+        files: [],
+        risks: ["Real enterprise ACL synchronization and OCR/HTML/table ingestion still require prod-test evidence."]
+      },
+      audit: {
+        label: "Audit + Metrics",
+        layer: "ops",
+        x: 640, y: 418, w: 152, h: 72,
+        summary: "Evidence plane for decisions, metrics, traces, audit integrity, and readiness.",
+        endpoints: ["GET /metrics", "GET /audit/status", "POST /audit/verify", "GET /ready"],
+        controls: ["Decision trace", "Audit JSONL", "Tamper-evident HMAC mode", "Prometheus metrics"],
+        files: [],
+        risks: ["Production should define retention, SIEM export, and tamper-evident storage policy."]
+      },
+      agent: {
+        label: "Agent Runtime",
+        layer: "agent",
+        x: 884, y: 182, w: 170, h: 72,
+        summary: "Internal guarded tool/RAG runtime in gateway mode; standalone mode also supports Ollama chat. Readiness follows enabled dependencies.",
+        endpoints: ["POST /chat", "POST /tools/execute", "POST /retrieval/search", "POST /retrieval/answer"],
+        controls: ["X-Uter-Agent-Secret", "Internal-only Docker networking", "GuardrailClient service token", "Prod-test Confluence env in debug profile"],
+        files: [],
+        risks: ["Direct host exposure is a bypass risk; debug exposure must be explicit and still require the agent secret."]
+      },
+      toolExec: {
+        label: "Guarded Tool Executor",
+        layer: "agent",
+        x: 860, y: 306, w: 130, h: 64,
+        summary: "Executes only after Uter tool policy returns allow or valid approval.",
+        endpoints: ["POST /tools/execute"],
+        controls: ["ToolRegistry", "GuardrailClient", "Server-issued approval token; expiry and replay checks"],
+        files: [],
+        risks: ["Real write connectors require operator authorization workflows; user-supplied approval assertions are rejected."]
+      },
+      ragExec: {
+        label: "Guarded Retriever",
+        layer: "agent",
+        x: 860, y: 406, w: 130, h: 64,
+        summary: "Runs pre-policy, fetches documents, then returns them for post-policy filtering.",
+        endpoints: ["POST /retrieval/search", "POST /retrieval/answer"],
+        controls: ["RetrievalRegistry", "Pre/post retrieval evaluation", "Qdrant fail-closed", "Citation handling"],
+        files: [],
+        risks: ["Grounded answer generation currently lives in agent runtime, not core guardrail."]
+      },
+      tools: {
+        label: "Tools",
+        layer: "data",
+        x: 1006, y: 306, w: 116, h: 64,
+        summary: "External or local tools such as kb_search, update_ticket, and live/read-only confluence_search.",
+        endpoints: ["Tool-specific APIs"],
+        controls: ["Read-only allowlist for prod v1", "Per-tool argument policy", "Approval for writes"],
+        files: [],
+        risks: ["Tool credentials and downstream permissions need least-privilege hardening."]
+      },
+      ragSources: {
+        label: "Qdrant RAG",
+        layer: "data",
+        x: 1006, y: 406, w: 116, h: 64,
+        summary: "TLS-only vector store for hybrid multilingual dense + BM25 retrieval with RRF.",
+        endpoints: ["Qdrant API :6333", "Hybrid query_points", "Collection snapshots"],
+        controls: ["Tenant/source filters", "Fail-closed static internal ACL", "Group/classification filters", "Prompt-injection quarantine", "Admin/read-only keys", "No host port"],
+        files: [],
+        risks: ["Real Confluence initial ACL exclusion verified. Lexical relevance gating abstains without evidence; semantic calibration, ACL revocation sync and long soak remain gates."]
+      },
+      confluenceRest: {
+        label: "Confluence REST",
+        layer: "data",
+        x: 1006, y: 506, w: 116, h: 64,
+        summary: "Live GET-only Confluence adapter; real ITSM instruction and restricted-page exclusion verified through the local gateway.",
+        endpoints: ["GET /rest/api/content/search"],
+        controls: ["Bearer/basic auth", "Secret file", "Host allowlist", "No redirects", "Read-only search", "CQL escaping", "Response limits", "Retry/circuit breaker"],
+        files: [],
+        risks: ["Static internal ACL is suitable for one reader; deployment requires page-restriction sync and request identity propagation."]
+      },
+      litellm: {
+        label: "LiteLLM",
+        layer: "model",
+        x: 248, y: 514, w: 152, h: 58,
+        summary: "Model gateway between Uter and vLLM in the production-like stack.",
+        endpoints: ["POST /v1/chat/completions", "GET /v1/models"],
+        controls: ["Master key", "Model alias", "No direct host port in prod-like compose"],
+        files: [],
+        risks: ["Clients must not call LiteLLM directly; preflight checks direct backend ports."]
+      },
+      litellmMtls: {
+        label: "LiteLLM mTLS Proxy",
+        layer: "model",
+        x: 58, y: 514, w: 152, h: 58,
+        summary: "Optional HTTPS/mTLS reverse proxy in front of LiteLLM for prod-test gateway runs.",
+        endpoints: ["mTLS proxy :8443", "GET /nginx-health"],
+        controls: ["Client certificate required", "CA verification", "Internal-only Docker networking"],
+        files: [],
+        risks: ["The internal step-ca profile must be replaced by approved PKI for an external industrial stand."]
+      },
+      vllm: {
+        label: "vLLM",
+        layer: "model",
+        x: 452, y: 514, w: 152, h: 58,
+        summary: "Local OpenAI-compatible inference backend. Current local smoke uses Qwen3-0.6B on RTX 3070.",
+        endpoints: ["POST /v1/chat/completions", "GET /v1/models"],
+        controls: ["Environment-only API key", "No direct host port", "Read-only root", "Bounded executable JIT tmpfs", "Redirected runtime caches", "Usage telemetry disabled", "Served model name"],
+        files: [],
+        risks: ["Qwen3-4B did not fit reliably on RTX 3070; quality/latency must be revalidated on target model."]
+      },
+      redis: {
+        label: "Redis",
+        layer: "ops",
+        x: 640, y: 514, w: 152, h: 58,
+        summary: "Shared runtime state for rate limiting, sessions, and service readiness.",
+        endpoints: ["redis:6379"],
+        controls: ["TLS", "ACL users", "Secret files", "Rate limit counters", "Session store", "Backup volume", "Readiness gate"],
+        files: [],
+        risks: ["Restore procedure and backup retention must be exercised in the target environment."]
+      },
+      stepCa: {
+        label: "Internal step-ca",
+        layer: "ops",
+        x: 58, y: 624, w: 152, h: 66,
+        summary: "Separate internal CA for the prod-like stand, with an offline root key and short-lived leaf certificates.",
+        endpoints: ["PKI API :9443", "GET /health"],
+        controls: ["Pinned source SHA-256", "Patched Go dependencies", "Minimal scanned image", "Loopback-only port", "Offline root key", "45-day leaf certificates", "Chain/SAN/key validation"],
+        files: [],
+        risks: ["A runtime environment must replace this internal profile with its approved PKI or HSM-backed CA."]
+      },
+      evals: {
+        label: "Eval Gates",
+        layer: "ops",
+        x: 248, y: 624, w: 172, h: 66,
+        summary: "Automated proof system for validation, red-team, rollout, fallback, and readiness decisions.",
+        endpoints: ["python -m evals.validation_gate", "python -m evals.gateway_rollout", "python -m evals.operational_soak", "scripts/run_dependency_recovery_drill.py"],
+        controls: ["validation suite", "Red-team suite", "Preflight anti-bypass", "Load probe", "Recovery drill", "24-72h soak", "Stage promotion"],
+        files: [],
+        risks: ["The local short soak passed 32/32 with 100% readiness; a full 24-72 hour run is still required on the target stand."]
+      },
+      artifacts: {
+        label: "Reports + Dashboard",
+        layer: "ops",
+        x: 486, y: 624, w: 172, h: 66,
+        summary: "JSON, Markdown, dashboard, and database artifacts used as go-live evidence.",
+        endpoints: ["python -m evals.validation_dashboard", "python -m evals.validation_results_server"],
+        controls: ["Artifact bundle", "Go-live or hold verdict", "Dashboard drill-down"],
+        files: [],
+        risks: ["Evidence completeness and retention should be formalized before production rollout."]
+      },
+      prodChecklist: {
+        label: "Prod Readiness",
+        layer: "ops",
+        x: 724, y: 624, w: 172, h: 66,
+        summary: "Checklist and runbook for prod-test and real production traffic decisions.",
+        endpoints: ["README Production perimeter v1", "docs/prodtest_readiness_runbook.md"],
+        controls: ["Fail-closed dependencies", "Secure ingress defaults", "Network isolation", "Qdrant snapshots", "Real-data validation evidence", "Security audit evidence"],
+        files: [],
+        risks: ["Real-data effectiveness, multi-turn attacks, approval integration, and production network isolation need final environment evidence."]
+      },
+      prodTest: {
+        label: "Prod-Test Gate",
+        layer: "ops",
+        x: 248, y: 724, w: 172, h: 66,
+        summary: "Industrial-test profile, preflight contract, operational smoke, and direct-backend bypass probes.",
+        endpoints: ["python -m evals.validation_preflight", "scripts/run_prodtest_operational_smoke.py", "scripts/run_dependency_recovery_drill.py", "scripts/run_operational_soak.ps1"],
+        controls: ["Env-template completeness", "RATE_LIMIT_FAIL_OPEN=false", "Ingress secret", "Client allowlist", "Model alias enforcement", "Hardened secrets", "Site-PKI gate", "Live-Confluence gate", "mTLS", "Qdrant/Redis readiness", "Bypass probes"],
+        files: [],
+        risks: ["Real credentials, source ACL mapping, and 24-72 hour soak evidence are required before live prod-test approval."]
+      },
+      securityAudit: {
+        label: "Security Audit",
+        layer: "ops",
+        x: 486, y: 724, w: 172, h: 66,
+        summary: "Dependency and container-context scanning for production readiness evidence.",
+        endpoints: ["scripts/run_security_audit.ps1", "CI security-audit job"],
+        controls: ["Blocking pip-audit", "Trivy filesystem scan", "CycloneDX SBOM", "Artifact upload", "High/critical triage"],
+        files: [],
+        risks: ["Any accepted CVE exception must be explicit, time-bounded, and documented before promotion."]
+      },
+      dependencyBaseline: {
+        label: "Dependency Baseline",
+        layer: "ops",
+        x: 724, y: 724, w: 172, h: 66,
+        summary: "Current Python dependency baseline after audit remediation.",
+        endpoints: ["pip-audit reports"],
+        controls: ["No known Python dependency vulnerabilities", "FastAPI/Starlette/PyJWT/Transformers upgraded", "Transformers 5 API compatibility"],
+        files: [],
+        risks: ["Starlette TestClient warns about future httpx2 migration; track before the next framework upgrade."]
+      }
+    };
+
+    const edges = [
+      ["clients", "edge", "northbound"],
+      ["edge", "ingress", "northbound"],
+      ["clients", "ingress", "northbound"],
+      ["ingress", "authRate", "check"],
+      ["ingress", "chatPipeline", "chat"],
+      ["authRate", "chatPipeline", "pass"],
+      ["chatPipeline", "policy", "policy"],
+      ["chatPipeline", "litellmMtls", "mTLS"],
+      ["litellmMtls", "litellm", "HTTPS"],
+      ["stepCa", "litellmMtls", "certs"],
+      ["stepCa", "redis", "certs"],
+      ["stepCa", "ragSources", "certs"],
+      ["litellm", "vllm", "model"],
+      ["chatPipeline", "agent", "legacy"],
+      ["ingress", "agent", "runtime"],
+      ["agent", "toolExec", "tool"],
+      ["agent", "ragExec", "rag"],
+      ["toolExec", "toolGateway", "evaluate"],
+      ["toolGateway", "toolExec", "allow"],
+      ["toolExec", "tools", "execute"],
+      ["tools", "confluenceRest", "read-only"],
+      ["ragExec", "retrievalGateway", "pre/post"],
+      ["retrievalGateway", "ragExec", "allow/filter"],
+      ["ragExec", "ragSources", "hybrid search"],
+      ["confluenceRest", "ragSources", "admin ingest"],
+      ["policy", "toolGateway", "policy"],
+      ["policy", "retrievalGateway", "policy"],
+      ["chatPipeline", "audit", "trace"],
+      ["toolGateway", "audit", "trace"],
+      ["retrievalGateway", "audit", "trace"],
+      ["audit", "evals", "evidence"],
+      ["evals", "artifacts", "reports"],
+      ["artifacts", "prodChecklist", "go/no-go"],
+      ["evals", "prodTest", "preflight"],
+      ["prodTest", "ingress", "smoke"],
+      ["prodTest", "artifacts", "reports"],
+      ["securityAudit", "artifacts", "reports"],
+      ["securityAudit", "dependencyBaseline", "remediate"],
+      ["dependencyBaseline", "prodChecklist", "evidence"],
+      ["redis", "authRate", "state"],
+      ["redis", "chatPipeline", "session"]
+    ];
+
+    const scenarios = {
+      chat: {
+        label: "Safe chat",
+        description: "Normal OpenAI-compatible chat through Uter, LiteLLM, and vLLM.",
+        path: ["clients", "edge", "ingress", "authRate", "chatPipeline", "litellmMtls", "litellm", "vllm", "chatPipeline", "audit", "artifacts"],
+        steps: [
+          "Caller sends POST /v1/chat/completions with JWT, caller id, and ingress secret.",
+          "Uter validates ingress policy and rate limit.",
+          "ChatPipeline runs input, semantic, session, toxicity, judge, and output checks.",
+          "Only after controls pass, Uter calls LiteLLM and vLLM.",
+          "Decision trace, audit, and metrics are emitted."
+        ]
+      },
+      tool: {
+        label: "Tool calling",
+        description: "Tool request is routed to agent runtime, then forced through /tools/evaluate.",
+        path: ["clients", "ingress", "agent", "toolExec", "toolGateway", "policy", "toolExec", "tools", "audit"],
+        steps: [
+          "OpenAI tool plan is resolved inside Uter.",
+          "Guardrail calls internal agent runtime with X-Uter-Agent-Secret.",
+          "GuardedToolExecutor calls Uter /tools/evaluate before execution.",
+          "ToolPolicyEngine and ApprovalEngine return allow, block, or requires_approval.",
+          "Only allowed tool calls reach ToolRegistry and downstream tools."
+        ]
+      },
+      rag: {
+        label: "Retrieval / RAG",
+        description: "Two-phase retrieval policy around tenant-filtered Qdrant hybrid search, citations, and grounded answer.",
+        path: ["clients", "ingress", "agent", "ragExec", "retrievalGateway", "policy", "ragExec", "ragSources", "ragExec", "retrievalGateway", "audit"],
+        steps: [
+          "Retrieval plan is resolved from OpenAI vendor extension or agent plan.",
+          "Agent runtime requires internal secret and calls Uter /retrieval/evaluate phase=pre.",
+          "Source allowlist, restricted-source, and query checks run before fetching data.",
+          "Qdrant combines multilingual dense vectors and BM25 with RRF, always filtering tenant, source, groups, classification, and quarantined=false.",
+          "Fetched documents return to /retrieval/evaluate phase=post for filtering and citation policy.",
+          "Grounded answer generation and verification run in agent runtime; Qdrant outage fails readiness and retrieval closed."
+        ]
+      },
+      confluence: {
+        label: "Confluence validation",
+        description: "Read-only Confluence tool plus hardened ingestion into the allowlisted Qdrant RAG source.",
+        path: ["clients", "ingress", "agent", "toolExec", "toolGateway", "tools", "confluenceRest", "ragSources", "ragExec", "retrievalGateway", "audit"],
+        steps: [
+          "validation agent authenticates through Uter and verifies readiness.",
+          "confluence_search is allowed only as a read-only, allowlisted tool.",
+          "Dangerous tool arguments are blocked before Confluence is called.",
+          "The hardened Confluence client enforces HTTPS/host allowlist, no redirects, bounded responses, retry limits, and a circuit breaker.",
+          "An admin-only one-shot job ingests Confluence pages into Qdrant; the runtime agent has only the read-only key.",
+          "Internal validation ingestion fails closed unless explicit static groups match the runtime Qdrant groups and classification allowlist.",
+          "RAG source confluence must be allowlisted, tenant/ACL filtered, citation-required, and grounding-required.",
+          "Answer cites documents such as [confluence/CONF-ACCESS-001]."
+        ]
+      },
+      fallback: {
+        label: "Edge fallback drill",
+        description: "Controlled gateway-edge fallback and fail-closed behavior.",
+        path: ["clients", "edge", "ingress", "litellm", "vllm", "evals", "artifacts"],
+        steps: [
+          "Normal path enters Uter through gateway-edge.",
+          "If Uter is unavailable, fallback remains closed unless manually unlocked.",
+          "Fallback drill validates normal, fail-closed, and controlled emergency behavior.",
+          "Reports become rollout evidence."
+        ]
+      },
+      gate: {
+        label: "validation gate",
+        description: "Preflight, load, rollout, fallback, readiness, dashboard, and go-live evidence.",
+        path: ["evals", "ingress", "authRate", "chatPipeline", "toolGateway", "retrievalGateway", "audit", "artifacts", "prodChecklist"],
+        steps: [
+          "validation_preflight checks anti-bypass and required security settings.",
+          "load_resilience_probe validates availability, 5xx, and latency budget.",
+          "gateway_rollout runs validation and red-team suites.",
+          "fallback_drill and stage_promotion build operational evidence.",
+          "validation_readiness returns go_live or hold."
+        ]
+      },
+      prodtest: {
+        label: "Prod-test readiness",
+        description: "Industrial-test profile with strict preflight, smoke, and bypass probes.",
+        path: ["prodTest", "ingress", "authRate", "chatPipeline", "litellmMtls", "litellm", "vllm", "prodTest", "artifacts", "prodChecklist"],
+        steps: [
+          "Copy .env.prodtest.example to .env.prodtest and replace every placeholder secret.",
+          "Generate TLS certs and Qdrant admin/read-only secrets, then start gateway, hardened, mTLS, and RAG overlays.",
+          "rag-bootstrap loads synthetic seed data once or replaces it with pages from the configured read-only Confluence client.",
+          "For local direct-agent diagnostics only, start the explicit docker-compose.agent-debug.yml profile.",
+          "validation_preflight_prodtest.toml enforces fail-closed rate limit, OpenAI ingress hardening, hardened secrets, mTLS, manual fallback unlock, and no direct backend ports.",
+          "run_prodtest_operational_smoke.py checks /ready, auth token issuance, /v1/models, guarded chat, missing caller id, wrong model alias, and direct backend probes.",
+          "rag-snapshot, operational_soak, and run_dependency_recovery_drill.py add storage and availability evidence.",
+          "The local hardened baseline passed smoke 9/9, fixture-tool/Qdrant validation 6/6, Qdrant/Redis recovery, and short soak 32/32.",
+          "Reports are written to logs/ and validation-smoke/ as go/hold evidence.",
+          "Live Confluence + Qdrant rechecks reader access to each result page before returning indexed content: 403/404 exclude it, unavailable checks fail closed, grants are not cached. Seed-only mode has no live check.",
+          "Per-user source ACL mapping, a real cloud permission-toggle test, calibrated semantic relevance, and completed 24-72 hour soak evidence remain pending. Admin-only conditional index cleanup is implemented; the fresh collection requires no deletions.",
+          "run_internal_soak.py runs one worker against the local edge with ignored local credentials and atomic aggregate state checkpoints. Checkpoints include safe error categories and last-error time, not messages or payloads. Only a completed final report can pass; a stale running checkpoint is not proof of success. It measures inference availability, not RAG quality.",
+          "Source fingerprints are deployed with uter_confluence_live_v2: four reingested pages, no stale candidates, smoke 10/10 and live validation 5/5. Changed or legacy pages are excluded until reindexed. The previous long soak stopped without a final report and is not a pass. The offline RU reranker candidate was rejected for poor recall.",
+          "Experimental llm_quotes selects exact cited sentences without saving evidence to session history. Default is extractive: the live small-model probe failed JSON validation, so the experimental mode remains disabled. Free-form synthesis and semantic relevance are not certified.",
+          "The running internal CA uses uter-step-ca:0.30.2-uter.2 with gRPC 1.83.2. Upgrade preserved the existing root fingerprint; health and separate probe issuance/verification passed without replacing service identities.",
+          "A disposable strict Qdrant plus synthetic HTTP source passed 25 lifecycle checks including snapshot recovery without bypassing current source restrictions. This caught and fixed a missing source_fingerprint index for conditional cleanup; collection initialization now idempotently completes indexes on legacy collections, while reconciliation dry-run stays read-only. Docker E2E repeats the drill; it is not a live Atlassian ACL test or semantic quality evidence.",
+          "The active four-point validation collection was snapshotted and its payload schema completed through the admin-only bootstrap identity; source_fingerprint is indexed and the runtime key still cannot manage schema. Post-upgrade preflight 13/13, smoke 9/9 and live validation 5/5 passed.",
+          "rag_reconcile.py provides admin-only dry-run cleanup, tenant/source scope, deletion-fraction protection and fingerprint-conditional deletes. No deletion was applied to the active validation collection."
+        ]
+      },
+      security: {
+        label: "Security audit",
+        description: "Dependency and filesystem/container-context audit for prod-test evidence.",
+        path: ["securityAudit", "dependencyBaseline", "artifacts", "prodChecklist"],
+        steps: [
+          "CI security-audit job runs pip-audit separately for guardrail, agent, and test requirements.",
+          "Trivy scans the repository filesystem/container context and uploads artifacts.",
+          "Local script scripts/run_security_audit.ps1 mirrors the Python dependency audit and optional Trivy scan.",
+          "The current Python dependency baseline has no known vulnerabilities after package upgrades.",
+          "The audit is blocking; every accepted high/critical exception must be explicit, time-bounded, and documented."
+        ]
+      },
+      prod: {
+        label: "Production perimeter",
+        description: "Target v1 perimeter for controlled production rollout.",
+        path: ["clients", "edge", "ingress", "authRate", "chatPipeline", "litellmMtls", "litellm", "vllm", "toolGateway", "retrievalGateway", "audit", "evals", "prodTest", "securityAudit", "prodChecklist"],
+        steps: [
+          "Single northbound path: POST /v1/chat/completions.",
+          "One model deployment path: Uter -> LiteLLM -> vLLM.",
+          "Tool and Qdrant RAG calls are policy-bound and no direct backend access is allowed.",
+          "Rate limit, ingress defaults, Redis/Qdrant readiness, snapshots, prod-test smoke, security audit, and network isolation are production gates.",
+          "Real-data validation evidence is required before broad rollout."
+        ]
+      }
+    };
+
+    let activeLayers = new Set(Object.keys(layers));
+    let selectedNodeId = "ingress";
+    let activeScenarioId = null;
+    let searchText = "";
+
+    const layerRoot = document.getElementById("layers");
+    const scenarioRoot = document.getElementById("scenarios");
+    const zonesRoot = document.getElementById("zones");
+    const edgesRoot = document.getElementById("edges");
+    const nodesRoot = document.getElementById("nodes");
+    const detailsRoot = document.getElementById("details");
+    const scenarioDetailsRoot = document.getElementById("scenarioDetails");
+    const statusRoot = document.getElementById("mapStatus");
+    const searchInput = document.getElementById("search");
+
+    function nodeFill(layer) {
+      const colors = {
+        ingress: "#fff0ee",
+        guardrail: "#e9f6f8",
+        agent: "#f4efff",
+        model: "#eef4ff",
+        data: "#edf8f0",
+        ops: "#fff3e8"
+      };
+      return colors[layer] || "#ffffff";
+    }
+
+    function nodeStroke(layer) {
+      return layers[layer]?.color || "#6d7c8e";
+    }
+
+    function centerOf(id) {
+      const n = nodes[id];
+      return { x: n.x + n.w / 2, y: n.y + n.h / 2 };
+    }
+
+    function edgePath(from, to) {
+      const a = centerOf(from);
+      const b = centerOf(to);
+      const dx = Math.abs(b.x - a.x);
+      if (dx < 80) {
+        return `M ${a.x} ${a.y} C ${a.x + 40} ${a.y + 40}, ${b.x - 40} ${b.y - 40}, ${b.x} ${b.y}`;
+      }
+      const midX = (a.x + b.x) / 2;
+      return `M ${a.x} ${a.y} C ${midX} ${a.y}, ${midX} ${b.y}, ${b.x} ${b.y}`;
+    }
+
+    function textLines(text, maxChars) {
+      const words = text.split(" ");
+      const lines = [];
+      let current = "";
+      words.forEach((word) => {
+        const candidate = current ? `${current} ${word}` : word;
+        if (candidate.length > maxChars && current) {
+          lines.push(current);
+          current = word;
+        } else {
+          current = candidate;
+        }
+      });
+      if (current) lines.push(current);
+      return lines.slice(0, 3);
+    }
+
+    function renderLayers() {
+      layerRoot.innerHTML = "";
+      Object.entries(layers).forEach(([id, layer]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `toggle ${activeLayers.has(id) ? "" : "inactive"}`;
+        button.innerHTML = `<span class="swatch" style="background:${layer.color}"></span><span>${layer.label}</span>`;
+        button.addEventListener("click", () => {
+          if (activeLayers.has(id)) {
+            activeLayers.delete(id);
+          } else {
+            activeLayers.add(id);
+          }
+          render();
+        });
+        layerRoot.appendChild(button);
+      });
+    }
+
+    function renderScenarios() {
+      scenarioRoot.innerHTML = "";
+      Object.entries(scenarios).forEach(([id, scenario]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `scenario ${activeScenarioId === id ? "active" : ""}`;
+        button.innerHTML = `<strong>${scenario.label}</strong><span>${scenario.description}</span>`;
+        button.addEventListener("click", () => {
+          activeScenarioId = activeScenarioId === id ? null : id;
+          statusRoot.textContent = activeScenarioId
+            ? `Scenario: ${scenarios[activeScenarioId].label}`
+            : "Select a node or scenario.";
+          render();
+        });
+        scenarioRoot.appendChild(button);
+      });
+    }
+
+    function renderZones() {
+      zonesRoot.innerHTML = "";
+      zones.forEach((zone) => {
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("class", "zone");
+        rect.setAttribute("x", zone.x);
+        rect.setAttribute("y", zone.y);
+        rect.setAttribute("width", zone.w);
+        rect.setAttribute("height", zone.h);
+        zonesRoot.appendChild(rect);
+
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("class", "zone-title");
+        text.setAttribute("x", zone.x + 12);
+        text.setAttribute("y", zone.y + 22);
+        text.textContent = zone.label;
+        zonesRoot.appendChild(text);
+      });
+    }
+
+    function renderEdges() {
+      edgesRoot.innerHTML = "";
+      const scenarioPath = activeScenarioId ? scenarios[activeScenarioId].path : [];
+      const activePairs = new Set();
+      scenarioPath.forEach((id, index) => {
+        const next = scenarioPath[index + 1];
+        if (next) activePairs.add(`${id}->${next}`);
+      });
+
+      edges.forEach(([from, to, label]) => {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        const isScenario = activePairs.has(`${from}->${to}`) || activePairs.has(`${to}->${from}`);
+        path.setAttribute("class", `edge ${isScenario ? "scenario-active" : ""}`);
+        path.setAttribute("d", edgePath(from, to));
+        path.setAttribute("data-label", label);
+        edgesRoot.appendChild(path);
+      });
+    }
+
+    function nodeMatchesSearch(node) {
+      if (!searchText) return true;
+      const haystack = [
+        node.label,
+        node.summary,
+        ...(node.endpoints || []),
+        ...(node.controls || []),
+        ...(node.files || []),
+        ...(node.risks || [])
+      ].join(" ").toLowerCase();
+      return haystack.includes(searchText.toLowerCase());
+    }
+
+    function renderNodes() {
+      nodesRoot.innerHTML = "";
+      const scenarioSet = new Set(activeScenarioId ? scenarios[activeScenarioId].path : []);
+
+      Object.entries(nodes).forEach(([id, node]) => {
+        const visible = activeLayers.has(node.layer);
+        const match = nodeMatchesSearch(node);
+        const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        group.setAttribute(
+          "class",
+          [
+            "node",
+            !visible ? "hidden" : "",
+            !match ? "search-miss" : "",
+            selectedNodeId === id ? "selected" : "",
+            scenarioSet.has(id) ? "scenario-active" : ""
+          ].filter(Boolean).join(" ")
+        );
+        group.setAttribute("data-id", id);
+        group.addEventListener("click", () => {
+          selectedNodeId = id;
+          statusRoot.textContent = `Selected: ${node.label}`;
+          render();
+        });
+
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", node.x);
+        rect.setAttribute("y", node.y);
+        rect.setAttribute("width", node.w);
+        rect.setAttribute("height", node.h);
+        rect.setAttribute("fill", nodeFill(node.layer));
+        rect.setAttribute("stroke", nodeStroke(node.layer));
+        group.appendChild(rect);
+
+        textLines(node.label, Math.floor((node.w - 24) / 8)).forEach((line, i) => {
+          const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          text.setAttribute("class", "node-title");
+          text.setAttribute("x", node.x + 12);
+          text.setAttribute("y", node.y + 22 + i * 17);
+          text.textContent = line;
+          group.appendChild(text);
+        });
+        group.setAttribute("role", "button");
+        group.setAttribute("tabindex", "0");
+        group.setAttribute("aria-label", node.label);
+        group.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); group.dispatchEvent(new Event("click")); }
+        });
+
+        nodesRoot.appendChild(group);
+      });
+    }
+
+
+    function listItems(items, type) {
+      if (!items || !items.length) return "<div class=\"hint\">None listed.</div>";
+      return `<ul>${items.map((item) => {
+        return `<li>${item.includes("/") || item.includes("_") || item.includes(".") ? `<code>${item}</code>` : item}</li>`;
+      }).join("")}</ul>`;
+    }
+
+    function renderDetails() {
+      const node = nodes[selectedNodeId] || nodes.ingress;
+      const layer = layers[node.layer];
+      detailsRoot.innerHTML = `
+        <h2 class="detail-title">${node.label}</h2>
+        <div class="detail-kind"><span class="badge" style="background:${nodeFill(node.layer)};color:${layer.color};border:1px solid ${layer.color}">${layer.label}</span></div>
+        <div class="detail-text">${node.summary}</div>
+        <div class="kv"><div>Status</div><div>${statusBadges(node)}</div></div>
+        <h2>API / команды</h2>
+        ${listItems(node.endpoints)}
+        <h2 style="margin-top:14px">Проверки защиты</h2>
+        ${listItems(node.controls)}
+        
+        <h2 style="margin-top:14px">Ограничения / заметки</h2>
+        ${listItems(node.risks)}
+      `;
+    }
+
+    function statusBadges(node) {
+      const riskText = (node.risks || []).join(" ").toLowerCase();
+      const badges = [];
+      if (node.layer === "guardrail" || node.layer === "ingress") badges.push('<span class="badge ok">capability</span>');
+      if (node.layer === "ops") badges.push('<span class="badge ok">evidence</span>');
+      if (riskText.includes("production") || riskText.includes("real-data")) badges.push('<span class="badge warn">prod gate</span>');
+      if (riskText.includes("bypass") || riskText.includes("direct")) badges.push('<span class="badge risk">bypass-sensitive</span>');
+      if (!badges.length) badges.push('<span class="badge">runtime</span>');
+      return badges.join("");
+    }
+
+    function renderScenarioDetails() {
+      if (!activeScenarioId) {
+        scenarioDetailsRoot.innerHTML = `
+          <h2>Scenario Route</h2>
+          <div class="hint">Choose a scenario on the left to highlight a route across the map.</div>
+        `;
+        return;
+      }
+      const scenario = scenarios[activeScenarioId];
+      scenarioDetailsRoot.innerHTML = `
+        <h2>${scenario.label}</h2>
+        <div class="detail-text">${scenario.description}</div>
+        <div class="scenario-steps">
+          ${scenario.steps.map((step) => `<div class="scenario-step">${step}</div>`).join("")}
+        </div>
+      `;
+    }
+
+    function render() {
+      renderLayers();
+      renderScenarios();
+      renderZones();
+      renderEdges();
+      renderNodes();
+      renderDetails();
+      renderScenarioDetails();
+    }
+
+    searchInput.addEventListener("input", (event) => {
+      searchText = event.target.value.trim();
+      statusRoot.textContent = searchText ? `Search: ${searchText}` : "Select a node or scenario.";
+      render();
+    });
+
+    document.getElementById("clearSearch").addEventListener("click", () => {
+      searchText = "";
+      searchInput.value = "";
+      render();
+    });
+
+    document.getElementById("resetView").addEventListener("click", () => {
+      activeLayers = new Set(Object.keys(layers));
+      selectedNodeId = "ingress";
+      activeScenarioId = null;
+      searchText = "";
+      searchInput.value = "";
+      statusRoot.textContent = "Map reset.";
+      render();
+      document.getElementById("mapWrap").scrollTo({ left: 0, top: 0, behavior: "smooth" });
+    });
+
+    document.getElementById("selectProd").addEventListener("click", () => {
+      activeScenarioId = "prod";
+      selectedNodeId = "prodChecklist";
+      statusRoot.textContent = "Scenario: Production perimeter";
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
