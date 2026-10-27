@@ -48,44 +48,7 @@ jobs:
           if-no-files-found: error
   install:
     needs: publish
-    strategy:
-      fail-fast: false
-      matrix:
-        backend: [compose, kubernetes]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: installation-inputs
-          path: work/published
-      - name: Install Python tooling and pinned Helm
-        run: |
-          python3 -m venv .venv
-          .venv/bin/pip install -r requirements.txt
-          curl -fsSLO https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz
-          curl -fsSLO https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz.sha256sum
-          sha256sum -c helm-v3.17.3-linux-amd64.tar.gz.sha256sum
-          tar -xzf helm-v3.17.3-linux-amd64.tar.gz
-          sudo install linux-amd64/helm /usr/local/bin/helm
-      - name: Install pinned kind
-        if: matrix.backend == 'kubernetes'
-        run: |
-          curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o kind-bin
-          echo 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind-bin' | sha256sum -c -
-          sudo install kind-bin /usr/local/bin/kind
-      - name: Install using README wizard and exercise real services
-        env:
-          REGISTRY_TOKEN: ${{ github.token }}
-          BACKEND: ${{ matrix.backend }}
-        run: sudo --preserve-env=GITHUB_ACTIONS,GITHUB_RUN_ID,GITHUB_ACTOR,REGISTRY_TOKEN,BACKEND "$PWD/.venv/bin/python" scripts/installation_ci.py
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        if: always()
-        with:
-          name: installation-${{ matrix.backend }}-evidence
-          path: work/installation-evidence/
-          retention-days: 30
-          if-no-files-found: error
+    uses: ./.github/workflows/verify-installation.yml
+    with:
+      artifact_run_id: ${{ github.run_id }}
+      registry: ghcr.io

@@ -41,8 +41,10 @@ def main():
     registry = ROOT / 'work/registry'
     registry.mkdir(mode=0o700)
     token = os.environ['REGISTRY_TOKEN']
-    auth = base64.b64encode(f'{os.environ["GITHUB_ACTOR"]}:{token}'.encode()).decode()
-    installer.save(registry / 'config.json', json.dumps({'auths': {'ghcr.io': {'auth': auth}}}))
+    registry_host = os.environ.get('REGISTRY_HOST', 'ghcr.io')
+    registry_user = os.environ.get('REGISTRY_USER', os.environ['GITHUB_ACTOR'])
+    auth = base64.b64encode(f'{registry_user}:{token}'.encode()).decode()
+    installer.save(registry / 'config.json', json.dumps({'auths': {('https://index.docker.io/v1/' if registry_host == 'docker.io' else registry_host): {'auth': auth}}}))
     os.environ['DOCKER_CONFIG'] = str(registry)
     installer.save(ROOT / 'work/llm-key', '')
     try:

@@ -1,0 +1,58 @@
+name: Mirror private images to Docker Hub
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful publish-images workflow run
+        required: true
+        type: string
+      namespace:
+        description: Docker Hub user or organization namespace
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+  packages: read
+concurrency:
+  group: dockerhub-mirror
+  cancel-in-progress: false
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: installation-inputs
+          path: work/published
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Authenticate GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Mirror identical image content and enforce private visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          DOCKERHUB_NAMESPACE: ${{ inputs.namespace }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: python scripts/mirror_dockerhub.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: installation-inputs
+          path: work/published/
+          retention-days: 30
+          if-no-files-found: error
+  install:
+    needs: mirror
+    uses: ./.github/workflows/verify-installation.yml
+    with:
+      artifact_run_id: ${{ github.run_id }}
+      registry: docker.io
+    secrets: inherit
