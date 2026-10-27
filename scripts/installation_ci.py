@@ -7,6 +7,8 @@ import re
 import subprocess
 import sys
 import time
+import urllib.request
+import urllib.error
 
 import install as installer
 
@@ -33,6 +35,7 @@ def main():
     evidence.mkdir(parents=True, exist_ok=True)
     inputs = ROOT / 'work/published'
     fixture = None
+    forward = None
     cfg = None
     cluster_created = False
     name = 'uter-install-ci'
@@ -80,6 +83,18 @@ def main():
         cfg = json.loads((home / 'install.json').read_text())
         run([sys.executable, ROOT / 'scripts/install.py', 'check', '--home', home])
         run([sys.executable, ROOT / 'scripts/install.py', 'install', '--home', home])
+        if backend == 'kubernetes':
+            forward = subprocess.Popen(kube + ['-n', name, 'port-forward', 'service/' + name + '-guardrail', '18000:8000'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for attempt in range(30):
+            try:
+                with urllib.request.urlopen('http://127.0.0.1:18000/ready', timeout=2) as response:
+                    assert response.status == 200
+                break
+            except (urllib.error.URLError, TimeoutError):
+                if attempt == 29:
+                    raise
+                time.sleep(1)
         credentials = json.loads((home / 'credentials.json').read_text())
         code = ('import os\nos.environ["CI_ADMIN_PASSWORD"]=' + repr(credentials['admin']) + '\n').encode()
         code += (ROOT / 'scripts/container_acceptance.py').read_bytes()
@@ -93,23 +108,27 @@ def main():
         first = acceptance()
         (evidence / 'acceptance.json').write_text(json.dumps(first, indent=2))
         if backend == 'compose':
-            run(cmd + ['restart', 'guardrail'], env=env)
+            run(cmd + ['restart'], env=env)
             run(cmd + ['up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '300'], env=env)
-            actual = json.loads(run(cmd + ['ps', '--format', 'json'], env=env).decode().splitlines()[0])
         else:
-            run(kube + ['-n', name, 'rollout', 'restart', 'deployment/' + name + '-guardrail'])
-            run(kube + ['-n', name, 'rollout', 'status', 'deployment/' + name + '-guardrail', '--timeout=300s'])
+            for service in ('redis', 'agent', 'guardrail'):
+                run(kube + ['-n', name, 'rollout', 'restart', 'deployment/' + name + '-' + service])
+                run(kube + ['-n', name, 'rollout', 'status', 'deployment/' + name + '-' + service, '--timeout=300s'])
         second = acceptance()
         assert second['audit_first_sha256'] == first['audit_first_sha256']
         assert second['audit_lines'] > first['audit_lines']
         (evidence / 'after-restart.json').write_text(json.dumps(second, indent=2))
         (evidence / 'result.json').write_text(json.dumps(dict(backend=backend, install='pass', restart='pass',
             registry_pull='authenticated by digest', images=cfg['images'], configuration='installer generated; no runtime overrides',
+            exposed_ready_endpoint='pass', restarted_services=['redis', 'agent', 'guardrail'],
             llm='deterministic HTTP fixture', judge='disabled; optional Ollama not exercised',
             kubernetes=NODE_IMAGE if backend == 'kubernetes' else None,
             network_policy='rendered; kind default CNI does not enforce policies' if backend == 'kubernetes' else None), indent=2))
         print(f'{backend}: installation, authenticated API, toxicity, input/output blocks and persistent audit after restart passed')
     finally:
+        if forward:
+            forward.terminate()
+            forward.wait(timeout=10)
         # No raw Kubernetes Secrets, rendered config, kubeconfig or registry credentials in artifacts.
         sensitive = [token, auth]
         if home.exists():

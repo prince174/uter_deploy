@@ -11,8 +11,8 @@ import hashlib
 session = uuid.uuid4().hex
 
 
-def request(path, payload=None, token=None, form=False, base="http://localhost:8000"):
-    headers = {}
+def request(path, payload=None, token=None, form=False, base="http://localhost:8000", extra_headers=None):
+    headers = dict(extra_headers or {})
     if token:
         headers["Authorization"] = "Bearer " + token
     data = None
@@ -42,7 +42,12 @@ assert attack["block_reason"] == "input_guard", attack
 status, pii = request("/chat", {"message": "fixture-output-pii", "user_id": session + "pii"}, token)
 assert status == 200 and pii["blocked"] is True, ("output-pii", status, pii)
 assert pii["block_reason"] == "output_guard" and pii["output_issues"], pii
-status, completion = request("/v1/chat/completions", {"model": "uter-guardrail-chat", "messages": [{"role": "user", "content": "What does TechCorp do?"}], "user": "openai"}, token)
+openai_payload = {"model": "uter-guardrail-chat", "messages": [{"role": "user", "content": "What does TechCorp do?"}], "user": "openai"}
+ingress = os.environ.get('OPENAI_INGRESS_SHARED_SECRET')
+if ingress:
+    assert request('/v1/chat/completions', openai_payload, token)[0] == 403
+status, completion = request("/v1/chat/completions", openai_payload, token,
+    extra_headers={'X-Uter-Ingress-Secret': ingress} if ingress else None)
 assert status == 200 and completion["choices"], ("openai", status)
 agent_url = os.environ.get('AGENT_RUNTIME_URL', 'http://agent:8001')
 assert request("/ready", base=agent_url)[0] == 200
