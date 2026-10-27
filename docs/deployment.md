@@ -1,27 +1,27 @@
-# Установка и обновление у заказчика
+# Установка и обновление окружения
 
 ## Граница первого профиля
 
 Linux amd64, Python 3.12 для контроллера, Docker Compose >=2.30 либо Helm 3.17.3
 и Kubernetes >=1.27. Поддержка конкретной версии Kubernetes требует теста в контуре.
 Один экземпляр каждого сервиса; при обновлении возможен простой. Доступ снаружи —
-через TLS reverse proxy/Ingress заказчика. В Compose порт Guardrail привязан к localhost;
+через TLS reverse proxy/Ingress окружения. В Compose порт Guardrail привязан к localhost;
 в Helm только ClusterIP. Не открывайте Agent и Redis наружу.
 NetworkPolicy ограничивает ingress при наличии поддерживающего CNI. Egress,
-внутрикластерный TLS и внешние CA настраиваются инфраструктурой заказчика.
+внутрикластерный TLS и внешние CA настраиваются инфраструктурой окружения.
 
 ## Постоянный каталог
 
 ```
 /srv/uter/
-  customer/
+  runtime/
     site.json
     guardrail.env
     agent.env
     redis.conf
     redis-password
     audit-hmac-key
-    policies/customer.toml
+    policies/runtime.toml
     profiles/model_profiles.toml
     models/
     acceptance.py
@@ -30,7 +30,7 @@ NetworkPolicy ограничивает ingress при наличии подде�
   state.json                    # current / previous / pending
 ```
 
-Скопируйте примеры в `customer/` один раз и заполните. Контроллер их не переписывает.
+Скопируйте примеры в `runtime/` один раз и заполните. Контроллер их не переписывает.
 `site.json` определяет backend, постоянное имя установки и namespace. Не меняйте их
 между обновлениями: иначе получите другую установку и другие тома. Имя не должно
 совпадать с существующим стендом разработчика.
@@ -52,7 +52,7 @@ registry, поэтому готовность HTTP сама по себе не �
 
 ## Первая установка Compose
 
-Инструкция предназначена для отдельного сервера заказчика после выпуска настоящего
+Инструкция предназначена для отдельного сервера после выпуска настоящего
 комплекта. Не выполнять её в каталоге или под именем работающего стенда разработки.
 Tooling должен включать `examples/`, `requirements.txt` и `uterctl.py`; bundle и
 runtime-ресурсы поставляются отдельно. Нынешний bundle builder не включает examples.
@@ -61,11 +61,11 @@ runtime-ресурсы поставляются отдельно. Нынешни
 
 ```bash
 umask 077
-mkdir -p /srv/uter/customer/{policies,profiles,models}
-cp -n examples/site.json /srv/uter/customer/site.json
-cp -n examples/guardrail.env.example /srv/uter/customer/guardrail.env
-cp -n examples/agent.env.example /srv/uter/customer/agent.env
-cp -n examples/redis.conf.example /srv/uter/customer/redis.conf
+mkdir -p /srv/uter/runtime/{policies,profiles,models}
+cp -n examples/site.json /srv/uter/runtime/site.json
+cp -n examples/guardrail.env.example /srv/uter/runtime/guardrail.env
+cp -n examples/agent.env.example /srv/uter/runtime/agent.env
+cp -n examples/redis.conf.example /srv/uter/runtime/redis.conf
 ```
 
 Заполнить до `check`:
@@ -77,10 +77,10 @@ cp -n examples/redis.conf.example /srv/uter/customer/redis.conf
 | `agent.env` | Тот же общий секрет и plaintext пароль SERVICE, соответствующий SERVICE_PASSWORD_HASH |
 | `redis.conf`, `redis-password` | Один и тот же случайный пароль; в redis-password только значение |
 | `audit-hmac-key` | Отдельный случайный ключ; сохранить для проверки существующей цепочки при обновлении |
-| `policies/customer.toml` | Согласованная политика из runtime-поставки |
+| `policies/runtime.toml` | Согласованная политика из runtime-артефактов |
 | `profiles/model_profiles.toml` | Согласованные профили моделей |
 | `models/` | Согласованные локальные модели при необходимости; каталог обязателен даже пустой |
-| `acceptance.py` | Проверки клиента с ненулевым exit code при ошибке; готового универсального файла в examples нет |
+| `acceptance.py` | Проверки оператора с ненулевым exit code при ошибке; готового универсального файла в examples нет |
 
 Секреты создавать криптографическим генератором, отдельно друг от друга, не использовать
 пароли из CI. Bcrypt-хеш строится из того пароля, которым будет выполняться вход;
@@ -91,7 +91,7 @@ Compose env, символы `$` в bcrypt должны оставаться бу
 Guardrail/Agent UID 10001, Redis UID 999 (GID 1000). Redis password читают и Redis,
 и Guardrail; аудитный ключ — Guardrail. Для совместного доступа применить ACL или
 согласованную схему групп. Политики, профили и модели должны читаться UID 10001.
-Не делать весь customer доступным всем. Env-файлы читает оператор Compose; файлы,
+Не делать весь runtime доступным всем. Env-файлы читает оператор Compose; файлы,
 смонтированные через secrets/volumes, должны читаться соответствующим UID внутри.
 
 Если образы в private registry, оператор предварительно выполняет `docker login`
@@ -108,11 +108,11 @@ Guardrail/Agent UID 10001, Redis UID 999 (GID 1000). Redis password читают
 - `guardrailSecret`: env-ключи из guardrail.env плюс `AUDIT_LOG_HMAC_KEY`.
 - `agentSecret`: env-ключи из agent.env.
 - `redisSecret`: ключ `password`.
-- `policyConfigMap`: ключ `customer.toml`.
+- `policyConfigMap`: ключ `runtime.toml`.
 - `profileConfigMap`: ключ `model_profiles.toml`.
 - `modelsClaim`: подготовленный PVC с моделями.
 
-Скопируйте `examples/values.yaml` в `customer/values.yaml`, заполните endpoint LLM.
+Скопируйте `examples/values.yaml` в `runtime/values.yaml`, заполните endpoint LLM.
 Для private registry добавьте `imagePullSecrets`. Выдайте оператору необходимые RBAC.
 Контроллер не читает Secret из кластера; существование и содержимое проверяются при
 установке/acceptance. Кастомные Env не должны дублировать фиксированные служебные ключи.
@@ -135,10 +135,10 @@ PVC аудита и Redis помечены keep; uninstall не является
 конфигурации и ключей; проверьте процедуру восстановления. Внешние системы требуют
 своих backup-процедур. Контроллер не создаёт backup и не запускает миграции данных.
 
-`acceptance.py` — тест заказчика с ненулевым exit code на ошибке. Обязательные сценарии:
+`acceptance.py` — тест окружения с ненулевым exit code на ошибке. Обязательные сценарии:
 авторизация, обычный запрос, блокировка опасного запроса, сохранение аудита и реальные
 источники RAG (если используются). Его путь/аргументы находятся в `smoke_command`.
-Это доверенная команда заказчика, выполняемая на машине оператора без shell.
+Это доверенная команда окружения, выполняемая на машине оператора без shell.
 
 ## Сбой и откат
 
@@ -156,7 +156,7 @@ PVC аудита и Redis помечены keep; uninstall не является
 
 Перенесите проверенный комплект, образы и модели разрешённым каналом. Образы импортируйте
 во внутренний registry с сохранением manifest digest или заранее загрузите на нужные
-узлы. Если меняется адрес registry, поставщик должен выпустить и подписать соответствующий
+узлы. Если меняется адрес registry, сопровождающий должен выпустить и подписать соответствующий
 manifest. Не редактируйте подписанные файлы. Для Compose `--offline` запрещает pull;
 нужные digest references должны уже разрешаться локально (проверить до окна обновления).
 Для Kubernetes заранее обеспечьте доступ к внутреннему registry или кеши всех узлов;

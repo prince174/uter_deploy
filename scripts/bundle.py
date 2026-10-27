@@ -21,7 +21,7 @@ def build(manifest, output, key):
     shutil.copy2(manifest, output / "manifest.json")
     for name in ["compose", "charts", "docs"]:
         shutil.copytree(ROOT / name, output / name)
-    (output / "empty.env").write_text("# Deliberately empty; customer env files are explicit.\n")
+    (output / "empty.env").write_text("# Deliberately empty; runtime env files are explicit.\n")
     raw = json.dumps(inventory(output), sort_keys=True, indent=2).encode()
     (output / "checksums.json").write_bytes(raw)
     (output / "checksums.sig").write_bytes(base64.b64encode(private.sign(raw)))

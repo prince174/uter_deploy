@@ -24,11 +24,11 @@ class ControllerTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.home = self.root / "installation"
-        (self.home / "customer").mkdir(parents=True)
+        (self.home / "runtime").mkdir(parents=True)
         self.key = Ed25519PrivateKey.generate()
         self.pub = self.root / "trusted.pem"
         self.pub.write_bytes(self.key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
-        u.write(self.home / "customer/site.json", {"backend": "compose", "name": "uter-test", "namespace": "uter-test", "smoke_command": ["acceptance"]})
+        u.write(self.home / "runtime/site.json", {"backend": "compose", "name": "uter-test", "namespace": "uter-test", "smoke_command": ["acceptance"]})
 
     def bundle(self, m=None, name="bundle"):
         p = self.root / name
@@ -155,10 +155,10 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse((self.home / "state.json").exists())
 
     def test_compose_stable_project_and_offline(self):
-        customer = self.home / "customer"
-        for name in ["guardrail.env", "agent.env", "redis.conf", "redis-password", "audit-hmac-key", "policies/customer.toml", "profiles/model_profiles.toml"]:
-            path = customer / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text("configured")
-        (customer / "models").mkdir()
+        runtime = self.home / "runtime"
+        for name in ["guardrail.env", "agent.env", "redis.conf", "redis-password", "audit-hmac-key", "policies/runtime.toml", "profiles/model_profiles.toml"]:
+            path = runtime / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text("configured")
+        (runtime / "models").mkdir()
         with patch.object(u, "run") as run:
             u.deploy(self.home, self.bundle(), manifest(), u.site_config(self.home), offline=True)
         commands = [c.args[0] for c in run.call_args_list]
@@ -167,7 +167,7 @@ class ControllerTests(unittest.TestCase):
         self.assertIn("--no-build", commands[-1])
 
     def test_helm_uses_locked_image_values_last(self):
-        (self.home / "customer/values.yaml").write_text("{}")
+        (self.home / "runtime/values.yaml").write_text("{}")
         site = u.site_config(self.home); site["backend"] = "helm"
         with patch.object(u, "run") as run:
             u.deploy(self.home, self.bundle(), manifest(), site)

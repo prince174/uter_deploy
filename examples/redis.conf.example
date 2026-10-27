@@ -5,5 +5,5 @@ appendonly yes
 dir /data
 maxmemory 256mb
 maxmemory-policy noeviction
-# Set identical high-entropy password in this file and customer/redis-password.
+# Set identical high-entropy password in this file and runtime/redis-password.
 requirepass REPLACE

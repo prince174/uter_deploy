@@ -16,7 +16,7 @@ services:
     user: '999:1000'
     command: [redis-server, /usr/local/etc/redis/redis.conf]
     volumes:
-      - ${CUSTOMER_DIR:?}/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ${RUNTIME_DIR:?}/redis.conf:/usr/local/etc/redis/redis.conf:ro
       - redis-data:/data
     networks: [backend]
     mem_limit: 512m
@@ -32,7 +32,7 @@ services:
     image: ${AGENT_IMAGE:?release manifest required}
     user: '10001:10001'
     env_file:
-      - path: ${CUSTOMER_DIR:?}/agent.env
+      - path: ${RUNTIME_DIR:?}/agent.env
         format: raw
     environment:
       GUARDRAIL_URL: http://guardrail:8000
@@ -51,13 +51,13 @@ services:
     image: ${GUARDRAIL_IMAGE:?release manifest required}
     user: '10001:10001'
     env_file:
-      - path: ${CUSTOMER_DIR:?}/guardrail.env
+      - path: ${RUNTIME_DIR:?}/guardrail.env
         format: raw
     environment:
       REDIS_HOST: redis
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
       AGENT_RUNTIME_URL: http://agent:8001
-      SECURITY_POLICY_PATH: /app/policies/customer.toml
+      SECURITY_POLICY_PATH: /app/policies/runtime.toml
       MODEL_PROFILE_PATH: /app/profiles/model_profiles.toml
       AUDIT_LOG_PATH: /var/lib/uter/audit/audit.jsonl
       AUDIT_LOG_HMAC_KEY_FILE: /run/secrets/audit_hmac_key
@@ -73,9 +73,9 @@ services:
       TRANSFORMERS_OFFLINE: '1'
     ports: ['127.0.0.1:${GUARDRAIL_PORT:-8000}:8000']
     volumes:
-      - ${CUSTOMER_DIR:?}/policies:/app/policies:ro
-      - ${CUSTOMER_DIR:?}/profiles:/app/profiles:ro
-      - ${CUSTOMER_DIR:?}/models:/app/models:ro
+      - ${RUNTIME_DIR:?}/policies:/app/policies:ro
+      - ${RUNTIME_DIR:?}/profiles:/app/profiles:ro
+      - ${RUNTIME_DIR:?}/models:/app/models:ro
       - audit-data:/var/lib/uter/audit
     secrets: [redis_password, audit_hmac_key]
     networks: [backend, outbound]
@@ -98,6 +98,6 @@ volumes:
   audit-data: {}
 secrets:
   redis_password:
-    file: ${CUSTOMER_DIR:?}/redis-password
+    file: ${RUNTIME_DIR:?}/redis-password
   audit_hmac_key:
-    file: ${CUSTOMER_DIR:?}/audit-hmac-key
+    file: ${RUNTIME_DIR:?}/audit-hmac-key

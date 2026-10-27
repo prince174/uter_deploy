@@ -22,7 +22,7 @@ def main():
     evidence.mkdir(parents=True, exist_ok=True)
     source = ROOT / "work/images/protected-guardrail/evidence"
     shutil.copytree(source / "policies", home / "policies")
-    shutil.copyfile(home / "policies/default.toml", home / "policies/customer.toml")
+    shutil.copyfile(home / "policies/default.toml", home / "policies/runtime.toml")
     shutil.copytree(source / "profiles", home / "profiles")
     (home / "models").mkdir()
     admin, service, shared, redis_password, jwt, hmac = [secrets.token_hex(24) for _ in range(6)]
@@ -47,7 +47,7 @@ def main():
             "depends_on": {"fixture": {"condition": "service_started"}}}}}
     (home / "override.json").write_text(json.dumps(override))
     env = os.environ.copy()
-    env.update(CUSTOMER_DIR=str(home), GUARDRAIL_IMAGE="uter-guardrail-protected", AGENT_IMAGE="uter-agent-protected",
+    env.update(RUNTIME_DIR=str(home), GUARDRAIL_IMAGE="uter-guardrail-protected", AGENT_IMAGE="uter-agent-protected",
         REDIS_IMAGE="redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf", GUARDRAIL_PORT="18000")
     cmd = ["docker", "compose", "--project-name", "uter-compiled-ci", "--env-file", home / "empty.env", "-f", ROOT / "compose/compose.yaml", "-f", home / "override.json"]
     try:

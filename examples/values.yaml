@@ -8,5 +8,5 @@ modelsClaim: uter-models
 ingressNamespace: ingress-nginx
 guardrailEnv:
   UPSTREAM_MODE: litellm_openai
-  UPSTREAM_URL: https://llm.customer.example
-  UPSTREAM_OPENAI_MODEL: customer-model
+  UPSTREAM_URL: https://llm.runtime.example
+  UPSTREAM_OPENAI_MODEL: runtime-model

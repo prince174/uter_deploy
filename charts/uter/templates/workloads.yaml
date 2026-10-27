@@ -70,7 +70,7 @@ spec:
               valueFrom:
                 secretKeyRef: {name: {{ required "redisSecret required" $.Values.redisSecret }}, key: password}
             - {name: AGENT_RUNTIME_URL, value: {{ printf "http://%s-agent:8001" $.Release.Name | quote }}}
-            - {name: SECURITY_POLICY_PATH, value: /app/policies/customer.toml}
+            - {name: SECURITY_POLICY_PATH, value: /app/policies/runtime.toml}
             - {name: MODEL_PROFILE_PATH, value: /app/profiles/model_profiles.toml}
             - {name: AUDIT_LOG_PATH, value: /var/lib/uter/audit/audit.jsonl}
             - {name: AUDIT_LOG_VERIFY_ON_STARTUP, value: 'true'}
@@ -120,7 +120,11 @@ spec:
         - name: profiles
           configMap: {name: {{ required "profileConfigMap required" $.Values.profileConfigMap }}}
         - name: models
+          {{- if $.Values.useEmbeddedModels }}
+          emptyDir: {}
+          {{- else }}
           persistentVolumeClaim: {claimName: {{ required "modelsClaim required" $.Values.modelsClaim }}}
+          {{- end }}
         {{- end }}
 ---
 apiVersion: v1

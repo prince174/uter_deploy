@@ -5,7 +5,13 @@ __pycache__/
 .tools/
 work/
 dist/
-customer/
+runtime/
 *.key
 *.pem
 !examples/*.example
+
+# Installer output belongs outside the checkout; defense against accidental commits.
+**/credentials.json
+**/install.json
+**/install-state.json
+**/resources.yaml

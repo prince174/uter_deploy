@@ -53,7 +53,7 @@ jobs:
         run: |
           for service in guardrail agent; do
             docker run --rm --network none --read-only --tmpfs /tmp:size=256m --memory=4g --cpus=2 \
-              -e JWT_SECRET=ci-only-secret-not-a-customer-credential \
+              -e JWT_SECRET=ci-only-secret-not-a-runtime-credential \
               -e AGENT_INTERNAL_SHARED_SECRET=ci-only-internal-secret \
               -e GUARDRAIL_SERVICE_PASSWORD=ci-only-service-password \
               -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \

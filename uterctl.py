@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Customer release controller. No product sources or Docker SDK required."""
+"""Runtime release controller. No product sources or Docker SDK required."""
 from __future__ import annotations
 
 import argparse
@@ -104,7 +104,7 @@ def locked(home):
 
 
 def site_config(home):
-    site = read(home / "customer/site.json")
+    site = read(home / "runtime/site.json")
     if site.get("backend") not in {"compose", "helm"}:
         raise ValueError("backend must be compose or helm")
     for field in ["name", "namespace"]:
@@ -112,28 +112,28 @@ def site_config(home):
             raise ValueError(f"Invalid {field}")
     smoke = site.get("smoke_command")
     if not isinstance(smoke, list) or not smoke or not all(isinstance(x, str) for x in smoke):
-        raise ValueError("Configure a customer-owned smoke_command argv list")
+        raise ValueError("Configure a runtime-owned smoke_command argv list")
     return site
 
 
 def render_env(home, bundle, m):
     env = os.environ.copy()
     env.update({k.upper() + "_IMAGE": v for k, v in m["images"].items()})
-    env["CUSTOMER_DIR"] = (home / "customer").as_posix()
+    env["RUNTIME_DIR"] = (home / "runtime").as_posix()
     return env
 
 
 def deploy(home, bundle, m, site, *, check=False, offline=False):
     if site["backend"] == "compose":
-        customer = home / "customer"
-        for name in ["guardrail.env", "agent.env", "redis.conf", "redis-password", "audit-hmac-key", "policies/customer.toml", "profiles/model_profiles.toml"]:
-            p = customer / name
+        runtime = home / "runtime"
+        for name in ["guardrail.env", "agent.env", "redis.conf", "redis-password", "audit-hmac-key", "policies/runtime.toml", "profiles/model_profiles.toml"]:
+            p = runtime / name
             if not p.is_file() or not p.stat().st_size:
-                raise ValueError(f"Required customer file: {name}")
+                raise ValueError(f"Required runtime file: {name}")
             if "REPLACE" in p.read_text(encoding="utf-8"):
-                raise ValueError(f"Unconfigured customer file: {name}")
-        if not (customer / "models").is_dir():
-            raise ValueError("customer/models directory required")
+                raise ValueError(f"Unconfigured runtime file: {name}")
+        if not (runtime / "models").is_dir():
+            raise ValueError("runtime/models directory required")
         cmd = ["docker", "compose", "--project-name", site["name"], "--env-file", str(bundle / "empty.env"), "-f", str(bundle / "compose/compose.yaml")]
         env = render_env(home, bundle, m)
         run(cmd + ["config", "--quiet"], env=env)
@@ -143,9 +143,9 @@ def deploy(home, bundle, m, site, *, check=False, offline=False):
             run(cmd + ["pull"], env=env)
         run(cmd + ["up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "300"], env=env)
     else:
-        values = home / "customer/values.yaml"
+        values = home / "runtime/values.yaml"
         if not values.is_file():
-            raise ValueError("customer/values.yaml required")
+            raise ValueError("runtime/values.yaml required")
         generated = home / "release-values.json"
         write(generated, {"images": m["images"], "productVersion": m["version"]})
         chart = bundle / "charts/uter"
@@ -159,7 +159,7 @@ def deploy(home, bundle, m, site, *, check=False, offline=False):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status"])
-    parser.add_argument("--home", type=Path, default=Path("customer-installation"))
+    parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
     parser.add_argument("--backup-receipt", type=Path)
@@ -231,12 +231,12 @@ def main(argv=None):
         write(state_path, state)
         try:
             deploy(home, destination, m, site, offline=args.offline)
-            run(site["smoke_command"], cwd=home / "customer")
+            run(site["smoke_command"], cwd=home / "runtime")
         except Exception:
             print("Update incomplete. State retained; inspect workloads before explicit rollback.", file=sys.stderr)
             raise
         write(state_path, {"current": m, "previous": state["current"], "pending": None})
-        print(f"Uter {m['version']} applied and customer smoke test passed")
+        print(f"Uter {m['version']} applied and runtime smoke test passed")
 
 
 if __name__ == "__main__":
