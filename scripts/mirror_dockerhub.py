@@ -15,8 +15,18 @@ def api(path, token=None, data=None):
         headers['Authorization'] = 'Bearer ' + token
     request = urllib.request.Request('https://hub.docker.com' + path,
         data=json.dumps(data).encode() if data is not None else None, headers=headers)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        try:
+            payload = json.load(error)
+            detail = str(payload.get('message', payload.get('detail', 'Request rejected')))
+            detail = re.sub(r'[A-Za-z0-9_.-]{40,}', '[REDACTED]', detail)
+            error.safe_detail = detail[:400]
+        except (ValueError, AttributeError):
+            error.safe_detail = 'Request rejected'
+        raise
 
 
 def private_repository(namespace, name, token):
@@ -93,4 +103,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except urllib.error.HTTPError as error:
+        raise SystemExit(f'Docker Hub API HTTP {error.code}: {getattr(error, "safe_detail", "Request rejected")}')
