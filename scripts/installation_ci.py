@@ -11,6 +11,7 @@ import urllib.request
 import urllib.error
 
 import install as installer
+from smoke_http import check as smoke_http
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_IMAGE = 'python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea'
@@ -95,6 +96,7 @@ def main():
                     raise
                 time.sleep(1)
         credentials = json.loads((home / 'credentials.json').read_text())
+        (evidence / 'http-smoke.json').write_text(json.dumps(smoke_http('http://127.0.0.1:18000', 'admin', credentials['admin']), indent=2))
         code = ('import os\nos.environ["CI_ADMIN_PASSWORD"]=' + repr(credentials['admin']) + '\n').encode()
         code += (ROOT / 'scripts/container_acceptance.py').read_bytes()
         cmd, env = installer.commands(home, cfg)

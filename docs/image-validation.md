@@ -1,5 +1,9 @@
 # Реальные образы: сборка и проверка
 
+> Исторический отчёт этапа сборки. Более поздняя публикация приватного registry и
+> успешная реальная установка Compose/Kubernetes: [актуальный отчёт](registry-installation.md).
+
+
 Workflow `protected-images.yml` запускается вручную в uter_deploy после merge кандидата.
 Он читает `candidates/source.json` из того же commit деплоя, а не последнюю ветку Uter.
 Исходники скачиваются на временный GitHub-hosted Ubuntu runner; исходный рабочий каталог

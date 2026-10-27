@@ -1,103 +1,118 @@
 # Uter Deploy
 
-Отдельный репозиторий развёртывания Uter: Compose, Helm, проверка подписанного комплекта,
-обновление и откат. Основной проект `G:\code\uter` используется только для чтения.
-Исходники продукта, модели и локальные секреты сюда не копируются.
+Самостоятельное развёртывание Guardrail + Agent + Redis через Docker Compose или
+Kubernetes/Helm. Для запуска нужны готовые образы, настройки и внешний LLM API.
+Исходники сервиса и сборка на машине установки не требуются.
 
-## Автоматическая первая установка
+## Что уже проверено
 
-Установщик `scripts/install.py` готовит Compose или Kubernetes/Helm из одинаковых
-параметров. Три шага: **prepare → check → install**. По умолчанию ничего не запускается.
-Команды ниже выполняются на отдельном Linux amd64 сервере или Linux-машине управления
-кластером. Нужны Python 3.11+ (рекомендуется 3.12), для Compose — Docker и Compose >=2.30,
-для Kubernetes — kubectl, Helm 3.17.3, рабочий kubeconfig, доступ к registry и StorageClass.
-Для Compose: минимум 4 логических CPU, лимиты контейнеров суммарно 5 GiB RAM плюс ОС.
+27.10.2026 реальные образы опубликованы в **приватный GHCR**. Анонимное скачивание
+запрещено; установка скачивает образы с авторизацией по неизменяемым digest.
+В [изолированном CI](https://github.com/prince174/uter_deploy/actions/runs/40531415005)
+успешно выполнены обе установки с помощью `scripts/install.py`:
 
-### Что нужно получить заранее
+- Compose: все сервисы healthy, `/ready` доступен на локальном порту.
+- Kubernetes 1.35.8 / kind 0.33.0: три Ready Pod, PVC Redis и аудита подключены,
+  `/ready` доступен через port-forward.
+- Вход с сгенерированным паролем, обычный запрос, блокировка инъекции и PII в ответе,
+  OpenAI API с проверкой ingress-secret, защита Agent, реальная toxicity-модель.
+- Перезапуск Redis, Agent и Guardrail, повторный прогон и проверка сохранённой
+  HMAC-цепочки аудита.
 
-- Три опубликованных образа Guardrail, Agent, Redis с **настоящими registry digest**.
-  Docker image ID из `docker load` не является registry digest. Теги `latest` не принимаются.
-- `policy.toml` и `model_profiles.toml` из runtime-артефактов той же сборки.
-  Установщик проверяет TOML-синтаксис; семантическая совместимость проверяется сервисом.
-- Адрес OpenAI-совместимого LLM, имя модели и API-ключ, если он требуется.
-  Например, base URL `https://llm.example/v1`; `/chat/completions` добавляет сервис.
-  Локальный LLM, RAG, GPU, TLS и загрузка дополнительных моделей не устанавливаются.
-- Защищённые образы с встроенной toxicity-моделью. Установщик использует offline-режим;
-  каталог `/app/models` пустой. Для дополнительных моделей настройте отдельное хранилище
-  по [расширенной инструкции](docs/deployment.md).
+LLM в CI — детерминированный HTTP-сервис. Проверка не подтверждает качество внешней
+LLM/RAG, работу дополнительного Ollama judge, TLS, высокую нагрузку, HA или переход
+между версиями. kind использует стандартный CNI без применения NetworkPolicy:
+правила рендерятся, но их сетевое действие этим тестом не проверено.
 
-**Registry-релиз пока не опубликован.** Установщик уже можно проверять и готовить,
-но установка требует доступных образов. Он не объявляет архивы CI выпущенным релизом
-и не заменяет проверку подписи: для управляемого обновления используется `uterctl.py`.
-При прямой первой установке доверие к digest и runtime-файлам проверяется оператором.
-Известные findings образов и границы тестирования перечислены ниже.
+Известные findings исходной проверки образов сохраняются: Guardrail — 0 Critical /
+44 High, Agent — 5 Critical / 67 High. Публикация не означает исправление этих findings
+или security approval. [Подробности и границы](docs/readiness.md).
+
+## 1. Получить установочные файлы
+
+Нужен доступ к приватному репозиторию и registry. На Linux amd64 установите Python
+3.11+ (рекомендуется 3.12), Git и GitHub CLI. Для Compose нужны Docker и Compose >=2.30;
+для Kubernetes — kubectl, kubeconfig и Helm 3.17.3. Узлы должны поддерживать linux/amd64,
+создание PVC и исходящие соединения к registry и LLM.
 
 ```bash
-git clone https://github.com/prince174/uter_deploy.git
+gh auth login
+gh repo clone prince174/uter_deploy
 cd uter_deploy
+git checkout deploy-2026.10.27
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+mkdir -p incoming
+gh release download deploy-2026.10.27 --repo prince174/uter_deploy \
+  --pattern 'installation-inputs.tar.gz*' --dir incoming
+(cd incoming && sha256sum -c installation-inputs.tar.gz.sha256)
+tar -xzf incoming/installation-inputs.tar.gz -C incoming
 ```
 
-В `/srv/incoming/images.json` сохраните объект следующей формы, заменив **все** значения
-реальными digest. Этот пример намеренно не устанавливается:
+Комплект содержит `images.json`, `policy.toml`, `model_profiles.toml` и метаданные
+публикации. Digest уже заполнены — ничего придумывать или копировать из Docker image ID
+не нужно. SHA256 архива выявляет повреждение; это не независимая подпись. Доступ и
+подлинность комплекта здесь опираются на доверенный GitHub-репозиторий и HTTPS.
+Подписанный комплект для `uterctl.py` пока не выпущен.
 
-```json
-{
-  "guardrail": "REGISTRY/uter-guardrail@sha256:REAL_DIGEST",
-  "agent": "REGISTRY/uter-agent@sha256:REAL_DIGEST",
-  "redis": "REGISTRY/redis@sha256:REAL_DIGEST"
-}
-```
+Образы этой версии:
 
-### Compose: подготовить и запустить
+| Сервис | Registry reference |
+|---|---|
+| Guardrail | `ghcr.io/prince174/uter-guardrail@sha256:868f5b4868598c4fae7434f1086a1055cad8a34de01655fc5ff4b6007794b240` |
+| Agent | `ghcr.io/prince174/uter-agent@sha256:030e3f50d9b7a62b606003d511e89815bd1b35b8be94b4d4b0badf44630facd1` |
+| Redis | `ghcr.io/prince174/uter-redis@sha256:57b179f55b5f69f0674e7c93d5e1130bacb75f44398b02c610da439e1e3482a6` |
 
-Выполняйте из корня checkout. Для bind-mount установщик поддерживает только локальный
-Docker context `default` с Unix socket. Имя проекта должно быть новым; существующие
-контейнеры, сети или volumes с тем же Compose project запрещены.
+## 2A. Установить через Compose
+
+Используйте отдельный сервер и новое имя проекта. Ориентир по ресурсам: 4 логических
+CPU, лимиты контейнеров суммарно 5 GiB RAM плюс запас ОС. В CI проверен малый профиль
+с `--guardrail-cpus 2`; это не оценка производительности под нагрузкой.
+Поддерживается локальный Docker context `default` с Unix socket; удалённый daemon
+для установки с bind-mount не поддерживается.
+
+Для скачивания из GHCR используйте GitHub PAT classic с `read:packages` и доступом
+к пакетам. Вход в `gh` не заменяет вход Docker. Пароль в приглашении — PAT, не пароль
+аккаунта. Ввод скрыт, токен не передавайте в аргументах процесса.
 
 ```bash
+sudo docker login ghcr.io --username YOUR_GITHUB_LOGIN
 sudo .venv/bin/python scripts/install.py prepare \
   --home /srv/uter-instance --backend compose --name uter-instance \
-  --images /srv/incoming/images.json \
-  --policy /srv/incoming/policy.toml \
-  --profiles /srv/incoming/model_profiles.toml
-```
-
-Мастер спросит адрес LLM, имя модели и скрыто API-ключ. Для сервиса без авторизации
-оставьте API-ключ пустым. В доверенной внутренней сети HTTP требует `--allow-http-llm`.
-Для автоматизированного запуска задайте `--llm-url`, `--llm-model` и `--llm-key-file`
-с путём к защищённому файлу; секрет не помещается в аргументы процесса.
-`--port 18000` задаёт локальный HTTP-порт (это значение по умолчанию).
-
-```bash
+  --inputs "$PWD/incoming"
 sudo .venv/bin/python scripts/install.py check --home /srv/uter-instance
-# Для приватного registry выполните docker login в том же контексте пользователя root.
-# Используйте --password-stdin; пароль не помещайте в командную строку.
 sudo .venv/bin/python scripts/install.py install --home /srv/uter-instance
 curl --fail http://127.0.0.1:18000/ready
 ```
 
-`check` только рендерит конфигурацию, не обращается к Docker daemon/LLM и не запускает
-контейнеры. `install` скачивает три образа, выставляет права bind-mount файлов,
-запускает сервисы и ждёт readiness до 300 секунд. Исходники не нужны, сборки отсутствуют.
-Доступ снаружи настройте через TLS reverse proxy; порт слушает только `127.0.0.1`.
+Мастер спросит URL OpenAI-совместимого LLM, имя модели и скрыто API-ключ.
+Пример base URL: `https://llm.example/v1`. Путь `/chat/completions` добавляется сервисом.
+Если ключ не нужен, оставьте его пустым. HTTP разрешается только явным
+`--allow-http-llm` для доверенной внутренней сети.
 
-### Kubernetes: подготовить и запустить
+`prepare` генерирует пароли и конфигурацию, ничего не запускает. `check` проверяет
+рендеринг без обращения к daemon/LLM. `install` скачивает образы, выставляет права,
+запускает сервисы и ждёт готовности до 300 секунд. Порт по умолчанию — 18000, изменить
+можно через `prepare --port 18001`. Он привязан к `127.0.0.1`; для внешнего доступа
+нужен TLS reverse proxy. Agent и Redis наружу не публикуются.
 
-Используйте **новый namespace**, равный `--name`, и явный `--context` из kubeconfig.
-Установщик не переключает текущий context и отказывается использовать существующий
-namespace. Права нужны на создание namespace, Secret, ConfigMap, PVC, Deployment,
-Service и NetworkPolicy. CNI должен поддерживать NetworkPolicy, узлы — linux/amd64.
+## 2B. Установить в Kubernetes
+
+Нужен **новый namespace**, равный `--name`. `--context` обязателен; текущий context
+в kubeconfig установщик не меняет. Нужны права создавать namespace, Secret, ConfigMap,
+PVC, Deployment, Service и NetworkPolicy. Ingress и TLS настраиваются отдельно.
+
+Создайте отдельный файл доступа к registry:
 
 ```bash
+REGISTRY_CONFIG_DIR="$HOME/.config/uter-registry"
+mkdir -p "$REGISTRY_CONFIG_DIR"
+chmod 700 "$REGISTRY_CONFIG_DIR"
+docker --config "$REGISTRY_CONFIG_DIR" login ghcr.io --username YOUR_GITHUB_LOGIN
 .venv/bin/python scripts/install.py prepare \
   --home "$HOME/uter-k8s" --backend kubernetes --name uter-instance \
-  --context MY_CONTEXT \
-  --images /srv/incoming/images.json \
-  --policy /srv/incoming/policy.toml \
-  --profiles /srv/incoming/model_profiles.toml \
-  --storage-class MY_STORAGE_CLASS
+  --context MY_CONTEXT --inputs "$PWD/incoming" \
+  --registry-config "$REGISTRY_CONFIG_DIR/config.json"
 .venv/bin/python scripts/install.py check --home "$HOME/uter-k8s"
 .venv/bin/python scripts/install.py install --home "$HOME/uter-k8s"
 kubectl --context MY_CONTEXT -n uter-instance get pods,pvc
@@ -106,191 +121,106 @@ kubectl --context MY_CONTEXT -n uter-instance port-forward svc/uter-instance-gua
 curl --fail http://127.0.0.1:18000/ready
 ```
 
-Если в кластере есть default StorageClass, `--storage-class` можно опустить. Создаются
-PVC для Redis (2 GiB) и аудита (10 GiB); модель читается из образа, отдельный models PVC
-не нужен. Для приватного registry добавьте к `prepare`
-`--registry-config /secure/registry-config.json`: отдельный Docker config.json с inline
-`auths` для нужного registry. Он превращается в imagePullSecret нового namespace;
-внешние credential helpers не поддерживаются. Не передавайте общий конфиг со всеми
-вашими registry. Для публичных образов этот параметр не нужен.
+При отсутствии default StorageClass добавьте `prepare --storage-class YOUR_CLASS`.
+Создаются PVC Redis 2 GiB и аудита 10 GiB, Secret/ConfigMap и imagePullSecret.
+Проверенные образы содержат toxicity-модель; отдельный models PVC не нужен.
+Для дополнительных моделей — [расширенные настройки](docs/deployment.md).
 
-Установщик создаёт namespace и ресурсы, затем запускает Helm install с ожиданием 5 минут.
-ClusterIP доступен внутри кластера; для внешнего доступа настройте Ingress/TLS в namespace
-`ingress-nginx` либо измените `ingressNamespace` в сгенерированном `values.yaml` до установки.
-Настройки Secrets уже включают LLM: изменяйте одноимённые поля `guardrailEnv` согласованно,
-поскольку явный `env` в Deployment имеет приоритет над `envFrom`.
-Живой кластер в этой работе не запускался: проверены генерация, Helm lint/template и
-контракты, а не интеграция с конкретным CSI/CNI/registry.
+Файл registry должен содержать inline `auths`; credential helpers внутри Kubernetes
+не запускаются. Не передавайте общий конфиг с доступами ко всем registry.
+Для внешнего Ingress используется namespace `ingress-nginx`; если он другой,
+измените `ingressNamespace` в сгенерированном `values.yaml` **до** install.
 
-### Что генерируется и как хранить
+## 3. Проверить работу с реальным LLM
 
-В `--home` создаются `runtime/`, `credentials.json`, `install.json`, копии Compose/Helm
-и пустой `empty.env`. Для Kubernetes дополнительно — `resources.yaml` и `values.yaml`.
-Каталог `runtime/` содержит env-файлы, согласованные пароли Redis, политики, профили и
-ключ HMAC аудита. Случайные секреты независимы; пароли admin/user/service хранятся в
-сервисе как bcrypt-хеши. Пароли для первого входа (`admin`, `user`) и ingress API-ключ
-находятся в `credentials.json`; сервисная учётная запись — `agent-service`.
-
-На POSIX каталог создаётся с правами 0700, секретные файлы — 0600. При Compose install
-права читаемых контейнерами файлов ограничиваются UID/GID 10001 и Redis 999/1000.
-Не используйте `chmod -R 777`. На Windows `prepare/check` пригодны для проверки;
-эквивалентную защиту ACL настройте отдельно, запуск установки поддержан на Linux.
-
-Весь `--home` храните вне Git, резервируйте зашифрованным способом. `resources.yaml`
-содержит настоящие секреты, Kubernetes Secret не является шифрованием данных сам по себе.
-Повторный `prepare` в существующий каталог запрещён и не меняет пароли. До install
-можно отредактировать подготовленные параметры; копии шаблонов фиксируются на момент
-prepare, поэтому `git pull` не меняет существующее окружение автоматически.
-
-### Если установка не завершилась
-
-Ошибки внешних команд выводятся без их stdout/stderr: вывод может содержать секреты.
-`install-state.json` остаётся `pending`, повторный install блокируется. Уже созданные
-ресурсы и volumes сохраняются. Для диагностики проверьте занятость порта, доступ к
-registry/LLM, Secret, события Pod и состояние PVC. Не публикуйте необработанные логи:
-они могут содержать конфиденциальные данные.
-
-В Kubernetes используйте `kubectl --context MY_CONTEXT -n uter-instance describe pod POD`
-и `get events`; исправьте причину, затем осознанно продолжите через Helm с теми же
-`values.yaml`/Secret. В Compose используйте те же `install.json`, `RUNTIME_DIR`, имена
-образов и project name при ручной диагностике. Не удаляйте каталог и volumes ради повтора:
-это потеря ключей аудита и состояния. Автоматического удаления/отката данных нет.
-
-Readiness не заменяет проверку поведения: после запуска проверьте вход, обычный запрос
-к реальному LLM, блокировку запрещённого ввода/вывода и целостность аудита.
-Обновление существующих версий выполняется через подписанный комплект и `uterctl.py`
-с резервной копией. Для перехода от прямой установки к управляемой нужен отдельный
-проверенный план переноса состояния; автоматического принятия такой установки пока нет.
-Новый формат конфигурации использует `runtime/`, `RUNTIME_DIR` и `runtime.toml`;
-старые подготовленные каталоги не переименовываются автоматически. Chart: 0.2.0.
-
-## Текущий статус
-
-Реализованы Compose, Helm и контроллер `uterctl.py`. Реальные Guardrail и Agent
-собраны на GitHub-hosted Linux runner из зафиксированного commit продукта.
-Проверены загрузка скомпилированных модулей, OpenAPI и офлайн inference toxicity-модели;
-проверка всех слоёв не обнаружила собственных Python-файлов в `/app`.
-Локальный релиз ещё не опубликован: security-аудит выявил уязвимости зависимостей,
-Compose acceptance и restart прошли; живой Helm и межверсионное обновление ещё не проверены.
-Пример manifest остаётся неустанавливаемым.
-Доказательства и границы проверок: [проверка образов](docs/image-validation.md).
-[Усиление защиты кода и измерение реверса](docs/image-protection.md): полный обход слоёв,
-проверка точных копий исходников, явный состав runtime, docstrings и ELF-отчёты.
-
-Первый профиль: Guardrail + Agent + Redis; LLM окружения подключается по API.
-vLLM, LiteLLM, Qdrant, Confluence, GPU-драйверы и PKI здесь не устанавливаются.
-Их интеграционные параметры задаёт оператор. Это не готовый полностью автономный RAG-стенд.
-
-## Файлы
-
-| Каталог | Назначение |
-|---|---|
-| `compose/` | Самостоятельный Compose без build и доступа к исходникам |
-| `charts/uter/` | Helm chart, ClusterIP, NetworkPolicy, PVC |
-| `releases/` | Версии продукта и точные digest всех образов |
-| `packaging/` | Экспериментальный рецепт компиляции собственных Python-модулей |
-| `scripts/` | Подпись комплекта, проверки, watcher, кандидат версии |
-| `examples/` | Шаблоны локальных настроек без секретов |
-| `docs/` | Инструкции по выпуску и эксплуатации |
-
-## Готовность образов и релиза
-
-**Пока нет готового локального релиза.** `git clone` и `docker compose up` недостаточно:
-в `releases/` находится только неустанавливаемый `example.json`, а не выпущенный manifest.
-Архивы CI — кандидаты для проверки, не подписанный комплект установки.
-
-| Проверка | Состояние |
-|---|---|
-| Реальные Guardrail/Agent без собственных Python-файлов в `/app` | Проверены все слои; runtime прошёл |
-| Compose: первый запуск, API/auth, блокировки, аудит, restart | Прошёл в изолированном CI с тестовым LLM |
-| Helm | Только lint/template; живой кластер ещё не проверен |
-| Security образов | Guardrail: 0 Critical / 44 High; Agent: 5 Critical / 67 High |
-| Redis, tooling, все внешние сервисы | Не покрыты двумя отчётами образов Guardrail/Agent |
-| Registry, действительный release manifest, подпись и доверенный ключ | Локальный комплект ещё не выпущен |
-| Межверсионное обновление, откат данных, реальный LLM/RAG | Требуют проверки перед соответствующим сценарием развёртывания |
-
-Состояние и границы аудита с обновлением 26–27.10.2026: [готовность и защита кода](docs/readiness.md).
-Счётчики означают findings сканера, а не доказанную эксплуатацию через API.
-
-## Первая установка (после выпуска подписанного комплекта)
-
-1. Получить от сопровождающего tooling с `uterctl.py`, подписанный bundle, независимый
-   публичный ключ, доступ к образам по digest, runtime-политики/профили/модели и acceptance-тест.
-   Номера `1.0.0`/`1.1.0` в документации — примеры, а не существующие релизы.
-2. Подготовить отдельный Linux amd64 сервер: Python 3.12, Compose >=2.30 либо
-   согласованный кластер и Helm 3.17.3. Для Compose текущий лимит Guardrail требует
-   минимум 4 логических CPU; сумма лимитов памяти трёх сервисов — 5 GiB, плюс запас
-   для ОС и прочих процессов. Это не подтверждённый нагрузочным тестом sizing.
-3. Создать `/srv/uter/runtime`, заполнить конфигурацию по
-   [пошаговой инструкции](docs/deployment.md#первая-установка-compose).
-   Для Helm использовать раздел [Helm](docs/deployment.md#helm), сменить backend в site.json.
-4. Проверить доступ к registry и внешнему LLM, настроить TLS, права на секреты,
-   постоянные хранилища и локальный acceptance-тест. Сам репозиторий TLS/LLM не устанавливает.
-5. Выполнить `verify`, затем `check` и `apply` с фактическими путями ниже.
-6. Проверить локальный acceptance и внешний TLS endpoint; сохранить исходную
-   конфигурацию, публичный ключ и процедуру восстановления.
-
-Из каталога установленного tooling (Linux, пути к уже полученным файлам):
+Пароли учётных записей `admin`, `user`, `agent-service` и ключ OpenAI ingress записаны
+в `credentials.json` внутри `--home`. Файл приватный; не пересылайте его и не коммитьте.
+Возьмите пароль admin в защищённом терминале/редакторе и выполните:
 
 ```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-# Заменить VERSION на фактическую выпущенную версию.
-BUNDLE=/srv/incoming/uter-VERSION
-KEY=/etc/uter/publisher.pub
-.venv/bin/python uterctl.py verify --bundle "$BUNDLE" --key "$KEY"
-.venv/bin/python uterctl.py check --home /srv/uter --bundle "$BUNDLE" --key "$KEY"
-.venv/bin/python uterctl.py apply --home /srv/uter --bundle "$BUNDLE" --key "$KEY"
-.venv/bin/python uterctl.py status --home /srv/uter
+.venv/bin/python scripts/smoke_http.py --url http://127.0.0.1:18000
 ```
 
-При первой установке receipt не нужен; при обновлении существующей — обязателен.
-`check` проверяет конфигурацию/рендеринг, но не доступность registry, LLM, Secret/PVC
-в Kubernetes и не пригодность резервной копии. `status` не заменяет live health.
+Скрипт спросит пароль скрыто, проверит readiness, вход, зависимости и обычный `/chat`
+запрос. Токены и текст ответа не печатаются. Запрос поступает в настроенную LLM и может
+расходовать её квоту. Это первичная проверка, не полноценный нагрузочный или security-тест.
 
-## Быстрый старт разработки
+Для `/v1/chat/completions` нужны **оба** заголовка: `Authorization: Bearer <JWT>` и
+`X-Uter-Ingress-Secret: <openai_ingress_key>`. Последний обычно добавляет доверенный
+reverse proxy. Без него endpoint отвечает 403. `/auth/token` принимает form-urlencoded
+`username` и `password`; `/chat` использует JWT.
 
-Python 3.12, Docker Compose >=2.30 (поддержка raw env_file), Helm 3.17.3.
-Helm 4 пока не входит в проверенный контракт контроллера.
+Отдельный LLM judge по умолчанию отключён — это отдельная зависимость, а не основной
+LLM API. Для его включения добавьте `prepare --judge-url http://HOST:11434 --judge-model MODEL`.
+Требуется Ollama API, модель должна быть уже загружена; включается fail-closed.
+Toxicity-модель, проверки ввода/вывода и аудит работают независимо от него.
 
-```powershell
-cd G:\code\uter_deploy
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements.txt
-.\.venv\Scripts\python -m unittest discover -s tests -v
-.\.venv\Scripts\python scripts/validate_assets.py
-```
+## Автоматизация и секреты
 
-Последняя команда вызывает только `docker compose config`, `helm lint` и `helm template`.
-Docker daemon, кластер и исходный стенд не используются.
+Для неинтерактивного prepare задайте `--llm-url`, `--llm-model`, `--llm-key-file`.
+Файл ключа может быть пустым для LLM без авторизации. Секреты не передавайте в командной
+строке. Вместо `--inputs` можно указать `--images`, `--policy`, `--profiles` отдельно.
 
-## Обновление оператора
+В `--home` сохраняются `runtime/`, `credentials.json`, `install.json`, копии Compose/Helm
+и `empty.env`; для Kubernetes дополнительно `resources.yaml`, `values.yaml`.
+POSIX-права каталога — 0700, секретных файлов — 0600; install выставляет читаемые
+контейнерами UID/GID для bind-mount. Не используйте `chmod -R 777`.
+`resources.yaml` содержит секреты открытым текстом; Kubernetes Secret сам по себе
+не является шифрованием. Резервируйте весь каталог зашифрованным способом.
 
-Подробно: [инструкция оператора](docs/deployment.md).
+Повторный prepare в существующий каталог запрещён, ключи не ротируются автоматически.
+`git pull` не меняет копии шаблонов существующей установки. Уже существующие Compose
+project или Kubernetes namespace не принимаются автоматически. На Windows поддержаны
+подготовка/рендеринг с отдельно настроенными ACL; install выполняется на Linux.
+
+## Ошибки, повторный запуск и обновление
+
+При ошибке `install-state.json` остаётся `pending`. Повторный install блокируется;
+ресурсы, данные и ключи сохраняются. Вывод команд скрывается, поскольку он может
+содержать секреты. Диагностируйте занятость порта, доступ к registry/LLM, PVC и события
+Pod. В Kubernetes: `kubectl --context MY_CONTEXT -n uter-instance get events` и
+`describe pod POD`; после устранения причины осознанно продолжите Helm с теми же
+values и Secret. Не удаляйте каталог или volumes ради повтора.
+
+Readiness не заменяет проверку поведения. До открытия доступа проверьте свои запросы,
+политику блокировок, TLS и резервное копирование.
+
+Новый установщик предназначен для первой установки. Межверсионное обновление и
+откат выполняются через `uterctl.py` с подписанным комплектом и backup receipt;
+[инструкция](docs/deployment.md). Для прямой установки автоматический переход под
+управление `uterctl` пока не реализован. `releases/example.json` не устанавливается.
+Новый формат: `runtime/`, `RUNTIME_DIR`, `runtime.toml`, chart 0.2.0; старые каталоги
+автоматически не переименовываются.
+
+## Registry и CI
+
+- `publish-images.yml`: проверка исходного CI run, SHA256 архивов и слоёв, публикация
+  трёх приватных образов GHCR, проверка запрета анонимного скачивания, обе установки.
+- `verify-installation.yml`: повторяет prepare/check/install и API/restart-проверки
+  из готового `installation-inputs` в отдельных GitHub-hosted jobs.
+- `mirror-dockerhub.yml`: приватное зеркало `prince174/uter-guardrail`, `uter-agent`,
+  `uter-redis` в Docker Hub. Требует secrets `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
+  с Read & Write. Репозитории создаются с `is_private=true`; публичные отклоняются.
+  После публикации сверяются image ID и запрет анонимного доступа, затем выполняются
+  обе установки с Docker Hub. Для обычного скачивания нужен отдельный Read-only токен.
+
+Docker Hub имеет собственный `images.json` с digest. Нельзя просто заменить hostname
+в GHCR reference и предположить равенство digest. Статус зеркала и результаты CI
+фиксируются в [отчёте проверки](docs/registry-installation.md).
+
+CI использует только временные runner, namespace и volumes. Локальный Docker и
+основной проект при разработке развёртывания не запускаются и не изменяются.
+
+## Разработка
 
 ```bash
-python uterctl.py verify --bundle /srv/incoming/uter-1.1.0 --key /etc/uter/publisher.pub
-python uterctl.py check --home /srv/uter --bundle /srv/incoming/uter-1.1.0 --key /etc/uter/publisher.pub
-python uterctl.py apply --home /srv/uter --bundle /srv/incoming/uter-1.1.0 --key /etc/uter/publisher.pub --backup-receipt /srv/backup/receipt.json
-python uterctl.py status --home /srv/uter
-python uterctl.py rollback --home /srv/uter --key /etc/uter/publisher.pub --backup-receipt /srv/backup/after-failure.json
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python scripts/validate_assets.py
 ```
 
-`verify` проверяет подпись и инвентарь. `check` дополнительно проверяет конфигурацию,
-но не подключается к работающим сервисам. `apply` ждёт готовности и запускает
-локальный acceptance-тест. `status` показывает записанное состояние, а не live health.
-На ошибке оставляется `pending`; нет ложной отметки об успешном обновлении.
+Вторая команда вызывает только Compose config и Helm lint/template. Тесты live CI
+намеренно отказываются работать вне GitHub Actions и удаляют только свои временные
+ресурсы. Не используйте их для обслуживания постоянной установки.
 
-## Изменения основного проекта → проверки → выпуск
-
-1. Изменения локальных файлов: [watcher](docs/automation.md) после паузы запускает
-   тесты на копии. Ничего не публикует и не меняет в исходном каталоге.
-2. Push Uter: workflow этого репозитория проверяет актуальный upstream commit по
-   расписанию (после включения), вручную или через `repository_dispatch`.
-3. После тестов открывает PR с кандидатом. Совместимость готовых образов и локальных
-   обновлений проверяется до выпуска подписанного комплекта.
-4. Оператор выбирает конкретную версию. Автоустановки вслед за push нет.
-
-[Настройка автоматизации](docs/automation.md) · [Выпуск версии](docs/releasing.md)
-
-[Сборка и проверка реальных защищённых образов](docs/image-validation.md)
+[Выпуск версии](docs/releasing.md) · [Автоматизация upstream](docs/automation.md) ·
+[Проверка образов](docs/image-validation.md) · [Защита реализации](docs/image-protection.md)
