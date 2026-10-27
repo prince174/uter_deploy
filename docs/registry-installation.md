@@ -43,6 +43,17 @@ Kubernetes: kind 0.33.0, node 1.35.8, один узел, standard/local-path PVC
 Docker Hub не используется: создание отдельных приватных репозиториев недоступно
 в текущих настройках аккаунта. Образы туда не публиковались, подписки не менялись.
 
+## Заключительный прогон
+
+[40534564830](https://github.com/prince174/uter_deploy/actions/runs/40534564830):
+оба backend — success. Проверен актуальный `--inputs` и HTTP smoke через опубликованный
+локальный порт/port-forward, включая вход и обычный запрос. Результаты:
+`installation-compose-evidence/http-smoke.json` и
+`installation-kubernetes-evidence/http-smoke.json` — все проверки pass.
+
+Установочный комплект закреплён в prerelease `deploy-2026.10.27`:
+`installation-inputs.tar.gz` и SHA256. Это не подписанный bundle uterctl.
+
 ## Границы результата
 
 - LLM — HTTP fixture; качество реальной модели, Ollama judge и RAG не проверены.

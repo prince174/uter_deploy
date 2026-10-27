@@ -14,6 +14,14 @@ class DiagramTests(unittest.TestCase):
             for page in tree.findall('.//diagram'):
                 cells=page.findall('.//mxCell'); ids=[n.get('id') for n in cells]
                 self.assertEqual(len(ids),len(set(ids)))
+                boxes=[]
+                for cell in cells:
+                    if cell.get('vertex')=='1':
+                        g=cell.find('mxGeometry')
+                        boxes.append((cell.get('id'),*[float(g.get(k, '0')) for k in ('x','y','width','height')]))
+                for i,(name,x,y,w,h) in enumerate(boxes):
+                    for other,X,Y,W,H in boxes[i+1:]:
+                        self.assertFalse(min(x+w,X+W)>max(x,X) and min(y+h,Y+H)>max(y,Y), (name,other))
                 for cell in cells:
                     if cell.get('edge')=='1':
                         self.assertIn(cell.get('source'),ids)
