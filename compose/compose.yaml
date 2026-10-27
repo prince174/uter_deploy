@@ -80,7 +80,7 @@ services:
     secrets: [redis_password, audit_hmac_key]
     networks: [backend, outbound]
     mem_limit: 3g
-    cpus: 4
+    cpus: ${GUARDRAIL_CPUS:-4}
     depends_on:
       redis: {condition: service_healthy}
       agent: {condition: service_healthy}

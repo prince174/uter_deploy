@@ -6,6 +6,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import uuid
+import hashlib
 
 session = uuid.uuid4().hex
 
@@ -43,12 +44,18 @@ assert status == 200 and pii["blocked"] is True, ("output-pii", status, pii)
 assert pii["block_reason"] == "output_guard" and pii["output_issues"], pii
 status, completion = request("/v1/chat/completions", {"model": "uter-guardrail-chat", "messages": [{"role": "user", "content": "What does TechCorp do?"}], "user": "openai"}, token)
 assert status == 200 and completion["choices"], ("openai", status)
-assert request("/ready", base="http://agent:8001")[0] == 200
-assert request("/chat", {"message": "hello"}, base="http://agent:8001")[0] in (401, 403)
+agent_url = os.environ.get('AGENT_RUNTIME_URL', 'http://agent:8001')
+assert request("/ready", base=agent_url)[0] == 200
+assert request("/chat", {"message": "hello"}, base=agent_url)[0] in (401, 403)
 audit = Path("/var/lib/uter/audit/audit.jsonl")
 assert audit.exists() and audit.stat().st_size > 0
 from audit_logger import verify_audit_set
-verify_audit_set(audit, hmac_key=Path("/run/secrets/audit_hmac_key").read_text().strip())
+key_path = os.environ.get('AUDIT_LOG_HMAC_KEY_FILE')
+key = Path(key_path).read_text().strip() if key_path else os.environ.get('AUDIT_LOG_HMAC_KEY')
+assert key, 'Audit HMAC key required'
+verify_audit_set(audit, hmac_key=key)
+lines = audit.read_bytes().splitlines()
 print(json.dumps({"auth": "pass", "normal_chat": "pass", "input_block": "pass", "output_pii_block": "pass",
                   "openai_api": "pass", "agent_auth": "pass", "real_toxicity_model": "pass", "audit_chain": "pass",
-                  "llm": "deterministic HTTP fixture", "external_rag": "not tested"}))
+                  "llm": "deterministic HTTP fixture", "external_rag": "not tested",
+                  "audit_lines": len(lines), "audit_first_sha256": hashlib.sha256(lines[0]).hexdigest()}))

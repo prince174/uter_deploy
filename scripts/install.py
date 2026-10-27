@@ -53,6 +53,9 @@ def prepare(args, api_key):
         scalar(api_key)
     if not 1024 <= args.port <= 65535:
         raise ValueError('Port must be 1024..65535')
+    cpus = getattr(args, 'guardrail_cpus', 4)
+    if not 1 <= cpus <= 64:
+        raise ValueError('Guardrail CPU limit must be 1..64')
     policy = args.policy.read_text(encoding='utf-8')
     profiles = args.profiles.read_text(encoding='utf-8')
     tomllib.loads(policy)
@@ -71,7 +74,14 @@ def prepare(args, api_key):
     guard.update(JWT_SECRET=secrets.token_hex(32), AGENT_INTERNAL_SHARED_SECRET=secrets.token_hex(32),
                  OPENAI_INGRESS_SHARED_SECRET=secrets.token_hex(32), UPSTREAM_MODE='litellm_openai',
                  UPSTREAM_URL=args.llm_url.rstrip('/'), UPSTREAM_OPENAI_MODEL=args.llm_model,
-                 UPSTREAM_API_KEY=api_key, AUDIT_LOG_HMAC_KEY=secrets.token_hex(32))
+                 UPSTREAM_API_KEY=api_key, AUDIT_LOG_HMAC_KEY=secrets.token_hex(32), TOXICITY_FAIL_CLOSED='true')
+    judge_url = getattr(args, 'judge_url', None)
+    guard['JUDGE_ENABLED'] = 'true' if judge_url else 'false'
+    if judge_url:
+        scalar(judge_url)
+        if urlsplit(judge_url).scheme not in ('http', 'https'):
+            raise ValueError('Judge URL must be HTTP(S)')
+        guard.update(JUDGE_OLLAMA_URL=judge_url, JUDGE_MODEL=scalar(args.judge_model), JUDGE_FAIL_CLOSED='true')
     agent = dict(AGENT_INTERNAL_SHARED_SECRET=guard['AGENT_INTERNAL_SHARED_SECRET'],
                  GUARDRAIL_SERVICE_USERNAME='agent-service', GUARDRAIL_SERVICE_PASSWORD=passwords['service'])
     redis = secrets.token_hex(32)
@@ -91,7 +101,7 @@ def prepare(args, api_key):
     # Freeze deployment assets so a git pull cannot silently change a prepared installation.
     shutil.copytree(ROOT / 'compose', home / 'compose')
     shutil.copytree(ROOT / 'charts', home / 'charts')
-    config = dict(backend=args.backend, name=args.name, context=args.context or 'default', port=args.port, images=images)
+    config = dict(backend=args.backend, name=args.name, context=args.context or 'default', port=args.port, images=images, guardrail_cpus=cpus)
     save(home / 'install.json', json.dumps(config, indent=2))
     if args.backend == 'kubernetes':
         resources = []
@@ -133,6 +143,7 @@ def commands(home, cfg):
                 del env[key]
         env.update({k.upper() + '_IMAGE': v for k, v in cfg['images'].items()})
         env.update(RUNTIME_DIR=(home / 'runtime').as_posix(), GUARDRAIL_PORT=str(cfg['port']))
+        env['GUARDRAIL_CPUS'] = str(cfg.get('guardrail_cpus', 4))
         return ['docker', '--context', cfg['context'], 'compose', '--project-name', cfg['name'],
                 '--env-file', str(home / 'empty.env'), '-f', str(home / 'compose/compose.yaml')], env
     return ['helm', '--kube-context', cfg['context'], '--namespace', cfg['name']], None
@@ -207,6 +218,9 @@ def main():
     p.add_argument('--llm-key-file', type=Path)
     p.add_argument('--allow-http-llm', action='store_true')
     p.add_argument('--port', type=int, default=18000)
+    p.add_argument('--guardrail-cpus', type=float, default=4, help='Compose CPU limit; use 2 for a small isolated test host')
+    p.add_argument('--judge-url', help='Optional Ollama judge endpoint; without this the separate LLM judge is disabled')
+    p.add_argument('--judge-model', default='qwen2.5:7b')
     p.add_argument('--storage-class', default='')
     p.add_argument('--registry-config', type=Path, help='Dedicated Docker auth config.json for Kubernetes image pulls')
     args = p.parse_args()
