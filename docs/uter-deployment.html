@@ -12,7 +12,7 @@
 <div class="modes" role="group" aria-label="Способ установки"><button id="compose" aria-pressed="true">Docker Compose</button><button id="kubernetes" aria-pressed="false">Kubernetes + Helm</button></div>
 <nav class="steps" aria-label="Этапы установки"></nav>
 <div class="layout"><section><div class="map" aria-label="Компоненты развёртывания"><svg class="links" aria-hidden="true"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="var(--line)"/></marker></defs><g id="paths"></g></svg>
-<button class="node registry" data-node="registry"><strong>Docker Hub · private</strong><small>Guardrail · Agent · Redis</small></button>
+<button class="node registry" data-node="registry"><strong>GHCR · private</strong><small>Guardrail · Agent · Redis</small></button>
 <button class="node config" data-node="config"><strong>Настройки и секреты</strong><small>LLM · пароли · политики</small></button>
 <button class="node engine" data-node="engine"><strong id="engine-name">Docker Compose</strong><small id="engine-detail">Отдельный project</small></button>
 <button class="node edge" data-node="edge"><strong>Точка входа</strong><small id="entry-detail">localhost:18000 → Guardrail</small></button>
@@ -29,7 +29,7 @@
 <script>
 const byId=id=>document.getElementById(id);let mode='compose',step=0,selected='registry';
 const details={
-registry:['Приватные образы',['docker.io/prince174/uter-guardrail','docker.io/prince174/uter-agent','docker.io/prince174/uter-redis'],'Для скачивания нужен Read-only токен Docker Hub. Используется images.json с точными digest этого registry.'],
+registry:['Приватные образы',['ghcr.io/prince174/uter-guardrail','ghcr.io/prince174/uter-agent','ghcr.io/prince174/uter-redis'],'Для скачивания нужен GitHub PAT с read:packages. Используется images.json с точными digest этого registry.'],
 config:['Настройки и секреты',['JWT, bcrypt-пароли и общий ключ Agent','Пароль Redis и ключ HMAC аудита','Адрес LLM, модель и API-ключ'],'prepare генерирует независимые секреты и сохраняет их вне репозитория. Повторная подготовка не перезаписывает ключи.'],
 guard:['Guardrail',['API: /auth/token, /chat, /v1/chat/completions','Проверки ввода, toxicity и ответа','HMAC-цепочка аудита'],'Основная точка входа. OpenAI endpoint требует JWT и X-Uter-Ingress-Secret. Отдельный Ollama judge включается дополнительной настройкой.'],
 agent:['Agent',['Внутренний сервис, без внешнего порта','Общий секрет для взаимодействия','Инструменты и retrieval по политике'],'Доступность источников и интеграций требует отдельной конфигурации. Сам install не создаёт полноценный RAG-индекс.'],

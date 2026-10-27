@@ -36,14 +36,12 @@ Kubernetes: kind 0.33.0, node 1.35.8, один узел, standard/local-path PVC
 Исправлен именно тест, защита endpoint не отключалась. Полный первый run не считается
 успешным; успешная повторная проверка приведена выше.
 
-## Docker Hub
+## Выбор registry
 
-Workflow `mirror-dockerhub.yml` зеркалирует Guardrail, Agent, Redis без пересборки.
-До push проверяет `is_private`, после — совпадение image ID и запрет анонимного доступа.
-Используются отдельные digest, затем запускаются те же реальные установки.
-Требуются secrets `DOCKERHUB_USERNAME` и `DOCKERHUB_TOKEN` Read & Write.
-Наличие workflow само по себе не подтверждает публикацию; результат будет указан здесь
-после завершения запуска. Платные настройки аккаунта автоматически не изменяются.
+Основной registry — приватный GHCR. Полный workflow публикации и обеих установок:
+[40531593278](https://github.com/prince174/uter_deploy/actions/runs/40531593278), success.
+Docker Hub не используется: создание отдельных приватных репозиториев недоступно
+в текущих настройках аккаунта. Образы туда не публиковались, подписки не менялись.
 
 ## Границы результата
 
@@ -60,7 +58,7 @@ Workflow `mirror-dockerhub.yml` зеркалирует Guardrail, Agent, Redis �
 ## Воспроизведение
 
 В Actions запустите `verify-installation.yml`: `artifact_run_id` — run с артефактом
-`installation-inputs`, `registry` — `ghcr.io` или `docker.io`. Создаются только временные
+`installation-inputs`, `registry` — `ghcr.io`. Создаются только временные
 ресурсы GitHub runner. К реальному окружению эти CI-скрипты применять нельзя.
 Артефакты `installation-*-evidence` содержат результаты и очищенные диагностические
 логи; секретные env/YAML, kubeconfig и Docker credentials туда не включаются.

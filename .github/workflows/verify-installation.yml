@@ -10,7 +10,7 @@ on:
         description: Private registry
         default: ghcr.io
         type: choice
-        options: [ghcr.io, docker.io]
+        options: [ghcr.io]
   workflow_call:
     inputs:
       artifact_run_id:
@@ -19,11 +19,6 @@ on:
       registry:
         default: ghcr.io
         type: string
-    secrets:
-      DOCKERHUB_TOKEN:
-        required: false
-      DOCKERHUB_USERNAME:
-        required: false
 permissions:
   contents: read
   actions: read
@@ -63,8 +58,8 @@ jobs:
           sudo install kind-bin /usr/local/bin/kind
       - name: Install using README wizard and exercise real services
         env:
-          REGISTRY_TOKEN: ${{ inputs.registry == 'ghcr.io' && github.token || secrets.DOCKERHUB_TOKEN }}
-          REGISTRY_USER: ${{ inputs.registry == 'ghcr.io' && github.actor || secrets.DOCKERHUB_USERNAME }}
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
           REGISTRY_HOST: ${{ inputs.registry }}
           BACKEND: ${{ matrix.backend }}
         run: sudo --preserve-env=GITHUB_ACTIONS,GITHUB_RUN_ID,GITHUB_ACTOR,REGISTRY_TOKEN,REGISTRY_USER,REGISTRY_HOST,BACKEND "$PWD/.venv/bin/python" scripts/installation_ci.py

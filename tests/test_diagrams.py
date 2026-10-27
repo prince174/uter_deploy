@@ -23,11 +23,11 @@ class DiagramTests(unittest.TestCase):
         paths=list((ROOT/'docs/diagrams').glob('*.drawio'))+list((ROOT/'docs').glob('uter-*.html'))
         for path in paths:
             text=path.read_text(encoding='utf-8-sig')
-            for forbidden in ('github.com','ghcr.io','G:\\code','fileHref(', 'customer', 'pilot'):
+            for forbidden in ('github.com','G:\\code','fileHref(', 'customer', 'pilot'):
                 self.assertNotIn(forbidden,text,path.name)
             if path.suffix=='.html':
                 self.assertNotRegex(text,r'<script[^>]+src=')
                 self.assertNotRegex(text,r'\b(fetch|XMLHttpRequest|WebSocket)\s*\(')
         deployment=(ROOT/'docs/uter-deployment.html').read_text(encoding='utf-8-sig')
         for service in ('guardrail','agent','redis'):
-            self.assertIn('docker.io/prince174/uter-'+service,deployment)
+            self.assertIn('ghcr.io/prince174/uter-'+service,deployment)
