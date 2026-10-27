@@ -72,8 +72,7 @@ def main():
             run(kube + ['-n', 'uter-fixtures', 'rollout', 'status', 'deployment/llm', '--timeout=180s'])
             url = 'http://llm.uter-fixtures.svc.cluster.local:8080'
         prepare = [sys.executable, ROOT / 'scripts/install.py', 'prepare', '--home', home,
-            '--backend', backend, '--name', name, '--images', inputs / 'images.json',
-            '--policy', inputs / 'policy.toml', '--profiles', inputs / 'model_profiles.toml',
+            '--backend', backend, '--name', name, '--inputs', inputs,
             '--llm-url', url, '--llm-model', 'test-model', '--llm-key-file', ROOT / 'work/llm-key', '--allow-http-llm']
         if backend == 'compose':
             prepare += ['--guardrail-cpus', '2']

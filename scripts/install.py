@@ -79,8 +79,9 @@ def prepare(args, api_key):
     guard['JUDGE_ENABLED'] = 'true' if judge_url else 'false'
     if judge_url:
         scalar(judge_url)
-        if urlsplit(judge_url).scheme not in ('http', 'https'):
-            raise ValueError('Judge URL must be HTTP(S)')
+        parsed_judge = urlsplit(judge_url)
+        if parsed_judge.scheme not in ('http', 'https') or not parsed_judge.hostname or parsed_judge.username or parsed_judge.password:
+            raise ValueError('Judge URL must be HTTP(S), without embedded credentials')
         guard.update(JUDGE_OLLAMA_URL=judge_url, JUDGE_MODEL=scalar(args.judge_model), JUDGE_FAIL_CLOSED='true')
     agent = dict(AGENT_INTERNAL_SHARED_SECRET=guard['AGENT_INTERNAL_SHARED_SECRET'],
                  GUARDRAIL_SERVICE_USERNAME='agent-service', GUARDRAIL_SERVICE_PASSWORD=passwords['service'])
@@ -211,6 +212,7 @@ def main():
     p.add_argument('--name', default='uter-instance')
     p.add_argument('--context')
     p.add_argument('--images', type=Path)
+    p.add_argument('--inputs', type=Path, help='Directory with images.json, policy.toml and model_profiles.toml')
     p.add_argument('--policy', type=Path)
     p.add_argument('--profiles', type=Path)
     p.add_argument('--llm-url')
@@ -226,6 +228,10 @@ def main():
     args = p.parse_args()
     try:
         if args.command == 'prepare':
+            if args.inputs:
+                args.images = args.images or args.inputs / 'images.json'
+                args.policy = args.policy or args.inputs / 'policy.toml'
+                args.profiles = args.profiles or args.inputs / 'model_profiles.toml'
             for field in ('images', 'policy', 'profiles'):
                 if getattr(args, field) is None:
                     p.error('--' + field + ' is required for prepare')

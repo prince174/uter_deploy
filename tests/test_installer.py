@@ -120,3 +120,21 @@ class InstallerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 m.install(self.args.home, cfg)
         run.assert_not_called()
+
+    def test_input_directory_cli_and_optional_judge(self):
+        self.args.images.rename(self.root / 'images.json')
+        self.args.policy.rename(self.root / 'policy.toml')
+        self.args.profiles.rename(self.root / 'model_profiles.toml')
+        (self.root / 'llm-key').write_text('')
+        argv = ['install.py', 'prepare', '--home', str(self.args.home), '--inputs', str(self.root),
+                '--llm-url', self.args.llm_url, '--llm-model', self.args.llm_model,
+                '--llm-key-file', str(self.root / 'llm-key'), '--judge-url', 'http://judge:11434',
+                '--judge-model', 'test-judge', '--guardrail-cpus', '2']
+        with patch.object(m.sys, 'argv', argv):
+            self.assertEqual(m.main(), 0)
+        g = self.env('guardrail.env')
+        self.assertEqual(g['JUDGE_ENABLED'], 'true')
+        self.assertEqual(g['JUDGE_OLLAMA_URL'], 'http://judge:11434')
+        self.assertEqual(g['JUDGE_FAIL_CLOSED'], 'true')
+        cfg = json.loads((self.args.home / 'install.json').read_text())
+        self.assertEqual(cfg['guardrail_cpus'], 2)
