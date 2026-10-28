@@ -12,7 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def call(args, data=None):
     result=subprocess.run([str(x) for x in args],input=data,capture_output=True,timeout=240)
-    if result.returncode: raise RuntimeError(f'{args[0]} recovery PVC test failed; output withheld')
+    if result.returncode:
+        stderr=result.stderr.decode(errors='replace')
+        known=('Destination must be an explicitly mounted recovery volume',
+               'Recovery volume is not empty', 'Permission denied',
+               'Invalid Redis snapshot header', 'Audit log is missing',
+               'No module named', 'No such file or directory')
+        category=next((message for message in known if message in stderr),'unclassified')
+        raise RuntimeError(f'{args[0]} recovery PVC test failed ({category}); output withheld')
     return result.stdout
 
 
