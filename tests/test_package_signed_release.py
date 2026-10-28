@@ -39,6 +39,26 @@ class SignedReleasePackagingTests(unittest.TestCase):
         with tarfile.open(out/'signed-bundle.tar.gz','r:gz') as archive:
             self.assertTrue(all(m.uid==0 and m.gid==0 and not m.uname and not m.gname for m in archive))
 
+    def test_signed_archive_hash_is_verified_end_to_end(self):
+        from scripts.extract_release_inputs import extract as extract_inputs
+        archive=self.root/'installation-inputs.tar.gz'
+        for name in ('policy.toml','model_profiles.toml'):
+            (self.inputs/name).write_text('policy')
+        with tarfile.open(archive,'w:gz') as tar:
+            for name in ('images.json','publication.json','policy.toml','model_profiles.toml'):
+                tar.add(self.inputs/name,arcname=name)
+        checksum=self.root/'checksum';checksum.write_text(hashlib.sha256(archive.read_bytes()).hexdigest()+'  '+archive.name+'\n')
+        out=self.root/'release'
+        package(self.inputs,'1.0.0',1,[],self.private,self.public,self.fingerprint,out,archive)
+        signed=self.root/'verified';extract(out/'signed-bundle.tar.gz',self.public,signed)
+        extract_inputs(archive,checksum,self.root/'verified-inputs',bundle=signed,key=self.public)
+        self.assertEqual((self.root/'verified-inputs'/'policy.toml').read_text(),'policy')
+        archive.write_bytes(archive.read_bytes()+b'changed')
+        checksum.write_text(hashlib.sha256(archive.read_bytes()).hexdigest()+'  '+archive.name+'\n')
+        with self.assertRaisesRegex(ValueError,'signed manifest'):
+            extract_inputs(archive,checksum,self.root/'bad',bundle=signed,key=self.public)
+        self.assertFalse((self.root/'bad').exists())
+
     def test_rejects_archive_that_does_not_match_inputs(self):
         archive=self.root/'inputs.tar.gz'
         with tarfile.open(archive,'w:gz') as tar:
