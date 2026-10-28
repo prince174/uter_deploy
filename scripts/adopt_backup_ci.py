@@ -278,6 +278,9 @@ finally:
         if backend=='kubernetes':
             from scripts import recovery_pvc_ci
             recovery_pvc_ci.test(kube,name,images['guardrail'],redis_image,exported)
+        else:
+            from scripts import recovery_compose_ci
+            recovery_compose_ci.test(home,backup_dir,backup_key,public,exported,audit_before)
         print('Stage: real LLM and persistent state after update',flush=True)
         after=json.loads(call([sys.executable,smoke_file]))
         stats_after=request('http://127.0.0.1:11435/stats')
@@ -299,7 +302,8 @@ finally:
                 'separate_kubernetes_pvc_restore':'pass' if backend=='kubernetes' else 'not applicable',
                 'audit_chain_and_persistence':'pass','audit_lines_before':audit_before['lines'],
                 'audit_lines_after':audit_after['lines'],'test_signing_key':'ephemeral CI only',
-                'full_restore_to_workloads':'not tested','data_epoch':'CI assumption, not a production compatibility declaration'}
+                'full_restore_to_workloads':'separate Compose project passed' if backend=='compose' else 'not tested',
+                'data_epoch':'CI assumption, not a production compatibility declaration'}
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
     finally:
         if forward: forward.terminate();forward.wait(timeout=10)
