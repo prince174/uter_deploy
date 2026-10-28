@@ -1,0 +1,11 @@
+{
+  "release": "deploy-2026.10.27",
+  "input_archive_sha256": "de220c326bef63d8d6b0bfd01567a942df2102ae744676c149dbadfcfa062231",
+  "source_commit": "04c13238e2182ddb870d39d499d677e0a539d21f",
+  "images": {
+    "guardrail": "ghcr.io/prince174/uter-guardrail@sha256:868f5b4868598c4fae7434f1086a1055cad8a34de01655fc5ff4b6007794b240",
+    "agent": "ghcr.io/prince174/uter-agent@sha256:030e3f50d9b7a62b606003d511e89815bd1b35b8be94b4d4b0badf44630facd1",
+    "redis": "ghcr.io/prince174/uter-redis@sha256:57b179f55b5f69f0674e7c93d5e1130bacb75f44398b02c610da439e1e3482a6"
+  },
+  "redis_target": "redis:7.4-alpine@sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af"
+}

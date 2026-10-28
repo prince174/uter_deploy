@@ -1,0 +1,126 @@
+name: Remediate and gate published runtime images
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+jobs:
+  remediate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [guardrail, agent, redis]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Resolve pinned baseline and download runtime configuration
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          mkdir -p work/inputs work/evidence/policies work/evidence/profiles
+          python - <<'PY'
+          import json, os, pathlib, subprocess, hashlib, tarfile
+          b=json.loads(pathlib.Path('packaging/security-baseline.json').read_text(encoding='utf-8-sig'))
+          subprocess.run(['gh','release','download',b['release'],'--pattern','installation-inputs.tar.gz','--dir','work/inputs'],check=True)
+          archive=pathlib.Path('work/inputs/installation-inputs.tar.gz')
+          assert hashlib.sha256(archive.read_bytes()).hexdigest()==b['input_archive_sha256']
+          with tarfile.open(archive) as tar:
+              for src,dst in [('policy.toml','policies/default.toml'),('model_profiles.toml','profiles/model_profiles.toml')]:
+                  pathlib.Path('work/evidence',dst).write_bytes(tar.extractfile(src).read())
+          pathlib.Path('work/evidence/source-sha.txt').write_text(b['source_commit']+'\n')
+          pathlib.Path('work/evidence/parent-image.txt').write_text(b['images'][os.environ['SERVICE']]+'\n')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write('BASELINE_IMAGE='+b['images'][os.environ['SERVICE']]+'\nREDIS_TARGET='+b['redis_target']+'\n')
+          PY
+          docker pull "$BASELINE_IMAGE"
+      - name: Baseline vulnerability and secret report with current database
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: ${{ env.BASELINE_IMAGE }}
+          scanners: vuln,secret
+          format: json
+          output: work/evidence/before-findings.json
+          exit-code: '0'
+          timeout: 10m
+      - name: Build minimal dependency-remediated runtime
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          if [ "$SERVICE" = redis ]; then
+            docker pull --platform linux/amd64 "$REDIS_TARGET"
+            docker tag "$REDIS_TARGET" uter-redis-protected
+          else
+            docker build --provenance=false --build-arg "PROTECTED_IMAGE=$BASELINE_IMAGE" --build-arg "SERVICE=$SERVICE" -f packaging/Dockerfile.security -t "uter-$SERVICE-protected" packaging
+            docker run --rm --network none --entrypoint python "uter-$SERVICE-protected" -c 'import json,pathlib,ssl,uuid; p=pathlib.Path("/usr/share/uter/runtime-inventory.json"); d=json.loads(p.read_text()); assert d["os_packages"] and d["library_owners"]; assert pathlib.Path("/var/lib/dpkg/status").stat().st_size; assert not pathlib.Path("/bin/sh").exists(); assert ssl.get_default_verify_paths().cafile; uuid.uuid4(); print(p.read_text())' > work/evidence/runtime-inventory.json
+          fi
+          docker image inspect "uter-$SERVICE-protected" --format '{{.Id}}' > work/evidence/image-id.txt
+      - name: Compiled modules and offline model inference
+        if: matrix.service != 'redis'
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:size=256m --memory=4g --cpus=2 \
+            -e JWT_SECRET=ci-only-runtime-secret -e AGENT_INTERNAL_SHARED_SECRET=ci-only-shared-secret \
+            -e GUARDRAIL_SERVICE_PASSWORD=ci-only-service-password -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+            -e AUDIT_LOG_ENABLED=false -e JUDGE_ENABLED=false -e SECURITY_POLICY_PATH=/app/policies/default.toml \
+            -v "$PWD/work/evidence/policies:/app/policies:ro" -v "$PWD/work/evidence/profiles:/app/profiles:ro" \
+            -v "$PWD/scripts/check_compiled_runtime.py:/checks/check.py:ro" \
+            --entrypoint python "uter-$SERVICE-protected" /checks/check.py "$SERVICE" > work/evidence/runtime-check.json
+      - name: Agent dependency compatibility and offline embeddings
+        if: matrix.service == 'agent'
+        run: |
+          mkdir -p work/embedding-cache
+          sudo chown 10001:10001 work/embedding-cache
+          docker run --rm --memory=2g --cpus=2 -v "$PWD/work/embedding-cache:/tmp/fastembed" \
+            -v "$PWD/scripts/check_agent_dependencies.py:/checks/check.py:ro" --entrypoint python uter-agent-protected /checks/check.py download > work/evidence/dependency-download-check.json
+          docker run --rm --network none --memory=2g --cpus=2 -e HF_HUB_OFFLINE=1 \
+            -v "$PWD/work/embedding-cache:/tmp/fastembed" -v "$PWD/scripts/check_agent_dependencies.py:/checks/check.py:ro" \
+            --entrypoint python uter-agent-protected /checks/check.py offline > work/evidence/dependency-offline-check.json
+      - name: Full candidate vulnerability and secret report
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: uter-${{ matrix.service }}-protected
+          scanners: vuln,secret
+          format: json
+          output: work/evidence/findings.json
+          exit-code: '0'
+          timeout: 10m
+      - name: Candidate SBOM
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: uter-${{ matrix.service }}-protected
+          format: cyclonedx
+          output: work/evidence/sbom.cdx.json
+          exit-code: '0'
+          timeout: 10m
+      - name: Require zero Critical High and secret findings
+        run: python scripts/security_gate.py work/evidence/findings.json work/evidence/security-summary.json
+      - name: Export source-scanned candidate
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          docker save "uter-$SERVICE-protected" -o work/image.tar
+          python scripts/scan_image_archive.py work/image.tar --report work/evidence/source-scan.json > work/evidence/source-scan.txt
+          gzip -1 work/image.tar
+          sha256sum work/image.tar.gz > work/evidence/archive.sha256
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: protected-${{ matrix.service }}
+          path: |
+            work/image.tar.gz
+            work/evidence/
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error

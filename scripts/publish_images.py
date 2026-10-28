@@ -38,15 +38,19 @@ def main():
     build = os.environ['BUILD_RUN_ID']
     assert re.fullmatch(r'\d+', build)
     identity = json.loads(run(['gh', 'api', f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{build}']))
-    assert identity['path'] == '.github/workflows/harden-image-artifacts.yml' and identity['conclusion'] == 'success'
+    assert identity['path'] in ('.github/workflows/harden-image-artifacts.yml', '.github/workflows/remediate-images.yml') and identity['conclusion'] == 'success'
+    remediated = identity['path'] == '.github/workflows/remediate-images.yml'
     images, metadata = {}, {}
     output = Path('work/published')
     output.mkdir(parents=True)
     for service in ('guardrail', 'agent', 'redis'):
         package = f'{owner}/uter-{service}'
         anonymous_denied(package)
-        if service != 'redis':
+        if service != 'redis' or remediated:
             folder = Path(f'work/images/protected-{service}')
+            if remediated:
+                gate = json.loads((folder / 'evidence/security-summary.json').read_text())
+                assert gate['critical_high'] == 0 and gate['secrets'] == 0
             archive = folder / 'image.tar.gz'
             expected = (folder / 'evidence/archive.sha256').read_text().split()[0]
             with archive.open('rb') as stream:
@@ -60,6 +64,8 @@ def main():
             sha = (folder / 'evidence/source-sha.txt').read_text().strip()
             assert re.fullmatch('[0-9a-f]{40}', sha)
             metadata[service] = dict(source_commit=sha, archive_sha256=actual, image_id=image_id)
+            if remediated:
+                metadata[service]['security'] = gate
         else:
             local = REDIS
             subprocess.run(['docker', 'pull', '--platform', 'linux/amd64', local], check=True)
@@ -77,6 +83,9 @@ def main():
     (output / 'publication.json').write_text(json.dumps(dict(build_run_id=build, images=metadata,
         registry='ghcr.io', anonymous_pull='denied', workflow_run_id=os.environ['GITHUB_RUN_ID']), indent=2) + '\n')
     source = Path('work/images/protected-guardrail/evidence')
+    if remediated:
+        for service in images:
+            shutil.copyfile(Path(f'work/images/protected-{service}/evidence/security-summary.json'), output / f'{service}-security-summary.json')
     shutil.copyfile(source / 'policies/default.toml', output / 'policy.toml')
     shutil.copyfile(source / 'profiles/model_profiles.toml', output / 'model_profiles.toml')
     with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as report:
