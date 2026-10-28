@@ -179,7 +179,7 @@ def main():
         bundles=[]
         for version,release,prev in [('0.0.1',OLD,[]),('0.0.2',NEW,['0.0.1'])]:
             folder=work/'input'/release; pub=json.loads((folder/'publication.json').read_text()); images=json.loads((folder/'images.json').read_text())
-            manifest={'schema':1,'config_schema':1,'status':'released','version':version,'source_commit':pub['images']['guardrail']['source_commit'],'data_epoch':1,'upgrade_from':prev,'images':images,'image_config_ids':{s:pub['images'][s]['image_id'] for s in images}}
+            manifest={'schema':1,'config_schema':1,'tooling_schema':1,'status':'released','version':version,'source_commit':pub['images']['guardrail']['source_commit'],'data_epoch':1,'upgrade_from':prev,'images':images,'image_config_ids':{s:pub['images'][s]['image_id'] for s in images}}
             mpath=work/f'{version}.json';mpath.write_text(json.dumps(manifest)); bundle=work/f'bundle-{version}'
             build_bundle(mpath,bundle,private);bundles.append(bundle)
         credentials=json.loads((home/'credentials.json').read_text())

@@ -38,6 +38,8 @@ def write(path, data):
 def validate(m):
     if m.get("schema") != 1 or m.get("config_schema") != 1:
         raise ValueError("Unsupported manifest/config schema")
+    if "tooling_schema" in m and (type(m["tooling_schema"]) is not int or m["tooling_schema"] != 1):
+        raise ValueError("Unsupported tooling schema")
     if m.get("status") != "released" or not VERSION.fullmatch(m.get("version", "")):
         raise ValueError("Only released, versioned manifests can be installed")
     if not re.fullmatch(r"[0-9a-f]{40}", m.get("source_commit", "")):
@@ -76,10 +78,17 @@ def verify(folder, key_path):
     public.verify(base64.b64decode((folder / "checksums.sig").read_bytes(), validate=True), raw)
     if json.loads(raw) != inventory(folder):
         raise ValueError("Bundle inventory mismatch (changed, extra or missing file)")
-    for name in ["manifest.json", "compose/compose.yaml", "charts/uter/Chart.yaml"]:
+    required=["manifest.json", "compose/compose.yaml", "charts/uter/Chart.yaml"]
+    manifest=validate(read(folder / "manifest.json"))
+    if manifest.get('tooling_schema') == 1:
+        required += ['uterctl.py','requirements.txt','examples/redis.conf.example','scripts/install.py','scripts/adopt_installation.py',
+                     'scripts/backup_crypto.py','scripts/backup_store.py','scripts/backup_snapshot.py',
+                     'scripts/archive_safety.py','scripts/restore_backup.py','scripts/recovery_preflight.py',
+                     'scripts/recovery_volume.py','scripts/recovery_aof.py','scripts/smoke_http.py']
+    for name in required:
         if not (folder / name).is_file():
             raise ValueError(f"Missing {name}")
-    return validate(read(folder / "manifest.json"))
+    return manifest
 
 
 def transition(old, new):

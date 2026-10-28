@@ -1,4 +1,5 @@
 import argparse
+import base64
 import json
 from pathlib import Path
 import subprocess
@@ -74,6 +75,27 @@ class AdoptionTests(unittest.TestCase):
         with patch.object(adopt_installation,'verify_live'), patch.object(adopt_installation.subprocess,'run',return_value=subprocess.CompletedProcess([],1)):
             with self.assertRaisesRegex(ValueError,'smoke failed'):adopt_installation.adopt(home,self.bundle,self.pub,['smoke'])
         self.assertFalse((home/'state.json').exists());self.assertFalse((home/'runtime/site.json').exists())
+
+    def test_signed_bundle_includes_and_protects_runtime_tooling(self):
+        manifest=dict(self.manifest,tooling_schema=1)
+        source=self.root/'tooling-manifest.json';source.write_text(json.dumps(manifest))
+        bundle=self.root/'tooling-bundle';build(source,bundle,self.private)
+        self.assertEqual(uterctl.verify(bundle,self.pub),manifest)
+        self.assertTrue((bundle/'scripts/recovery_preflight.py').is_file())
+        with (bundle/'scripts/recovery_preflight.py').open('a') as f:f.write('\n# changed\n')
+        with self.assertRaisesRegex(ValueError,'inventory mismatch'):
+            uterctl.verify(bundle,self.pub)
+
+    def test_signed_tooling_cannot_omit_required_file(self):
+        manifest=dict(self.manifest,tooling_schema=1)
+        source=self.root/'tooling-manifest.json';source.write_text(json.dumps(manifest))
+        bundle=self.root/'tooling-bundle';build(source,bundle,self.private)
+        (bundle/'scripts/recovery_preflight.py').unlink()
+        raw=json.dumps(uterctl.inventory(bundle),sort_keys=True,indent=2).encode()
+        (bundle/'checksums.json').write_bytes(raw)
+        (bundle/'checksums.sig').write_bytes(base64.b64encode(self.key.sign(raw)))
+        with self.assertRaisesRegex(ValueError,'Missing scripts/recovery_preflight.py'):
+            uterctl.verify(bundle,self.pub)
 
     def test_rejects_mismatch_and_modified_assets(self):
         home=self.prepare();cfg=uterctl.read(home/'install.json');cfg['images']['agent']='registry.example/agent@sha256:'+'c'*64;uterctl.write(home/'install.json',cfg)

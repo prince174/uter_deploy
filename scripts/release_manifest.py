@@ -26,7 +26,7 @@ def make_manifest(inputs, version, data_epoch, upgrade_from):
     if redis_source is not None and redis_source != sha:
         raise ValueError('Redis publication application commit differs')
     ids = {service: records[service]['image_id'] for service in images}
-    manifest = {'schema': 1, 'config_schema': 1, 'status': 'released',
+    manifest = {'schema': 1, 'config_schema': 1, 'tooling_schema': 1, 'status': 'released',
                 'version': version, 'source_commit': sha, 'data_epoch': data_epoch,
                 'upgrade_from': upgrade_from, 'images': images, 'image_config_ids': ids}
     return validate(manifest)
