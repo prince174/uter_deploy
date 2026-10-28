@@ -210,10 +210,6 @@ finally:
         prefix='SCRIPTS='+repr(str(ROOT/'scripts'))+'\nCREDENTIALS='+repr(str(home/'credentials.json'))+'\nKUBE='+repr(kube if backend=='kubernetes' else [])+'\nNAME='+repr(name)+'\n'
         smoke_file.write_text(prefix+wrapper)
         base=[sys.executable,ROOT/'uterctl.py']; common=['--home',home,'--key',public]
-        print('Stage: adopt the install.py installation',flush=True)
-        call([sys.executable,ROOT/'scripts/adopt_managed.py','--home',home,'--bundle',bundles[0],
-              '--publisher-key',public])
-        assert json.loads((home/'state.json').read_text())['adopted_installer'] is True
         before=json.loads(call([sys.executable,smoke_file]))
         if backend=='compose':
             cmd=['docker','compose','--project-name',name,'--env-file',str(home/'empty.env'),'-f',str(home/'compose/compose.yaml'),'exec','-T','guardrail','python','-']
@@ -223,18 +219,22 @@ finally:
         assert stats_before['successful_completions'] > 0 and stats_before['completion_tokens'] > 0
         print('Stage: real LLM and persistent state before update',flush=True)
         audit_before=audit_and_redis(cmd,env,'write')
-        # A receipt alone must not bypass encrypted backup creation.
-        fake=work/'fake-receipt.json';fake.write_text(json.dumps({'version':'0.0.1','backup_id':'fake'}))
-        missing=subprocess.run([str(x) for x in base+['apply',*common,'--bundle',bundles[1],'--backup-receipt',fake]],capture_output=True)
-        assert missing.returncode and b'receipts alone' in missing.stderr
         from scripts import backup_crypto, update_installation
         key_dir=work/'managed-backup-keys';key_dir.mkdir(mode=0o700)
         backup_root=work/'managed-backups';backup_root.mkdir(mode=0o700)
         backup_key=key_dir/'backup.key'
-        print('Stage: actual encrypted backup and upgrade',flush=True)
+        print('Stage: automatic adoption, encrypted backup and upgrade',flush=True)
         updated=update_installation.update(home,bundles[1],public,backup_root,backup_key,
                                            current_bundle=bundles[0],create_backup_key=True)
         backup_dir=Path(updated['backup'])
+        assert json.loads((home/'state.json').read_text())['adopted_installer'] is True
+        # A receipt alone cannot bypass backup even after first adoption and update.
+        probe_manifest=dict(manifest,version='0.0.3',upgrade_from=['0.0.2'])
+        probe_path=work/'0.0.3.json';probe_path.write_text(json.dumps(probe_manifest))
+        probe_bundle=work/'bundle-0.0.3';build_bundle(probe_path,probe_bundle,private)
+        fake=work/'fake-receipt.json';fake.write_text(json.dumps({'version':'0.0.2','backup_id':'fake'}))
+        missing=subprocess.run([str(x) for x in base+['apply',*common,'--bundle',probe_bundle,'--backup-receipt',fake]],capture_output=True)
+        assert missing.returncode and b'receipts alone' in missing.stderr
         from scripts import backup_store, restore_backup
         backup_manifest=backup_store.verify_set(backup_dir,backup_crypto.read_key(backup_key),home=home,
                                                 site=uterctl.site_config(home),version='0.0.1')
