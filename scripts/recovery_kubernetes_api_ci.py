@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import uterctl
 from scripts import recover_kubernetes
@@ -12,7 +13,7 @@ NAME='uter-restored-api-ci'
 CONTEXT='kind-uter-upgrade-ci'
 
 
-def test(home,backup,backup_key,publisher_key,expected_audit):
+def test(home,backup,backup_key,publisher_key,expected_audit,recovery_bundle=None):
     if os.environ.get('GITHUB_ACTIONS')!='true' or os.name!='posix' or os.geteuid()!=0:
         raise ValueError('Disposable GitHub-hosted Linux runner required')
     target=ROOT/'work/restored-kubernetes-api';kube=['kubectl','--context',CONTEXT]
@@ -20,7 +21,15 @@ def test(home,backup,backup_key,publisher_key,expected_audit):
     if subprocess.run(kube+['get','namespace',NAME],capture_output=True).returncode==0:
         raise ValueError('Recovery test namespace already exists')
     try:
-        result=recover_kubernetes.restore(home,backup,backup_key,publisher_key,target,NAME,CONTEXT,18004)
+        if recovery_bundle is not None:
+            command=[sys.executable,Path(recovery_bundle)/'scripts/recover_kubernetes.py','--source-home',home,'--backup',backup,
+                     '--backup-key',backup_key,'--publisher-key',publisher_key,'--home',target,
+                     '--name',NAME,'--port','18004','--context',CONTEXT]
+            run=subprocess.run([str(x) for x in command],capture_output=True)
+            if run.returncode:raise ValueError('Signed recovery command failed; output withheld')
+            result=json.loads(run.stdout)
+        else:
+            result=recover_kubernetes.restore(home,backup,backup_key,publisher_key,target,NAME,CONTEXT,18004)
         if result['name']!=NAME:raise ValueError('Recovery returned unexpected namespace')
         from scripts.adopt_backup_ci import audit_and_redis
         cmd=kube+['-n',NAME,'exec','-i','deployment/'+NAME+'-guardrail','--','python','-']

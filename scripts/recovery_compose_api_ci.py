@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import uterctl
 from scripts import install, recover_compose
@@ -11,7 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 NAME='uter-restored-api-ci'
 
 
-def test(home,backup,backup_key,publisher_key,expected_audit):
+def test(home,backup,backup_key,publisher_key,expected_audit,recovery_bundle=None):
     if os.environ.get('GITHUB_ACTIONS')!='true' or os.name!='posix' or os.geteuid()!=0:
         raise ValueError('Disposable GitHub-hosted Linux runner required')
     target=ROOT/'work/restored-compose-api'
@@ -22,7 +23,15 @@ def test(home,backup,backup_key,publisher_key,expected_audit):
                                 '--filter','label=com.docker.compose.project='+NAME]).strip():
             raise ValueError('Recovery test project already exists')
     try:
-        result=recover_compose.restore(home,backup,backup_key,publisher_key,target,NAME,18003)
+        if recovery_bundle is not None:
+            command=[sys.executable,Path(recovery_bundle)/'scripts/recover_compose.py','--source-home',home,'--backup',backup,
+                     '--backup-key',backup_key,'--publisher-key',publisher_key,'--home',target,
+                     '--name',NAME,'--port','18003']
+            run=subprocess.run([str(x) for x in command],capture_output=True)
+            if run.returncode:raise ValueError('Signed recovery command failed; output withheld')
+            result=json.loads(run.stdout)
+        else:
+            result=recover_compose.restore(home,backup,backup_key,publisher_key,target,NAME,18003)
         if result['name']!=NAME:raise ValueError('Recovery returned unexpected project')
         cfg=uterctl.read(target/'install.json');cmd,env=install.commands(target,cfg)
         from scripts.adopt_backup_ci import audit_and_redis

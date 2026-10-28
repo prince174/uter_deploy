@@ -206,11 +206,21 @@ def main():
     backend = os.environ['BACKEND']
     if backend not in ('compose','kubernetes'): raise ValueError('invalid backend')
     work=ROOT/'work'; evidence=work/'adopt-backup-evidence'; evidence.mkdir(parents=True,exist_ok=True)
+    from scripts.published_pair_ci import select_mode, parse_update_output
+    selection = select_mode(os.environ, work)
+    published = selection['mode'] == 'published'
+    old_version, new_version = ('0.1.2','0.1.3') if published else ('0.0.1','0.0.2')
+    installer = selection['installer'] if published else ROOT/'scripts/install.py'
+    old_inputs = work/'input'/('published-old' if published else OLD)
+    new_inputs = work/'input'/('published-new' if published else NEW)
     home=work/'managed'; registry=work/'registry'; registry.mkdir(mode=0o700)
-    token=os.environ['REGISTRY_TOKEN']; user=os.environ['REGISTRY_USER']
-    auth=base64.b64encode(f'{user}:{token}'.encode()).decode()
-    (registry/'config.json').write_text(json.dumps({'auths':{'ghcr.io':{'auth':auth}}}))
-    os.chmod(registry/'config.json',0o600);os.environ['DOCKER_CONFIG']=str(registry)
+    token=auth=''
+    if not published:
+        token=os.environ['REGISTRY_TOKEN']; user=os.environ['REGISTRY_USER']
+        auth=base64.b64encode(f'{user}:{token}'.encode()).decode()
+        (registry/'config.json').write_text(json.dumps({'auths':{'ghcr.io':{'auth':auth}}}))
+        os.chmod(registry/'config.json',0o600)
+    os.environ['DOCKER_CONFIG']=str(registry)
     os.environ['GUARDRAIL_PORT']='18000';os.environ['GUARDRAIL_CPUS']='2'
     name='uter-upgrade-ci'; cluster='uter-upgrade-ci'; forward=None; proxy=None; created=False; ollama=False
     kube=['kubectl','--context','kind-'+cluster]
@@ -251,8 +261,10 @@ def main():
         llm_url=f'http://{gateway}:11435/v1'
         (work/'empty-key').write_text('')
         print('Stage: prepare isolated runtime',flush=True)
-        prepare=[sys.executable,ROOT/'scripts/install.py','prepare','--home',home,'--backend',backend,'--name',name,'--inputs',work/'input'/OLD,'--llm-url',llm_url,'--llm-model',MODEL,'--llm-key-file',work/'empty-key','--allow-http-llm','--guardrail-cpus','2']
-        if backend=='kubernetes': prepare += ['--context','kind-'+cluster,'--registry-config',registry/'config.json']
+        prepare=[sys.executable,installer,'prepare','--home',home,'--backend',backend,'--name',name,'--inputs',old_inputs,'--llm-url',llm_url,'--llm-model',MODEL,'--llm-key-file',work/'empty-key','--allow-http-llm','--guardrail-cpus','2']
+        if backend=='kubernetes':
+            prepare += ['--context','kind-'+cluster]
+            if not published: prepare += ['--registry-config',registry/'config.json']
         call(prepare)
         cfg=json.loads((home/'install.json').read_text())
         runtime=home/'runtime'
@@ -263,18 +275,21 @@ def main():
             next(x for x in resources if x['kind']=='Secret' and x['metadata']['name']==name+'-guardrail-env')['stringData']['UPSTREAM_OPENAI_MAX_TOKENS']='64'
             (home/'resources.yaml').write_text(yaml.safe_dump_all(resources))
         # Follow the real install.py flow before adopting the resulting installation.
-        call([sys.executable,ROOT/'scripts/install.py','check','--home',home])
-        call([sys.executable,ROOT/'scripts/install.py','install','--home',home])
-        # These are ephemeral CI-only signing keys, not publisher keys or released bundles.
-        key=Ed25519PrivateKey.generate(); private=work/'test-key.pem'; public=work/'test-public.pem'
-        private.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()));os.chmod(private,0o600)
-        public.write_bytes(key.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo))
-        bundles=[]
-        for version,release,prev in [('0.0.1',OLD,[]),('0.0.2',NEW,['0.0.1'])]:
-            folder=work/'input'/release; pub=json.loads((folder/'publication.json').read_text()); images=json.loads((folder/'images.json').read_text())
-            manifest={'schema':1,'config_schema':1,'tooling_schema':1,'status':'released','version':version,'source_commit':pub['images']['guardrail']['source_commit'],'data_epoch':1,'upgrade_from':prev,'images':images,'image_config_ids':{s:pub['images'][s]['image_id'] for s in images}}
-            mpath=work/f'{version}.json';mpath.write_text(json.dumps(manifest)); bundle=work/f'bundle-{version}'
-            build_bundle(mpath,bundle,private);bundles.append(bundle)
+        call([sys.executable,installer,'check','--home',home])
+        call([sys.executable,installer,'install','--home',home])
+        if published:
+            public=selection['public'];bundles=[selection['old'],selection['new']]
+        else:
+            # These are ephemeral CI-only signing keys, not publisher keys or released bundles.
+            key=Ed25519PrivateKey.generate(); private=work/'test-key.pem'; public=work/'test-public.pem'
+            private.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()));os.chmod(private,0o600)
+            public.write_bytes(key.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo))
+            bundles=[]
+            for version,release,prev in [('0.0.1',OLD,[]),('0.0.2',NEW,['0.0.1'])]:
+                folder=work/'input'/release; pub=json.loads((folder/'publication.json').read_text()); images=json.loads((folder/'images.json').read_text())
+                manifest={'schema':1,'config_schema':1,'tooling_schema':1,'status':'released','version':version,'source_commit':pub['images']['guardrail']['source_commit'],'data_epoch':1,'upgrade_from':prev,'images':images,'image_config_ids':{s:pub['images'][s]['image_id'] for s in images}}
+                mpath=work/f'{version}.json';mpath.write_text(json.dumps(manifest)); bundle=work/f'bundle-{version}'
+                build_bundle(mpath,bundle,private);bundles.append(bundle)
         credentials=json.loads((home/'credentials.json').read_text())
         # Every smoke opens its own Kubernetes port-forward so pod replacement is safe.
         smoke_file=runtime/'acceptance.py'
@@ -314,24 +329,31 @@ finally:
         backup_root=work/'managed-backups';backup_root.mkdir(mode=0o700)
         backup_key=key_dir/'backup.key'
         print('Stage: automatic adoption, encrypted backup and upgrade',flush=True)
-        updated=update_installation.update(home,bundles[1],public,backup_root,backup_key,
-                                           current_bundle=bundles[0],create_backup_key=True)
+        if published:
+            output=call([sys.executable,bundles[0]/'scripts/update_installation.py','--home',home,
+                         '--bundle',bundles[1],'--publisher-key',public,'--backup-root',backup_root,
+                         '--backup-key',backup_key,'--current-bundle',bundles[0],'--create-backup-key'])
+            updated=parse_update_output(output)
+        else:
+            updated=update_installation.update(home,bundles[1],public,backup_root,backup_key,
+                                               current_bundle=bundles[0],create_backup_key=True)
         backup_dir=Path(updated['backup'])
         assert json.loads((home/'state.json').read_text())['adopted_installer'] is True
-        # A receipt alone cannot bypass backup even after first adoption and update.
-        probe_manifest=dict(manifest,version='0.0.3',upgrade_from=['0.0.2'])
-        probe_path=work/'0.0.3.json';probe_path.write_text(json.dumps(probe_manifest))
-        probe_bundle=work/'bundle-0.0.3';build_bundle(probe_path,probe_bundle,private)
-        fake=work/'fake-receipt.json';fake.write_text(json.dumps({'version':'0.0.2','backup_id':'fake'}))
-        missing=subprocess.run([str(x) for x in base+['apply',*common,'--bundle',probe_bundle,'--backup-receipt',fake]],capture_output=True)
-        assert missing.returncode and b'receipts alone' in missing.stderr
+        if not published:
+            # A receipt alone cannot bypass backup even after first adoption and update.
+            probe_manifest=dict(manifest,version='0.0.3',upgrade_from=['0.0.2'])
+            probe_path=work/'0.0.3.json';probe_path.write_text(json.dumps(probe_manifest))
+            probe_bundle=work/'bundle-0.0.3';build_bundle(probe_path,probe_bundle,private)
+            fake=work/'fake-receipt.json';fake.write_text(json.dumps({'version':'0.0.2','backup_id':'fake'}))
+            missing=subprocess.run([str(x) for x in base+['apply',*common,'--bundle',probe_bundle,'--backup-receipt',fake]],capture_output=True)
+            assert missing.returncode and b'receipts alone' in missing.stderr
         from scripts import backup_store, restore_backup
         backup_manifest=backup_store.verify_set(backup_dir,backup_crypto.read_key(backup_key),home=home,
-                                                site=uterctl.site_config(home),version='0.0.1')
+                                                site=uterctl.site_config(home),version=old_version)
         from scripts import recovery_preflight
         with tempfile.TemporaryDirectory(prefix='preflight-',dir=work) as preflight_parent:
             verified=recovery_preflight.preflight(home,backup_dir,backup_key,public,Path(preflight_parent)/'stage')
-            assert verified['backup_id']==backup_manifest['id'] and verified['version']=='0.0.1'
+            assert verified['backup_id']==backup_manifest['id'] and verified['version']==old_version
         exported=work/'backup-export'
         restore_backup.export(backup_dir,backup_key,exported)
         # Read the actual encrypted audit snapshot after verified export, compare its first record.
@@ -343,7 +365,7 @@ finally:
         assert hashlib.sha256(audit_lines[0]).hexdigest()==audit_before['first_sha256']
         assert len(audit_lines)>=audit_before['lines']
         # Redis validates the exported RDB format; this uses a disposable helper only.
-        redis_image=json.loads((work/'input'/OLD/'images.json').read_text())['redis']
+        redis_image=json.loads((old_inputs/'images.json').read_text())['redis']
         call(['docker','run','--rm','--network','none','--user','0:0',
               '--mount','type=bind,source='+str(exported/'redis.rdb')+',target=/snapshot.rdb,readonly',
               '--entrypoint','redis-check-rdb',redis_image,'/snapshot.rdb'])
@@ -373,10 +395,12 @@ finally:
             subprocess.run(['docker','rm','-f',restored_name],capture_output=True)
         if backend=='kubernetes':
             from scripts import recovery_kubernetes_api_ci
-            recovery_kubernetes_api_ci.test(home,backup_dir,backup_key,public,audit_before)
+            recovery_kubernetes_api_ci.test(home,backup_dir,backup_key,public,audit_before,
+                                                recovery_bundle=bundles[0] if published else None)
         else:
             from scripts import recovery_compose_api_ci
-            recovery_compose_api_ci.test(home,backup_dir,backup_key,public,audit_before)
+            recovery_compose_api_ci.test(home,backup_dir,backup_key,public,audit_before,
+                                            recovery_bundle=bundles[0] if published else None)
         print('Stage: real LLM and persistent state after update',flush=True)
         after=json.loads(call([sys.executable,smoke_file]))
         stats_after=request('http://127.0.0.1:11435/stats')
@@ -384,22 +408,22 @@ finally:
         assert stats_after['completion_tokens'] > stats_before['completion_tokens']
         audit_after=audit_and_redis(cmd,env,'check')
         assert audit_before['first_sha256']==audit_after['first_sha256'] and audit_after['lines']>audit_before['lines']
-        state=json.loads((home/'state.json').read_text());assert state['current']['version']=='0.0.2' and state['previous']['version']=='0.0.1' and state['pending'] is None
-        assert state['current']['images']==json.loads((work/'input'/NEW/'images.json').read_text())
-        publication=json.loads((work/'input'/NEW/'publication.json').read_text())
+        state=json.loads((home/'state.json').read_text());assert state['current']['version']==new_version and state['previous']['version']==old_version and state['pending'] is None
+        assert state['current']['images']==json.loads((new_inputs/'images.json').read_text())
+        publication=json.loads((new_inputs/'publication.json').read_text())
         verify_active_images(backend,name,home,cfg,kube,state['current']['images'],publication)
         assert any(x['name']==MODEL for x in request('http://127.0.0.1:11434/api/ps')['models'])
-        result={'backend':backend,'old_release':OLD,'new_release':NEW,'model':MODEL,'model_digest':MODEL_DIGEST,
-                'real_inference':'pass','install_py':'pass','adoption':'pass','receipt_bypass_rejected':'pass',
+        result={'backend':backend,'old_release':('deploy-2026.10.28-signed-3' if published else OLD),'new_release':('deploy-2026.10.28-signed-4' if published else NEW),'model':MODEL,'model_digest':MODEL_DIGEST,
+                'real_inference':'pass','install_py':'pass','adoption':'pass','receipt_bypass_rejected':'synthetic-only' if published else 'pass',
                 'encrypted_backup':'pass','authenticated_recovery_preflight':'pass',
                 'backup_export':'pass','redis_rdb_validation':'pass','redis_restore':'pass','backup_audit_matches':'pass',
                 'backup_id':backup_manifest['id'],'upgrade':'pass','running_images_match_new_release':'pass',
                 'redis_sentinel':'pass','redis_types_and_expiry':'pass',
                 'separate_kubernetes_pvc_restore':'pass' if backend=='kubernetes' else 'not applicable',
                 'audit_chain_and_persistence':'pass','audit_lines_before':audit_before['lines'],
-                'audit_lines_after':audit_after['lines'],'test_signing_key':'ephemeral CI only',
+                'audit_lines_after':audit_after['lines'],'test_signing_key':'publisher public key; no private key' if published else 'ephemeral CI only',
                 'full_restore_to_workloads':'production recovery command and isolated installation passed',
-                'data_epoch':'CI assumption, not a production compatibility declaration'}
+                'data_epoch':'declared by signed releases; synthetic data only' if published else 'CI assumption, not a production compatibility declaration'}
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
     finally:
         if forward: forward.terminate();forward.wait(timeout=10)
