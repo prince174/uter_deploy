@@ -14,4 +14,3 @@
 ## Повторить CI
 
 В Actions запустите `Test installation adoption and encrypted backup`. Runner скачает образ Ollama, модель около 400 МБ, образы Uter и зависимости. Отчёты доступны в артефактах `adopt-backup-compose-evidence` и `adopt-backup-kubernetes-evidence`. Прогон рассчитан только на одноразовый GitHub-hosted runner, не на существующий стенд.
-
