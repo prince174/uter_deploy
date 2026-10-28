@@ -37,7 +37,8 @@ jobs:
           with open(os.environ['GITHUB_ENV'],'a') as f:
               f.write('BASELINE_IMAGE='+b['images'][os.environ['SERVICE']]+'\nREDIS_TARGET='+b['redis_target']+'\n')
           PY
-          docker pull "$BASELINE_IMAGE"
+      - name: Pull pinned baseline
+        run: docker pull "$BASELINE_IMAGE"
       - name: Baseline vulnerability and secret report with current database
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
         with:
