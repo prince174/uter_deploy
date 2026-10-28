@@ -240,6 +240,60 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
                 ci.main()
             call.assert_not_called()
 
+    def test_kubernetes_diagnostics_expose_only_fixed_categories(self):
+        def run(argv, **kwargs):
+            self.assertTrue(kwargs.get('capture_output'))
+            self.assertNotIn('describe', argv)
+            if argv[0] == 'helm':
+                return SimpleNamespace(returncode=0, stdout=json.dumps({
+                    'info': {'status': 'failed', 'description': 'secret-name: context deadline exceeded'},
+                    'secrets': {'token': 'sensitive-key'},
+                }).encode(), stderr=b'secret-stderr')
+            expression = argv[-1]
+            if '.lastState.terminated.reason' in expression:
+                output = b'OOMKilled\nsecret-value\n'
+            elif '.state.waiting.reason' in expression:
+                output = b'ContainerCreating\nsecret-value\n'
+            elif '.state.terminated.reason' in expression:
+                output = b'Error\nsecret-value\n'
+            elif '.ready' in expression:
+                output = b'false\nsecret-value\n'
+            elif '.status.phase' in expression:
+                output = b'Running\nsecret-value\n' if 'pods' in argv else b'Bound\nsecret-value\n'
+            elif '.reason' in expression:
+                output = b'Unhealthy\nsecret-value\n'
+            else:
+                raise AssertionError('Unexpected request')
+            return SimpleNamespace(returncode=0, stdout=output, stderr=b'secret-stderr')
+        with patch.object(ci.subprocess, 'run', side_effect=run) as process:
+            summary = ci.kubernetes_install_diagnostics('kind-secret-context', 'secret-namespace', 'secret-release')
+        self.assertEqual(summary['pod_phases'], {'Running': 1, 'Other': 1})
+        self.assertEqual(summary['pvc_phases'], {'Bound': 1, 'Other': 1})
+        self.assertEqual(summary['warning_events'], {'Unhealthy': 1, 'Other': 1})
+        self.assertEqual(summary['container_last_terminated'], {'OOMKilled': 1, 'Other': 1})
+        self.assertEqual(summary['helm_status'], 'failed')
+        self.assertEqual(summary['helm_wait_timeout'], 'yes')
+        output = json.dumps(summary)
+        for secret in ('secret-name', 'sensitive-key', 'secret-value', 'secret-stderr',
+                       'kind-secret-context', 'secret-namespace', 'secret-release'):
+            self.assertNotIn(secret, output)
+        self.assertTrue(all(call.kwargs['timeout'] == 15 for call in process.call_args_list))
+        self.assertTrue(all('jsonpath=' in ' '.join(call.args[0]) for call in process.call_args_list
+                            if call.args[0][0] == 'kubectl'))
+
+    def test_kubernetes_helm_timeout_stays_unknown_without_evidence(self):
+        def run(argv, **kwargs):
+            if argv[0] == 'helm':
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'info': {
+                    'status': 'failed', 'description': 'sensitive message unrelated to timeout'}}).encode())
+            return SimpleNamespace(returncode=1, stdout=b'secret-value', stderr=b'secret-stderr')
+        with patch.object(ci.subprocess, 'run', side_effect=run):
+            summary = ci.kubernetes_install_diagnostics('context', 'namespace', 'release')
+        self.assertEqual(summary['helm_status'], 'failed')
+        self.assertEqual(summary['helm_wait_timeout'], 'unknown')
+        self.assertEqual(len(summary['unavailable']), 9)
+        self.assertNotIn('secret', json.dumps(summary))
+
     def test_proxy_configuration_has_isolated_backend_and_external_key(self):
         config = yaml.safe_load(ci.proxy_config())
         self.assertEqual(config['model_list'][0]['model_name'], ci.MODEL_ALIAS)

@@ -421,6 +421,79 @@ def call(argv, *, env=None, failure):
     return result.stdout
 
 
+# These diagnostics deliberately request status fields only, then emit exclusively
+# allowlisted categories and counts. Never emit names, messages, env or stderr.
+KUBE_PHASES = frozenset({'Pending', 'Running', 'Succeeded', 'Failed', 'Unknown'})
+KUBE_PVC_PHASES = frozenset({'Pending', 'Bound', 'Lost'})
+KUBE_WAITING = frozenset({'ContainerCreating', 'PodInitializing', 'ErrImagePull',
+    'ImagePullBackOff', 'InvalidImageName', 'CreateContainerConfigError',
+    'CreateContainerError', 'CrashLoopBackOff', 'RunContainerError'})
+KUBE_TERMINATED = frozenset({'Completed', 'Error', 'OOMKilled', 'ContainerCannotRun',
+    'DeadlineExceeded', 'Evicted'})
+KUBE_EVENTS = frozenset({'FailedScheduling', 'FailedMount', 'FailedAttachVolume',
+    'Failed', 'BackOff', 'Unhealthy', 'FailedCreate', 'FailedBinding',
+    'ProvisioningFailed', 'FailedCreatePodSandBox', 'Evicted', 'NodeNotReady'})
+HELM_STATUSES = frozenset({'unknown', 'deployed', 'uninstalled', 'superseded',
+    'failed', 'uninstalling', 'pending-install', 'pending-upgrade', 'pending-rollback'})
+
+
+def safe_category_counts(text, allowed):
+    counts = {}
+    for line in text.splitlines()[:1000]:
+        value = line.strip()
+        if not value:
+            continue
+        category = value if value in allowed else 'Other'
+        counts[category] = counts.get(category, 0) + 1
+    return counts
+
+
+def kubernetes_install_diagnostics(context, namespace, release):
+    summary = {'pod_phases': {}, 'container_waiting': {}, 'container_terminated': {},
+               'container_last_terminated': {}, 'init_container_waiting': {},
+               'init_container_terminated': {}, 'container_ready': {},
+               'pvc_phases': {}, 'warning_events': {},
+               'helm_status': 'unknown', 'helm_wait_timeout': 'unknown', 'unavailable': []}
+    requests = (
+        ('pod_phases', 'pods', '{range .items[*]}{.status.phase}{"\\n"}{end}', KUBE_PHASES, ()),
+        ('container_waiting', 'pods', '{range .items[*]}{range .status.containerStatuses[*]}{.state.waiting.reason}{"\\n"}{end}{end}', KUBE_WAITING, ()),
+        ('container_terminated', 'pods', '{range .items[*]}{range .status.containerStatuses[*]}{.state.terminated.reason}{"\\n"}{end}{end}', KUBE_TERMINATED, ()),
+        ('container_last_terminated', 'pods', '{range .items[*]}{range .status.containerStatuses[*]}{.lastState.terminated.reason}{"\\n"}{end}{end}', KUBE_TERMINATED, ()),
+        ('init_container_waiting', 'pods', '{range .items[*]}{range .status.initContainerStatuses[*]}{.state.waiting.reason}{"\\n"}{end}{end}', KUBE_WAITING, ()),
+        ('init_container_terminated', 'pods', '{range .items[*]}{range .status.initContainerStatuses[*]}{.state.terminated.reason}{"\\n"}{end}{end}', KUBE_TERMINATED, ()),
+        ('container_ready', 'pods', '{range .items[*]}{range .status.containerStatuses[*]}{.ready}{"\\n"}{end}{end}', frozenset({'true', 'false'}), ()),
+        ('pvc_phases', 'pvc', '{range .items[*]}{.status.phase}{"\\n"}{end}', KUBE_PVC_PHASES, ()),
+        ('warning_events', 'events', '{range .items[*]}{.reason}{"\\n"}{end}', KUBE_EVENTS, ('--field-selector=type=Warning',)),
+    )
+    for category, kind, expression, allowed, extra in requests:
+        try:
+            result = subprocess.run(['kubectl', '--context', context, '-n', namespace, 'get', kind,
+                                     *extra, '-o', 'jsonpath=' + expression], capture_output=True, timeout=15)
+            if result.returncode:
+                raise ValueError('Diagnostic unavailable')
+            text = result.stdout[:128 * 1024].decode('utf-8', errors='replace')
+            summary[category] = safe_category_counts(text, allowed)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            summary['unavailable'].append(category)
+    try:
+        result = subprocess.run(['helm', '--kube-context', context, '--namespace', namespace,
+                                 'status', release, '-o', 'json'], capture_output=True, timeout=15)
+        if result.returncode or len(result.stdout) > 1024 * 1024:
+            raise ValueError('Diagnostic unavailable')
+        record = json.loads(result.stdout)
+        info = record.get('info', {}) if isinstance(record, dict) else {}
+        if not isinstance(info, dict):
+            raise ValueError('Diagnostic unavailable')
+        status = info.get('status')
+        summary['helm_status'] = status if status in HELM_STATUSES else 'unknown'
+        description = info.get('description')
+        if isinstance(description, str) and re.search(r'context deadline exceeded|timed out waiting for the condition', description, re.IGNORECASE):
+            summary['helm_wait_timeout'] = 'yes'
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        summary['unavailable'].append('helm_status')
+    return summary
+
+
 def ci_only():
     if (os.name != 'posix' or os.environ.get('GITHUB_ACTIONS') != 'true'
             or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
@@ -515,7 +588,13 @@ def main():
             compose = ['docker', '--context', 'default', 'compose', '--project-name', name,
                        '--env-file', str(home / 'empty.env'), '-f', str(home / 'compose/compose.yaml')]
         call([python, installer, 'check', '--home', home], failure='UTER_CHECK_FAILED')
-        call([python, installer, 'install', '--home', home], failure='UTER_INSTALL_FAILED')
+        try:
+            call([python, installer, 'install', '--home', home], failure='UTER_INSTALL_FAILED')
+        except DiagnosticError:
+            if backend == 'kubernetes':
+                print('Kubernetes install categories: ' + json.dumps(
+                    kubernetes_install_diagnostics('kind-' + cluster, name, name), sort_keys=True), flush=True)
+            raise
         if backend == 'kubernetes':
             forward = subprocess.Popen(['kubectl', '--context', 'kind-' + cluster, '-n', name,
                                         'port-forward', 'service/' + name + '-guardrail',
