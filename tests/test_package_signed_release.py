@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 
 from cryptography.hazmat.primitives import serialization
@@ -30,6 +31,8 @@ class SignedReleasePackagingTests(unittest.TestCase):
         extracted=self.root/'extracted';extract(out/'signed-bundle.tar.gz',self.public,extracted)
         self.assertFalse(any(p.name=='private' for p in extracted.rglob('*')))
         self.assertTrue((extracted/'scripts/update_installation.py').is_file())
+        with tarfile.open(out/'signed-bundle.tar.gz','r:gz') as archive:
+            self.assertTrue(all(m.uid==0 and m.gid==0 and not m.uname and not m.gname for m in archive))
 
     def test_rejects_wrong_fingerprint_before_creating_output(self):
         out=self.root/'release'

@@ -32,7 +32,11 @@ def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expect
     bundle_dir=output/'bundle';bundle.build(manifest_path,bundle_dir,Path(private_key))
     if uterctl.verify(bundle_dir,public_key)!=manifest:raise ValueError('Signed release verification failed')
     archive=output/'signed-bundle.tar.gz'
-    with tarfile.open(archive,'w:gz') as tar:tar.add(bundle_dir,arcname='bundle')
+    def public_metadata(item):
+        item.uid=item.gid=0;item.uname=item.gname='';item.mtime=0
+        item.mode=0o755 if item.isdir() else 0o644
+        return item
+    with tarfile.open(archive,'w:gz') as tar:tar.add(bundle_dir,arcname='bundle',filter=public_metadata)
     with archive.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
     (output/'signed-bundle.tar.gz.sha256').write_text(digest+'  '+archive.name+'\n',encoding='ascii')
     (output/'publisher-public.pem').write_bytes(public)
