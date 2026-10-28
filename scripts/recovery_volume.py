@@ -10,7 +10,9 @@ import shutil
 import sys
 import tarfile
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Kubernetes ConfigMap files are symlinks into a projected version directory.
+# Keep the lexical mount path so the sibling archive_safety module remains importable.
+sys.path.insert(0, str(Path(__file__).absolute().parents[1]))
 from scripts.archive_safety import check_tar
 
 

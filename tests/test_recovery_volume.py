@@ -1,5 +1,9 @@
 import io
 from pathlib import Path
+import os
+import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -51,3 +55,17 @@ class RecoveryVolumeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Invalid Redis'):
             recovery_volume.populate_redis(source,self.volume)
         self.assertEqual(list(self.volume.iterdir()),[])
+
+    @unittest.skipUnless(os.name=='posix','Kubernetes projected files use POSIX symlinks')
+    def test_imports_from_projected_configmap_symlinks(self):
+        mount=self.root/'tool/scripts';version=mount/'..version';version.mkdir(parents=True)
+        scripts=Path(recovery_volume.__file__).parent
+        for name in ('recovery_volume.py','archive_safety.py'):
+            shutil.copyfile(scripts/name,version/name)
+            (mount/name).symlink_to(Path('..version')/name)
+        result=subprocess.run([sys.executable,'-I',str(mount/'recovery_volume.py'),'redis',
+                               '--snapshot',str(self.root/'missing'),'--destination',str(self.volume)],
+                              capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('explicitly mounted recovery volume',result.stderr)
+        self.assertNotIn('ModuleNotFoundError',result.stderr)
