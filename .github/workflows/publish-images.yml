@@ -1,4 +1,4 @@
-name: Publish private images and verify installation
+name: Publish images and verify installation
 on:
   workflow_dispatch:
     inputs:
@@ -6,6 +6,12 @@ on:
         description: Successful harden-image-artifacts or remediate-images run ID
         required: true
         type: string
+      package_visibility:
+        description: Expected registry visibility; public verifies anonymous pulls
+        required: true
+        type: choice
+        options: [private, public]
+        default: private
 permissions:
   contents: read
   actions: read
@@ -35,10 +41,11 @@ jobs:
         env:
           REGISTRY_TOKEN: ${{ github.token }}
         run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      - name: Publish verified archives and verify private access
+      - name: Publish verified archives and verify registry access
         env:
           GH_TOKEN: ${{ github.token }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          PACKAGE_VISIBILITY: ${{ inputs.package_visibility }}
         run: python scripts/publish_images.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:

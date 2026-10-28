@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -31,10 +32,23 @@ def anonymous_denied(name):
             raise
 
 
+def verify_visibility(name, reference, visibility):
+    if visibility == 'private':
+        anonymous_denied(name)
+    elif visibility == 'public':
+        with tempfile.TemporaryDirectory() as config:
+            subprocess.run(['docker', '--config', config, 'pull', reference], check=True)
+    else:
+        raise ValueError('Expected private or public package visibility')
+
+
 def main():
     if os.environ.get('GITHUB_ACTIONS') != 'true':
         raise SystemExit('GitHub-hosted CI only')
     owner = os.environ['GITHUB_REPOSITORY_OWNER'].lower()
+    visibility = os.environ.get('PACKAGE_VISIBILITY', 'private')
+    if visibility not in ('private', 'public'):
+        raise ValueError('Expected private or public package visibility')
     build = os.environ['BUILD_RUN_ID']
     assert re.fullmatch(r'\d+', build)
     identity = json.loads(run(['gh', 'api', f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{build}']))
@@ -45,7 +59,7 @@ def main():
     output.mkdir(parents=True)
     for service in ('guardrail', 'agent', 'redis'):
         package = f'{owner}/uter-{service}'
-        anonymous_denied(package)
+        if visibility == 'private': anonymous_denied(package)
         if service != 'redis' or remediated:
             folder = Path(f'work/images/protected-{service}')
             if remediated:
@@ -78,13 +92,13 @@ def main():
         subprocess.run(['docker', 'push', tag], check=True)
         refs = json.loads(run(['docker', 'image', 'inspect', tag, '--format', '{{json .RepoDigests}}']))
         images[service] = next(ref for ref in refs if ref.startswith(f'ghcr.io/{package}@sha256:'))
-        # Authenticated pull of the published digest plus independent anonymous denial.
+        # Verify the requested visibility using an isolated client configuration.
         subprocess.run(['docker', 'pull', images[service]], check=True)
-        anonymous_denied(package)
+        verify_visibility(package, images[service], visibility)
     assert metadata['agent']['source_commit'] == metadata['guardrail']['source_commit']
     (output / 'images.json').write_text(json.dumps(images, indent=2) + '\n')
     (output / 'publication.json').write_text(json.dumps(dict(build_run_id=build, images=metadata,
-        registry='ghcr.io', anonymous_pull='denied', workflow_run_id=os.environ['GITHUB_RUN_ID']), indent=2) + '\n')
+        registry='ghcr.io', anonymous_pull='allowed' if visibility == 'public' else 'denied', workflow_run_id=os.environ['GITHUB_RUN_ID']), indent=2) + '\n')
     source = Path('work/images/protected-guardrail/evidence')
     if remediated:
         for service in images:
@@ -92,7 +106,7 @@ def main():
     shutil.copyfile(source / 'policies/default.toml', output / 'policy.toml')
     shutil.copyfile(source / 'profiles/model_profiles.toml', output / 'model_profiles.toml')
     with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as report:
-        report.write('Private registry publication verified.\n\n```json\n' + json.dumps(images, indent=2) + '\n```\n')
+        report.write(f'{visibility.capitalize()} registry publication verified.\n\n```json\n' + json.dumps(images, indent=2) + '\n```\n')
 
 
 if __name__ == '__main__':

@@ -10,6 +10,17 @@ spec.loader.exec_module(m)
 
 
 class PublicationTests(unittest.TestCase):
+    def test_public_verification_uses_empty_separate_docker_config(self):
+        with patch.object(m.subprocess, 'run') as run, patch.object(m, 'anonymous_denied') as denied:
+            m.verify_visibility('owner/package','ghcr.io/owner/package@sha256:'+'a'*64,'public')
+        args=run.call_args.args[0]
+        self.assertEqual(args[:2],['docker','--config'])
+        self.assertEqual(args[3:5],['pull','ghcr.io/owner/package@sha256:'+'a'*64])
+        self.assertTrue(run.call_args.kwargs['check']);denied.assert_not_called()
+
+    def test_visibility_rejects_unknown_mode(self):
+        with self.assertRaises(ValueError):m.verify_visibility('owner/package','ref','unknown')
+
     def test_anonymous_private_denied(self):
         for code in (401, 403, 404):
             with patch.object(m.urllib.request, 'urlopen', side_effect=urllib.error.HTTPError('url', code, '', {}, None)):
