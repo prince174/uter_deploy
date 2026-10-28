@@ -46,6 +46,7 @@ jobs:
         run: |
           .venv/bin/python scripts/extract_signed_bundle.py --archive work/download/signed-bundle.tar.gz \
             --key work/download/publisher-public.pem --output work/signed
+          .venv/bin/python -c 'import json,subprocess; m=json.load(open("work/signed/manifest.json")); assert m["deployment_commit"]==subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()'
       - name: Install pinned kind
         if: matrix.backend == 'kubernetes'
         run: |

@@ -12,27 +12,28 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
-def build(manifest, output, key):
+def build(manifest, output, key, *, source_root=ROOT):
     m = validate(json.loads(manifest.read_text(encoding="utf-8")))
     private = load_pem_private_key(key.read_bytes(), password=None)
     if not isinstance(private, Ed25519PrivateKey):
         raise ValueError("Ed25519 private key required")
     output.mkdir(parents=True, exist_ok=False)
     shutil.copy2(manifest, output / "manifest.json")
+    source_root=Path(source_root)
     for name in ["compose", "charts", "docs"]:
-        shutil.copytree(ROOT / name, output / name)
+        shutil.copytree(source_root / name, output / name)
     if m.get('tooling_schema') == 1:
-        shutil.copy2(ROOT/'uterctl.py',output/'uterctl.py')
-        shutil.copy2(ROOT/'requirements.txt',output/'requirements.txt')
+        shutil.copy2(source_root/'uterctl.py',output/'uterctl.py')
+        shutil.copy2(source_root/'requirements.txt',output/'requirements.txt')
         (output/'examples').mkdir()
-        shutil.copy2(ROOT/'examples/redis.conf.example',output/'examples/redis.conf.example')
+        shutil.copy2(source_root/'examples/redis.conf.example',output/'examples/redis.conf.example')
         scripts=output/'scripts';scripts.mkdir()
         for name in ('install.py','adopt_installation.py','backup_crypto.py','backup_store.py',
                      'backup_snapshot.py','archive_safety.py','restore_backup.py','recovery_preflight.py',
                      'recovery_volume.py','recovery_aof.py','recover_compose.py','recover_kubernetes.py',
                      'recovery_kube_volumes.py','extract_signed_bundle.py','managed_smoke.py','adopt_managed.py',
                      'update_installation.py','smoke_http.py'):
-            shutil.copy2(ROOT/'scripts'/name,scripts/name)
+            shutil.copy2(source_root/'scripts'/name,scripts/name)
     (output / "empty.env").write_text("# Deliberately empty; runtime env files are explicit.\n")
     raw = json.dumps(inventory(output), sort_keys=True, indent=2).encode()
     (output / "checksums.json").write_bytes(raw)

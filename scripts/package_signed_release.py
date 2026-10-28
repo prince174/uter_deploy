@@ -4,12 +4,40 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import shutil
+import subprocess
 import sys
 import tarfile
+import tempfile
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import uterctl
 from scripts import bundle, release_manifest
+
+
+def export_git_snapshot(destination):
+    """Use tracked Git bytes, not platform-specific working-tree line endings."""
+    root=Path(__file__).resolve().parents[1]
+    commit=subprocess.check_output(['git','-C',str(root),'rev-parse','--verify','HEAD^{commit}'],text=True).strip()
+    with tempfile.TemporaryFile() as stream:
+        subprocess.run(['git','-C',str(root),'archive','--format=tar',commit,'--',
+                        'compose','charts','docs','scripts','uterctl.py','requirements.txt','examples/redis.conf.example'],
+                       stdout=stream,check=True)
+        stream.seek(0)
+        with tarfile.open(fileobj=stream,mode='r:') as tar:
+            total=0;seen=set()
+            for m in tar:
+                p=PurePosixPath(m.name);total+=m.size
+                if (p.is_absolute() or '..' in p.parts or '\\' in m.name or m.name in seen or
+                        not (m.isdir() or m.isfile()) or m.size<0 or total>1024*1024*1024 or len(seen)>=10000):
+                    raise ValueError('Unsafe deployment Git archive')
+                seen.add(m.name);target=Path(destination).joinpath(*p.parts)
+                if m.isdir():target.mkdir(mode=0o700,parents=True,exist_ok=True)
+                else:
+                    target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+                    with target.open('xb') as out,tar.extractfile(m) as src:shutil.copyfileobj(src,out,1024*1024)
+    return commit
 
 
 def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expected_fingerprint,output):
@@ -27,9 +55,15 @@ def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expect
     manifest=release_manifest.make_manifest(inputs,version,data_epoch,upgrade_from)
     output.mkdir(mode=0o700,parents=False)
     marker=output/'INCOMPLETE';marker.write_text('Signed release packaging incomplete.\n')
-    manifest_path=output/'manifest.json'
-    manifest_path.write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n',encoding='utf-8')
-    bundle_dir=output/'bundle';bundle.build(manifest_path,bundle_dir,Path(private_key))
+    with tempfile.TemporaryDirectory(prefix='.uter-source-',dir=output) as tmp:
+        deployment_commit=export_git_snapshot(tmp)
+        manifest['deployment_commit']=deployment_commit
+        manifest_path=output/'manifest.json'
+        manifest_path.write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n',encoding='utf-8')
+        bundle_dir=output/'bundle';bundle.build(manifest_path,bundle_dir,Path(private_key),source_root=tmp)
+        verifier=subprocess.run([sys.executable,str(Path(tmp)/'uterctl.py'),'verify','--bundle',str(bundle_dir),
+                                 '--key',str(public_key)],capture_output=True)
+        if verifier.returncode:raise ValueError('Committed deployment verifier rejected the signed bundle')
     if uterctl.verify(bundle_dir,public_key)!=manifest:raise ValueError('Signed release verification failed')
     archive=output/'signed-bundle.tar.gz'
     def public_metadata(item):
@@ -41,7 +75,7 @@ def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expect
     (output/'signed-bundle.tar.gz.sha256').write_text(digest+'  '+archive.name+'\n',encoding='ascii')
     (output/'publisher-public.pem').write_bytes(public)
     marker.unlink()
-    return {'version':version,'public_key_sha256':actual,'archive_sha256':digest,'upgrade_from':upgrade_from}
+    return {'version':version,'deployment_commit':deployment_commit,'public_key_sha256':actual,'archive_sha256':digest,'upgrade_from':upgrade_from}
 
 
 def main():

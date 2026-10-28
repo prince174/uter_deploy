@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import tarfile
+import subprocess
 import unittest
 
 from cryptography.hazmat.primitives import serialization
@@ -31,6 +32,10 @@ class SignedReleasePackagingTests(unittest.TestCase):
         extracted=self.root/'extracted';extract(out/'signed-bundle.tar.gz',self.public,extracted)
         self.assertFalse(any(p.name=='private' for p in extracted.rglob('*')))
         self.assertTrue((extracted/'scripts/update_installation.py').is_file())
+        commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+        expected=subprocess.check_output(['git','show',commit+':compose/compose.yaml'])
+        self.assertEqual((extracted/'compose/compose.yaml').read_bytes(),expected)
+        self.assertEqual(result['deployment_commit'],commit)
         with tarfile.open(out/'signed-bundle.tar.gz','r:gz') as archive:
             self.assertTrue(all(m.uid==0 and m.gid==0 and not m.uname and not m.gname for m in archive))
 

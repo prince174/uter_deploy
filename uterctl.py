@@ -44,6 +44,8 @@ def validate(m):
         raise ValueError("Only released, versioned manifests can be installed")
     if not re.fullmatch(r"[0-9a-f]{40}", m.get("source_commit", "")):
         raise ValueError("Full source commit SHA required")
+    if 'deployment_commit' in m and not re.fullmatch(r'[0-9a-f]{40}',m['deployment_commit']):
+        raise ValueError('Full deployment commit SHA required')
     if set(m.get("images", {})) != {"guardrail", "agent", "redis"}:
         raise ValueError("Exactly guardrail, agent and redis images required")
     if any(not IMAGE.fullmatch(v) for v in m["images"].values()):
