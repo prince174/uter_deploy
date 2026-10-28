@@ -1,0 +1,80 @@
+name: Audit historical image artifacts before public disclosure
+on:
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+  packages: read
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" > "$RUNNER_TEMP/inventory.json"
+          python - <<'PY'
+          import json,os
+          pages=json.load(open(os.environ['RUNNER_TEMP']+'/inventory.json'))
+          items=[{'id':a['id'],'name':a['name']} for page in pages for a in page['artifacts'] if not a['expired'] and a['name'] in ('protected-guardrail','protected-agent','protected-redis')]
+          assert items and len(items)<=50
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write('matrix='+json.dumps(items,separators=(',',':'))+'\n')
+          PY
+  audit:
+    needs: inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        artifact: ${{ fromJSON(needs.inventory.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Select source revision
+        id: source
+        run: |
+          python - <<'PY'
+          import json,os,re
+          sha=json.load(open('candidates/source.json'))['source_commit']
+          assert re.fullmatch(r'[0-9a-f]{40}',sha)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('sha='+sha+'\n')
+          PY
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: prince174/uter
+          ref: ${{ steps.source.outputs.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.SOURCE_READ_TOKEN }}
+          path: work/upstream
+          persist-credentials: false
+      - name: Login to GHCR
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc
+          scanners: secret
+          format: json
+          output: work/seed-findings.json
+          exit-code: '0'
+      - name: Inspect archive without publishing its contents
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ matrix.artifact.id }}
+        run: python scripts/audit_historical_artifact.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: historical-audit-${{ matrix.artifact.id }}
+          path: work/historical-audit/result.json
+          retention-days: 7
+          if-no-files-found: warn
