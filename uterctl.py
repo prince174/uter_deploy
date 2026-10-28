@@ -46,6 +46,10 @@ def validate(m):
         raise ValueError("Exactly guardrail, agent and redis images required")
     if any(not IMAGE.fullmatch(v) for v in m["images"].values()):
         raise ValueError("All images must be pinned by sha256 digest")
+    ids = m.get("image_config_ids")
+    if ids is not None and (not isinstance(ids, dict) or set(ids) != set(m["images"]) or
+                            any(not re.fullmatch(r"sha256:[0-9a-f]{64}", v) for v in ids.values())):
+        raise ValueError("Optional image_config_ids must cover all images with sha256 IDs")
     if type(m.get("data_epoch")) is not int or m["data_epoch"] < 1:
         raise ValueError("Positive data_epoch required")
     if not isinstance(m.get("upgrade_from"), list) or any(not VERSION.fullmatch(v) for v in m["upgrade_from"]):
@@ -113,13 +117,24 @@ def site_config(home):
     smoke = site.get("smoke_command")
     if not isinstance(smoke, list) or not smoke or not all(isinstance(x, str) for x in smoke):
         raise ValueError("Configure a runtime-owned smoke_command argv list")
+    if "context" in site and (not isinstance(site["context"], str) or not site["context"] or site["context"].startswith("-")):
+        raise ValueError("Invalid explicit runtime context")
+    if "port" in site and (type(site["port"]) is not int or not 1024 <= site["port"] <= 65535):
+        raise ValueError("Invalid runtime port")
+    if "guardrail_cpus" in site and (type(site["guardrail_cpus"]) not in (int, float) or not 1 <= site["guardrail_cpus"] <= 64):
+        raise ValueError("Invalid runtime CPU limit")
     return site
 
 
-def render_env(home, bundle, m):
+def render_env(home, bundle, m, site=None):
     env = os.environ.copy()
     env.update({k.upper() + "_IMAGE": v for k, v in m["images"].items()})
     env["RUNTIME_DIR"] = (home / "runtime").as_posix()
+    if site:
+        if "port" in site:
+            env["GUARDRAIL_PORT"] = str(site["port"])
+        if "guardrail_cpus" in site:
+            env["GUARDRAIL_CPUS"] = str(site["guardrail_cpus"])
     return env
 
 
@@ -134,8 +149,8 @@ def deploy(home, bundle, m, site, *, check=False, offline=False):
                 raise ValueError(f"Unconfigured runtime file: {name}")
         if not (runtime / "models").is_dir():
             raise ValueError("runtime/models directory required")
-        cmd = ["docker", "compose", "--project-name", site["name"], "--env-file", str(bundle / "empty.env"), "-f", str(bundle / "compose/compose.yaml")]
-        env = render_env(home, bundle, m)
+        cmd = ["docker"] + (["--context", site["context"]] if site.get("context") else []) + ["compose", "--project-name", site["name"], "--env-file", str(bundle / "empty.env"), "-f", str(bundle / "compose/compose.yaml")]
+        env = render_env(home, bundle, m, site)
         run(cmd + ["config", "--quiet"], env=env)
         if check:
             return
@@ -150,10 +165,11 @@ def deploy(home, bundle, m, site, *, check=False, offline=False):
         write(generated, {"images": m["images"], "productVersion": m["version"]})
         chart = bundle / "charts/uter"
         args = ["-f", str(values), "-f", str(generated)]
-        run(["helm", "lint", chart] + args)
+        helm = ["helm"] + (["--kube-context", site["context"]] if site.get("context") else [])
+        run(helm + ["lint", chart] + args)
         if check:
             return
-        run(["helm", "upgrade", "--install", site["name"], chart, "--namespace", site["namespace"], "--create-namespace", "--wait", "--timeout", "5m"] + args)
+        run(helm + ["upgrade", "--install", site["name"], chart, "--namespace", site["namespace"], "--create-namespace", "--wait", "--timeout", "5m"] + args)
 
 
 def main(argv=None):
