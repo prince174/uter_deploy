@@ -62,3 +62,20 @@ class PublishedPairSelectionTests(unittest.TestCase):
             p.parse_update_output(b'{"version":"0.1.3"}')
         with self.assertRaises(ValueError):
             p.parse_update_output(b'not-json')
+
+    def test_signed_update_scans_progress_without_emitting_secrets(self):
+        result={'version':'0.1.4','backup':'/tmp/backup'}
+        payload=b'pod changed; secret should not be logged\n{not-json}\n'+json.dumps(result,indent=2).encode()+b'\nDone\n'
+        self.assertEqual(p.parse_update_output(payload),result)
+        double=payload+b'\n'+json.dumps(result).encode()
+        with self.assertRaisesRegex(ValueError,'exactly one'):
+            p.parse_update_output(double)
+        with self.assertRaisesRegex(ValueError,'too large'):
+            p.parse_update_output(b'x'*(8*1024*1024+1))
+
+    def test_release_version_overrides_are_checked_by_signature_verifier(self):
+        self.env['UTER_CI_NEW_VERSION']='0.1.4'
+        with patch.object(p,'verify_pair',return_value=(self.old_m,self.new_m)) as verify:
+            result=p.select_mode(self.env,self.root)
+        self.assertEqual(result['new_version'],'0.1.4')
+        self.assertEqual(verify.call_args.args[-2:],('0.1.2','0.1.4'))

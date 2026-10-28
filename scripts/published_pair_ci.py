@@ -21,7 +21,9 @@ def select_mode(environ, work):
     if any(not environ.get(name) for name in required):
         raise ValueError('Published mode requires both bundles and publisher key')
     old, new, public = (Path(environ[name]).resolve(strict=True) for name in required)
-    previous, current = verify_pair(old, new, public, FINGERPRINT, OLD_VERSION, NEW_VERSION)
+    old_version = environ.get('UTER_CI_OLD_VERSION', OLD_VERSION)
+    new_version = environ.get('UTER_CI_NEW_VERSION', NEW_VERSION)
+    previous, current = verify_pair(old, new, public, FINGERPRINT, old_version, new_version)
     work = Path(work)
     for manifest, release in ((previous, 'published-old'), (current, 'published-new')):
         inputs = work / 'input' / release
@@ -33,13 +35,28 @@ def select_mode(environ, work):
         if ids and any(publication['images'][name]['image_id'] != image_id for name, image_id in ids.items()):
             raise ValueError('Installation image identities do not match signed release')
     return {'mode': mode, 'old': old, 'new': new, 'public': public,
-            'old_manifest': previous, 'new_manifest': current, 'installer': old/'scripts/install.py'}
+            'old_manifest': previous, 'new_manifest': current, 'installer': old/'scripts/install.py',
+            'old_version': old_version, 'new_version': new_version}
 
 
 def parse_update_output(output):
-    # The signed command emits pretty-printed JSON followed by a human warning.
-    text = output.decode('utf-8').lstrip()
-    value, _ = json.JSONDecoder().raw_decode(text)
-    if not isinstance(value, dict) or not isinstance(value.get('backup'), str) or not value['backup']:
-        raise ValueError('Signed update output is missing backup path')
-    return value
+    # kubectl and Helm subprocesses can emit progress before the JSON response.
+    # Never expose captured output: scan for one unambiguous result object.
+    if len(output) > 8 * 1024 * 1024:
+        raise ValueError('Signed update output too large')
+    text = output.decode('utf-8')
+    decoder = json.JSONDecoder()
+    matches = []
+    for index, char in enumerate(text):
+        if char != '{':
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, index)
+        except ValueError:
+            continue
+        if (isinstance(value, dict) and isinstance(value.get('backup'), str) and value['backup']
+                and isinstance(value.get('version'), str) and value['version']):
+            matches.append(value)
+    if len(matches) != 1:
+        raise ValueError('Signed update output did not contain exactly one result')
+    return matches[0]

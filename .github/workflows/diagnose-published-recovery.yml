@@ -17,10 +17,10 @@ jobs:
           persist-credentials: false
       - name: Download public release assets without credentials
         run: |
-          git fetch --no-tags origin refs/tags/deploy-2026.10.28-signed-4:refs/tags/deploy-2026.10.28-signed-4
+          git fetch --no-tags origin refs/tags/deploy-2026.10.28-signed-5:refs/tags/deploy-2026.10.28-signed-5
           for side in old new; do
             mkdir -p "work/pair/$side"
-            if [ "$side" = old ]; then tag=deploy-2026.10.28-signed-3; else tag=deploy-2026.10.28-signed-4; fi
+            if [ "$side" = old ]; then tag=deploy-2026.10.28-signed-3; else tag=deploy-2026.10.28-signed-5; fi
             for file in installation-inputs.tar.gz installation-inputs.tar.gz.sha256 signed-bundle.tar.gz signed-bundle.tar.gz.sha256 publisher-public.pem; do
               curl -fsSL -o "work/pair/$side/$file" "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$file"
             done
@@ -44,8 +44,8 @@ jobs:
           for side in old new; do
             .venv/bin/python scripts/extract_signed_bundle.py --archive "work/pair/$side/signed-bundle.tar.gz" --key "work/pair/$side/publisher-public.pem" --output "work/pair/$side/bundle"
           done
-          .venv/bin/python scripts/verify_release_pair.py --old work/pair/old/bundle --new work/pair/new/bundle --key work/pair/old/publisher-public.pem --fingerprint 65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2 --old-version 0.1.2 --new-version 0.1.3
-          .venv/bin/python -c 'import json,subprocess; m=json.load(open("work/pair/new/bundle/manifest.json")); assert m["deployment_commit"]==subprocess.check_output(["git","rev-parse","refs/tags/deploy-2026.10.28-signed-4^{commit}"],text=True).strip()'
+          .venv/bin/python scripts/verify_release_pair.py --old work/pair/old/bundle --new work/pair/new/bundle --key work/pair/old/publisher-public.pem --fingerprint 65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2 --old-version 0.1.2 --new-version 0.1.4
+          .venv/bin/python -c 'import json,subprocess; m=json.load(open("work/pair/new/bundle/manifest.json")); assert m["deployment_commit"]==subprocess.check_output(["git","rev-parse","refs/tags/deploy-2026.10.28-signed-5^{commit}"],text=True).strip()'
           mkdir -p work/input
           .venv/bin/python scripts/extract_release_inputs.py work/pair/old/installation-inputs.tar.gz work/pair/old/installation-inputs.tar.gz.sha256 work/input/published-old --legacy-unverified
           .venv/bin/python scripts/extract_release_inputs.py work/pair/new/installation-inputs.tar.gz work/pair/new/installation-inputs.tar.gz.sha256 work/input/published-new --bundle work/pair/new/bundle --key work/pair/new/publisher-public.pem
@@ -59,10 +59,12 @@ jobs:
         env:
           BACKEND: ${{ matrix.backend }}
           UTER_CI_RELEASE_MODE: published
+          UTER_CI_NEW_VERSION: '0.1.4'
+          UTER_CI_NEW_TAG: deploy-2026.10.28-signed-5
           OLD_SIGNED_BUNDLE_PATH: ${{ github.workspace }}/work/pair/old/bundle
           NEW_SIGNED_BUNDLE_PATH: ${{ github.workspace }}/work/pair/new/bundle
           PUBLISHER_KEY_PATH: ${{ github.workspace }}/work/pair/old/publisher-public.pem
-        run: sudo --preserve-env=GITHUB_ACTIONS,BACKEND,UTER_CI_RELEASE_MODE,OLD_SIGNED_BUNDLE_PATH,NEW_SIGNED_BUNDLE_PATH,PUBLISHER_KEY_PATH "$PWD/.venv/bin/python" scripts/adopt_backup_ci.py
+        run: sudo --preserve-env=GITHUB_ACTIONS,BACKEND,UTER_CI_RELEASE_MODE,UTER_CI_NEW_VERSION,UTER_CI_NEW_TAG,OLD_SIGNED_BUNDLE_PATH,NEW_SIGNED_BUNDLE_PATH,PUBLISHER_KEY_PATH "$PWD/.venv/bin/python" scripts/adopt_backup_ci.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:

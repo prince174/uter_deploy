@@ -209,7 +209,7 @@ def main():
     from scripts.published_pair_ci import select_mode, parse_update_output
     selection = select_mode(os.environ, work)
     published = selection['mode'] == 'published'
-    old_version, new_version = ('0.1.2','0.1.3') if published else ('0.0.1','0.0.2')
+    old_version, new_version = (selection['old_version'],selection['new_version']) if published else ('0.0.1','0.0.2')
     installer = selection['installer'] if published else ROOT/'scripts/install.py'
     old_inputs = work/'input'/('published-old' if published else OLD)
     new_inputs = work/'input'/('published-new' if published else NEW)
@@ -396,11 +396,11 @@ finally:
         if backend=='kubernetes':
             from scripts import recovery_kubernetes_api_ci
             recovery_kubernetes_api_ci.test(home,backup_dir,backup_key,public,audit_before,
-                                                recovery_bundle=bundles[0] if published else None)
+                                                recovery_bundle=bundles[1] if published else None)
         else:
             from scripts import recovery_compose_api_ci
             recovery_compose_api_ci.test(home,backup_dir,backup_key,public,audit_before,
-                                            recovery_bundle=bundles[0] if published else None)
+                                            recovery_bundle=bundles[1] if published else None)
         print('Stage: real LLM and persistent state after update',flush=True)
         after=json.loads(call([sys.executable,smoke_file]))
         stats_after=request('http://127.0.0.1:11435/stats')
@@ -413,7 +413,7 @@ finally:
         publication=json.loads((new_inputs/'publication.json').read_text())
         verify_active_images(backend,name,home,cfg,kube,state['current']['images'],publication)
         assert any(x['name']==MODEL for x in request('http://127.0.0.1:11434/api/ps')['models'])
-        result={'backend':backend,'old_release':('deploy-2026.10.28-signed-3' if published else OLD),'new_release':('deploy-2026.10.28-signed-4' if published else NEW),'model':MODEL,'model_digest':MODEL_DIGEST,
+        result={'backend':backend,'old_release':('deploy-2026.10.28-signed-3' if published else OLD),'new_release':(os.environ.get('UTER_CI_NEW_TAG','deploy-2026.10.28-signed-4') if published else NEW),'model':MODEL,'model_digest':MODEL_DIGEST,
                 'real_inference':'pass','install_py':'pass','adoption':'pass','receipt_bypass_rejected':'synthetic-only' if published else 'pass',
                 'encrypted_backup':'pass','authenticated_recovery_preflight':'pass',
                 'backup_export':'pass','redis_rdb_validation':'pass','redis_restore':'pass','backup_audit_matches':'pass',
