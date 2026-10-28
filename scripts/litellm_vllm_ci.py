@@ -39,12 +39,12 @@ class DiagnosticError(Exception):
 
 
 def vllm_container_command(name, network, cache):
-    # vLLM v0.32 legacy env overrides the CLI value when non-empty; explicitly
-    # clear it and use exact bytes so CI is not limited to whole GiB.
+    # vLLM v0.32 legacy env overrides the CLI value whenever it is non-empty,
+    # including "0". This pinned image does not set it; do not pass it at all.
     return ['docker', 'run', '-d', '--name', name, '--network', network, '--network-alias', 'vllm',
             '--memory', '6g', '--cpus', '2', '--shm-size', '2g', '--cap-drop', 'ALL',
             '--security-opt', 'no-new-privileges', '-p', f'127.0.0.1:{VLLM_PORT}:8000',
-            '-v', f'{cache}:/root/.cache/huggingface', '-e', 'VLLM_CPU_KVCACHE_SPACE=0',
+            '-v', f'{cache}:/root/.cache/huggingface',
             VLLM_IMAGE, '--model', MODEL, '--revision', MODEL_REVISION,
             '--tokenizer-revision', MODEL_REVISION, '--dtype', 'float32',
             '--kv-cache-memory-bytes', str(VLLM_KV_CACHE_BYTES),

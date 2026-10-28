@@ -191,12 +191,11 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         request.assert_called_once()
         sleep.assert_not_called()
 
-    def test_vllm_uses_256_mib_cache_and_clears_legacy_override(self):
+    def test_vllm_uses_256_mib_cache_and_omits_legacy_override(self):
         args = ci.vllm_container_command('fixture-vllm', 'fixture-network', '/tmp/fixture-cache')
         self.assertEqual(args[args.index('--kv-cache-memory-bytes') + 1], '268435456')
         self.assertEqual(args[args.index('--dtype') + 1], 'float32')
-        self.assertIn('VLLM_CPU_KVCACHE_SPACE=0', args)
-        self.assertNotIn('VLLM_CPU_KVCACHE_SPACE=1', args)
+        self.assertFalse(any('VLLM_CPU_KVCACHE_SPACE' in str(arg) for arg in args))
         self.assertIn('no-new-privileges', args)
         self.assertNotIn('seccomp=unconfined', args)
 
