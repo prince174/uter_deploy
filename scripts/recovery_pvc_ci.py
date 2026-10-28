@@ -107,6 +107,15 @@ def test(kube, namespace, image, redis_image, exported):
                     if p.returncode==0 and p.stdout.strip()==b'uter-upgrade-check':break
                     if attempt==29:raise ValueError('AOF restart did not retain Redis snapshot')
                     time.sleep(1)
+                for redis_args,expected in [(['HGET','ci:upgrade:hash','state'],b'pending'),
+                                            (['LLEN','ci:upgrade:list'],b'2'),
+                                            (['SCARD','ci:upgrade:set'],b'2'),
+                                            (['ZCARD','ci:upgrade:sorted'],b'2'),
+                                            (['GET','ci:upgrade:expiring'],b'alive')]:
+                    actual=call(kube+['exec',helper+'-check','--','redis-cli','--raw',*redis_args]).strip()
+                    if actual != expected:raise ValueError('AOF restart did not retain Redis data')
+                ttl=int(call(kube+['exec',helper+'-check','--','redis-cli','--raw','TTL','ci:upgrade:expiring']).strip())
+                if not 0<ttl<=900:raise ValueError('AOF restart did not retain key expiry')
                 call(kube+['delete','pod',helper+'-check','--wait=true','--timeout=180s'])
         print('New Kubernetes PVCs: audit extracted and Redis restored: PASS',flush=True)
     finally:
