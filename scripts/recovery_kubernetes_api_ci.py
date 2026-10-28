@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import uterctl
+from scripts.signed_recovery_diagnostics import recovery_category, recovery_phase
 from scripts import recover_kubernetes
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -26,7 +27,9 @@ def test(home,backup,backup_key,publisher_key,expected_audit,recovery_bundle=Non
                      '--backup-key',backup_key,'--publisher-key',publisher_key,'--home',target,
                      '--name',NAME,'--port','18004','--context',CONTEXT]
             run=subprocess.run([str(x) for x in command],capture_output=True)
-            if run.returncode:raise ValueError('Signed recovery command failed; output withheld')
+            if run.returncode:
+                category=recovery_category(run.stderr);phase=recovery_phase(target)
+                raise ValueError(f'Signed recovery failed; category={category}; phase={phase}')
             result=json.loads(run.stdout)
         else:
             result=recover_kubernetes.restore(home,backup,backup_key,publisher_key,target,NAME,CONTEXT,18004)
