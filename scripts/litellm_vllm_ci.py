@@ -153,6 +153,21 @@ def completion(base, model, *, token=None, extra_headers=None):
 LOG_LIMIT = 2 * 1024 * 1024
 # Fixed, non-interpolated categories. Never return any matching log text.
 LOG_PATTERNS = (
+    # Stable messages for CPU/multiprocess initialisation and Python conversions.
+    ('CPU_MLA_PREFILL_BACKEND_MISSING', r'no valid cpu mla prefill backend found'),
+    ('CPU_DUMMY_WEIGHT_LOADING_UNSUPPORTED', r'loading dummy weights[^\n]{0,180}not supported by the cpu model runner'),
+    ('NUMA_BIND_NODES_INDEX_OUT_OF_RANGE', r'gpu index [^\n]{0,40} exceeds numa_bind_nodes size'),
+    ('NUMA_BIND_CPUS_INDEX_OUT_OF_RANGE', r'gpu index [^\n]{0,40} exceeds numa_bind_cpus size'),
+    ('NUMA_PROCESS_KIND_UNKNOWN', r'unknown process_kind [^\n]{0,100} expected .worker. or .enginecore'),
+    ('WORKER_CLASS_CONFIGURATION_INVALID', r'passing worker_cls is no longer supported'),
+    ('SHARED_WORKER_LOCK_MISSING', r'missing .shared_worker_lock. argument from executor'),
+    ('INT_LITERAL_INVALID', r'valueerror:\s*invalid literal for int\(\) with base'),
+    ('FLOAT_CONVERSION_INVALID', r'valueerror:\s*could not convert string to float'),
+    ('UNPACK_NOT_ENOUGH_VALUES', r'valueerror:\s*not enough values to unpack'),
+    ('UNPACK_TOO_MANY_VALUES', r'valueerror:\s*too many values to unpack'),
+    ('EMPTY_SEQUENCE_MAX', r'valueerror:\s*max\(\) arg is an empty sequence'),
+    ('EMPTY_SEQUENCE_MIN', r'valueerror:\s*min\(\) arg is an empty sequence'),
+    ('EMPTY_CONCATENATION', r'valueerror:\s*need at least one array to concatenate'),
     # Literal message fragments from vLLM v0.32.0 CPU worker / KV-cache utils.
     ('CPU_REQUESTED_MEMORY_EXCEEDS_AVAILABLE', r'available memory on node [^\n]{0,160} on startup is less than desired cpu memory utilization'),
     ('CPU_KV_ALLOCATION_EXCEEDS_AVAILABLE', r'available memory on node [^\n]{0,160} on kv cache allocation is less than requested memory for kv'),
@@ -194,17 +209,49 @@ SAFE_EXCEPTIONS = (
 )
 
 
+# Fixed source basenames and functions only: never copy arbitrary trace paths.
+SAFE_TRACE_FRAMES = (
+    ('CPU_WORKER', r'(?<![A-Za-z0-9_])cpu_worker\.py(?=["\':\s])'),
+    ('CPU_MODEL_RUNNER', r'(?<![A-Za-z0-9_])cpu_model_runner\.py(?=["\':\s])'),
+    ('NUMA_UTILS', r'(?<![A-Za-z0-9_])numa_utils\.py(?=["\':\s])'),
+    ('MULTIPROC_EXECUTOR', r'(?<![A-Za-z0-9_])multiproc_executor\.py(?=["\':\s])'),
+    ('KV_CACHE_UTILS', r'(?<![A-Za-z0-9_])kv_cache_utils\.py(?=["\':\s])'),
+    ('MEM_UTILS', r'(?<![A-Za-z0-9_])mem_utils\.py(?=["\':\s])'),
+    ('MODEL_CONFIG', r'(?<![A-Za-z0-9_])model_config\.py(?=["\':\s])'),
+    ('CPU_PLATFORM', r'[/\\]platforms[/\\]cpu\.py(?=["\':\s])'),
+)
+SAFE_TRACE_FUNCTIONS = (
+    'determine_available_memory', 'get_memory_node_info', 'get_allowed_cpu_list',
+    'get_visible_memory_node', 'init_device', 'init_worker', 'load_model',
+    'initialize_cache', 'get_kv_cache_config', 'check_enough_kv_cache_memory',
+    'get_cpu_binding', '_get_cpu_binding', '_resolve_numactl_args',
+)
+
 SAFE_VALUEERROR_WORDS = (
     'memory', 'available', 'numa', 'cpu', 'dtype', 'block', 'config', 'model',
     'cache', 'shape', 'float', 'thread', 'affinity', 'size', 'unsupported',
     'utilization', 'desired', 'requested', 'node', 'kv', 'seq', 'allocation',
-    'worker', 'device', 'capacity', 'space', 'max', 'tokens',
+    'worker', 'device', 'capacity', 'space', 'max', 'tokens', 'invalid', 'literal',
+    'int', 'integer', 'base', 'unpack', 'expected', 'got', 'too', 'many', 'enough',
+    'empty', 'values', 'argument', 'arguments', 'array', 'sequence', 'min', 'index',
+    'type', 'string', 'convert', 'conversion', 'number', 'division', 'zero', 'finite',
+    'nan', 'length', 'positive', 'range', 'supported', 'platform', 'backend', 'mla',
+    'prefill', 'bind', 'binding', 'mempolicy', 'process', 'kind', 'rank', 'pool',
+    'tensor', 'parallel', 'distributed', 'token', 'scheduler', 'batch', 'engine',
+    'init', 'initialization', 'failed', 'exception', 'file', 'path', 'buffer', 'mmap',
+    'environment', 'variable', 'physical', 'virtual', 'info', 'system', 'method',
+    'package', 'trust', 'download', 'revision', 'repository', 'timeout', 'permission',
 )
 
 
 def valueerror_keywords(text):
-    lines = [line for line in text.splitlines()
-             if re.search(r'(?<![A-Za-z0-9_])ValueError\s*:', line)]
+    lines = []
+    for line in text.splitlines():
+        match = re.search(r'(?<![A-Za-z0-9_])ValueError\s*:', line)
+        if match:
+            # Ignore logger prefixes such as (WorkerProc pid=...), which are
+            # not part of the exception message and otherwise mislead analysis.
+            lines.append(line[match.end():])
     words = []
     for word in SAFE_VALUEERROR_WORDS:
         # Each output is one fixed allowlisted word, never user-controlled text.
@@ -226,7 +273,11 @@ def classify_container_log(text):
                       if re.search(pattern, text, re.IGNORECASE))
     exceptions = ['EXC_' + name.upper() for name in SAFE_EXCEPTIONS
                   if re.search(r'(?<![A-Za-z0-9_])' + re.escape(name) + r'\s*:', text)]
-    values = categories + exceptions + valueerror_keywords(text)
+    frames = ['FRAME_' + name for name, pattern in SAFE_TRACE_FRAMES
+              if re.search(pattern, text, re.IGNORECASE)]
+    frames += ['FUNC_' + name.upper() for name in SAFE_TRACE_FUNCTIONS
+               if re.search(r'\bin\s+' + re.escape(name) + r'\b', text)]
+    values = categories + exceptions + valueerror_keywords(text) + frames
     return '_'.join(values) if values else None
 
 

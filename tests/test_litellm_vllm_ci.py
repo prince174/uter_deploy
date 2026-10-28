@@ -113,6 +113,42 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         self.assertNotIn('VERYSECRET', output)
         self.assertNotIn('super-secret', output)
 
+    def test_valueerror_ignores_worker_prefix_and_matches_only_safe_message_words(self):
+        line = "(WorkerProc pid=4821) ValueError: invalid literal for int() with base 10: 'private-value'"
+        output = ci.classify_container_log(line)
+        for token in ('INT_LITERAL_INVALID', 'VALWORD_INVALID', 'VALWORD_LITERAL', 'VALWORD_INT', 'VALWORD_BASE'):
+            self.assertIn(token, output)
+        self.assertNotIn('VALWORD_WORKER', output)
+        self.assertNotIn('private-value', output)
+        self.assertIn('VALWORD_WORKER', ci.classify_container_log('ValueError: bad worker config'))
+
+    def test_trace_diagnostics_expose_only_allowlisted_module_and_function(self):
+        trace = ('File "/secret-dir/private/cpu_worker.py", line 17, in determine_available_memory\n'
+                 'File "/secret-dir/private/numa_utils.py", line 34, in private_function\n'
+                 'ValueError: private-value')
+        result = ci.classify_container_log(trace)
+        for value in ('FRAME_CPU_WORKER', 'FRAME_NUMA_UTILS', 'FUNC_DETERMINE_AVAILABLE_MEMORY'):
+            self.assertIn(value, result)
+        self.assertNotIn('secret-dir', result)
+        self.assertNotIn('private_function', result)
+        self.assertNotIn('private-value', result)
+
+    def test_exact_upstream_cpu_initialization_valueerrors(self):
+        cases = [
+            ('ValueError: No valid CPU MLA prefill backend found.', 'CPU_MLA_PREFILL_BACKEND_MISSING'),
+            ('ValueError: Loading dummy weights (needed for elastic EP scale-up) Is not supported by the CPU Model Runner.', 'CPU_DUMMY_WEIGHT_LOADING_UNSUPPORTED'),
+            ('ValueError: GPU index 1 exceeds numa_bind_nodes size 1.', 'NUMA_BIND_NODES_INDEX_OUT_OF_RANGE'),
+            ('ValueError: GPU index 1 exceeds numa_bind_cpus size 1.', 'NUMA_BIND_CPUS_INDEX_OUT_OF_RANGE'),
+            ("ValueError: Unknown process_kind 'bad'; expected 'worker' or 'EngineCore'.", 'NUMA_PROCESS_KIND_UNKNOWN'),
+            ("ValueError: Missing `shared_worker_lock` argument from executor.", 'SHARED_WORKER_LOCK_MISSING'),
+            ("ValueError: not enough values to unpack (expected 2, got 1)", 'UNPACK_NOT_ENOUGH_VALUES'),
+            ("ValueError: too many values to unpack (expected 2)", 'UNPACK_TOO_MANY_VALUES'),
+            ("ValueError: could not convert string to float: 'private'", 'FLOAT_CONVERSION_INVALID'),
+        ]
+        for text, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, ci.classify_container_log(text))
+
     def test_log_classifier_returns_all_safe_diagnostics_without_raw_content(self):
         message = ("PermissionError: secret=super-secret\n"
                    "sched_setaffinity failed with EACCES\n"
