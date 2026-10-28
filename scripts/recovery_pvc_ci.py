@@ -1,6 +1,7 @@
 """Exercise recovery into new disposable Kubernetes PVCs on a CI-only cluster."""
 import json
 import os
+import copy
 from pathlib import Path
 import subprocess
 import sys
@@ -78,10 +79,38 @@ def test(kube, namespace, image, redis_image, exported):
                     if p.returncode==0 and p.stdout.strip()==b'uter-upgrade-check':break
                     if attempt==29:raise ValueError('Restored Kubernetes PVC did not contain Redis sentinel')
                     time.sleep(1)
+                # Redis started directly with AOF enabled can create an empty AOF and
+                # ignore the restored RDB. Load RDB first, rewrite AOF, then restart.
+                from scripts.recovery_aof import enable_checked
+                def cli(args):
+                    return call(kube+['exec',helper+'-redis','--','redis-cli','--raw',*args])
+                enable_checked(cli)
+                subprocess.run(kube+['exec',helper+'-redis','--','redis-cli','shutdown'],capture_output=True)
+                for attempt in range(60):
+                    pod_status=json.loads(call(kube+['get','pod',helper+'-redis','-o','json']))['status']
+                    terminated=next((x.get('state',{}).get('terminated') for x in pod_status.get('containerStatuses',[])
+                                     if x.get('state',{}).get('terminated')),None)
+                    if terminated is not None:
+                        if terminated.get('exitCode') != 0:raise ValueError('Redis recovery shutdown failed')
+                        break
+                    if attempt==59:raise ValueError('Redis recovery shutdown timed out')
+                    time.sleep(1)
                 call(kube+['delete','pod',helper+'-redis','--wait=true','--timeout=180s'])
+                restarted=copy.deepcopy(redis_pod)
+                restarted['metadata']['name']=helper+'-check'
+                args=restarted['spec']['containers'][0]['args']
+                args[args.index('--appendonly')+1]='yes'
+                call(kube+['create','-f','-'],json.dumps(restarted).encode())
+                call(kube+['wait','--for=condition=Ready','pod/'+helper+'-check','--timeout=180s'])
+                for attempt in range(30):
+                    p=subprocess.run(kube+['exec',helper+'-check','--','redis-cli','--raw','GET','ci:upgrade:sentinel'],capture_output=True)
+                    if p.returncode==0 and p.stdout.strip()==b'uter-upgrade-check':break
+                    if attempt==29:raise ValueError('AOF restart did not retain Redis snapshot')
+                    time.sleep(1)
+                call(kube+['delete','pod',helper+'-check','--wait=true','--timeout=180s'])
         print('New Kubernetes PVCs: audit extracted and Redis restored: PASS',flush=True)
     finally:
         for pvc,helper in names:
-            subprocess.run(kube+['delete','pod',helper,helper+'-redis','--ignore-not-found','--wait=true'],capture_output=True)
+            subprocess.run(kube+['delete','pod',helper,helper+'-redis',helper+'-check','--ignore-not-found','--wait=true'],capture_output=True)
             subprocess.run(kube+['delete','pvc',pvc,'--ignore-not-found','--wait=true'],capture_output=True)
         subprocess.run(kube+['delete','configmap',cm,'--ignore-not-found'],capture_output=True)
