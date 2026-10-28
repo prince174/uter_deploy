@@ -1,5 +1,6 @@
 """Exercise recovery into new disposable Kubernetes PVCs on a CI-only cluster."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -17,7 +18,8 @@ def call(args, data=None):
 
 def test(kube, namespace, image, redis_image, exported):
     """Create and remove only unique CI test PVCs and pods, never production PVCs."""
-    if namespace != 'uter-upgrade-ci' or kube != ['kubectl','--context','kind-uter-upgrade-ci']:
+    if (os.environ.get('GITHUB_ACTIONS') != 'true' or namespace != 'uter-upgrade-ci'
+            or kube != ['kubectl','--context','kind-uter-upgrade-ci']):
         raise ValueError('This test only runs in its explicitly named disposable CI cluster')
     kube=kube+['-n',namespace]; cm='uter-recovery-ci-code'; names=[]
     try:
