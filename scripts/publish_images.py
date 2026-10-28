@@ -66,6 +66,9 @@ def main():
             metadata[service] = dict(source_commit=sha, archive_sha256=actual, image_id=image_id)
             if remediated:
                 metadata[service]['security'] = gate
+                if service == 'redis':
+                    metadata[service]['application_commit'] = metadata[service].pop('source_commit')
+                    metadata[service]['upstream'] = (folder / 'evidence/parent-image.txt').read_text().strip()
         else:
             local = REDIS
             subprocess.run(['docker', 'pull', '--platform', 'linux/amd64', local], check=True)
