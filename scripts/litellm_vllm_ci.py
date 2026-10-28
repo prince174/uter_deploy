@@ -48,7 +48,7 @@ def vllm_container_command(name, network, cache):
             VLLM_IMAGE, '--model', MODEL, '--revision', MODEL_REVISION,
             '--tokenizer-revision', MODEL_REVISION, '--dtype', 'float32',
             '--kv-cache-memory-bytes', str(VLLM_KV_CACHE_BYTES),
-            '--max-model-len', '2048', '--max-num-seqs', '1']
+            '--max-model-len', '2048', '--max-num-seqs', '1', '--enforce-eager']
 
 
 def proxy_config():
@@ -139,14 +139,33 @@ def json_request(url, payload=None, *, token=None, form=False, timeout=120, extr
         return json.load(response)
 
 
-def completion(base, model, *, token=None, extra_headers=None):
-    result = json_request(base + '/v1/chat/completions', {
-        'model': model, 'messages': [{'role': 'user', 'content': 'Reply with a short greeting.'}],
-        'max_tokens': 12, 'temperature': 0,
-    }, token=token, extra_headers=extra_headers)
-    choices = result.get('choices')
-    if not choices or not isinstance(choices[0].get('message', {}).get('content'), str) or not choices[0]['message']['content'].strip():
-        raise ValueError('Completion had no message content')
+COMPLETION_STAGES = frozenset({'VLLM', 'LITELLM', 'UTER'})
+
+
+def completion(base, model, *, token=None, extra_headers=None, stage='VLLM'):
+    if stage not in COMPLETION_STAGES:
+        raise ValueError('Invalid completion stage')
+    try:
+        result = json_request(base + '/v1/chat/completions', {
+            'model': model, 'messages': [{'role': 'user', 'content': 'Say hi.'}],
+            'max_tokens': 4, 'temperature': 0,
+        }, token=token, extra_headers=extra_headers, timeout=360)
+    except TimeoutError:
+        raise DiagnosticError(stage + '_COMPLETION_TIMEOUT') from None
+    except urllib.error.HTTPError:
+        raise DiagnosticError(stage + '_COMPLETION_HTTP_FAILED') from None
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise DiagnosticError(stage + '_COMPLETION_TIMEOUT') from None
+        raise DiagnosticError(stage + '_COMPLETION_NETWORK_FAILED') from None
+    except ValueError:
+        raise DiagnosticError(stage + '_COMPLETION_RESPONSE_INVALID') from None
+    choices = result.get('choices') if isinstance(result, dict) else None
+    first = choices[0] if isinstance(choices, list) and choices else None
+    message = first.get('message') if isinstance(first, dict) else None
+    content = message.get('content') if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise DiagnosticError(stage + '_COMPLETION_RESPONSE_INVALID')
     return True
 
 
@@ -322,7 +341,16 @@ def container_state_category(container, component, *, timeout=False):
     return None
 
 
-def wait_json(url, *, token=None, attempts=150, interval=4, state_probe=None):
+READINESS_TIMEOUT_CATEGORIES = frozenset({
+    'SERVICE_READINESS_TIMEOUT', 'VLLM_MODELS_READY_TIMEOUT',
+    'LITELLM_MODELS_READY_TIMEOUT', 'UTER_READY_TIMEOUT',
+})
+
+
+def wait_json(url, *, token=None, attempts=150, interval=4, state_probe=None,
+              timeout_category='SERVICE_READINESS_TIMEOUT'):
+    if timeout_category not in READINESS_TIMEOUT_CATEGORIES:
+        raise ValueError('Invalid readiness stage')
     for _ in range(attempts):
         try:
             return json_request(url, token=token, timeout=5)
@@ -335,8 +363,10 @@ def wait_json(url, *, token=None, attempts=150, interval=4, state_probe=None):
     if state_probe:
         category = state_probe(True)
         if category:
+            if '_READINESS_TIMEOUT_' in category:
+                category = timeout_category + '_STATE_' + category.rsplit('_', 1)[-1]
             raise DiagnosticError(category)
-    raise TimeoutError('Service readiness timed out')
+    raise DiagnosticError(timeout_category)
 
 
 COMMAND_CATEGORIES = frozenset({
@@ -412,20 +442,28 @@ def main():
         call(['docker', 'network', 'create', network], failure='LLM_NETWORK_CREATE_FAILED')
         call(vllm_container_command(vllm, network, cache), failure='VLLM_START_FAILED')
         vllm_url = f'http://127.0.0.1:{VLLM_PORT}'
+        print('Stage: vLLM model readiness', flush=True)
         models = wait_json(vllm_url + '/v1/models', attempts=225,
-                           state_probe=lambda timeout: container_state_category(vllm, 'VLLM', timeout=timeout))
+                           state_probe=lambda timeout: container_state_category(vllm, 'VLLM', timeout=timeout),
+                           timeout_category='VLLM_MODELS_READY_TIMEOUT')
         if not any(x.get('id') == MODEL for x in models.get('data', [])):
             raise ValueError('Expected pinned vLLM model missing')
-        completion(vllm_url, MODEL)
+        print('Stage: vLLM direct completion', flush=True)
+        completion(vllm_url, MODEL, stage='VLLM')
+        print('Stage: vLLM direct completion passed', flush=True)
         print('Stage: isolated LiteLLM proxy', flush=True)
         call(['docker', 'run', '-d', '--name', proxy, '--network', network,
               '--memory', '2g', '--cpus', '1', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
               '-p', f'{gateway}:{PROXY_PORT}:4000', '--env-file', envfile,
               '-v', f'{config}:/app/uter-ci.yaml:ro', LITELLM_IMAGE, '--config', '/app/uter-ci.yaml', '--num_workers', '1'], failure='LITELLM_START_FAILED')
         proxy_url = f'http://{gateway}:{PROXY_PORT}'
+        print('Stage: LiteLLM model readiness', flush=True)
         wait_json(proxy_url + '/v1/models', token=key,
-                  state_probe=lambda timeout: container_state_category(proxy, 'LITELLM', timeout=timeout))
-        completion(proxy_url, MODEL_ALIAS, token=key)
+                  state_probe=lambda timeout: container_state_category(proxy, 'LITELLM', timeout=timeout),
+                  timeout_category='LITELLM_MODELS_READY_TIMEOUT')
+        print('Stage: LiteLLM direct completion', flush=True)
+        completion(proxy_url, MODEL_ALIAS, token=key, stage='LITELLM')
+        print('Stage: LiteLLM direct completion passed', flush=True)
         print('Stage: public Uter ' + backend + ' installation', flush=True)
         installer = bundle / 'scripts/install.py'
         prepare = [python, installer, 'prepare', '--home', home, '--backend', backend, '--name', name,
@@ -448,13 +486,26 @@ def main():
                                         str(UTER_PORT) + ':8000', '--address', '127.0.0.1'],
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         base = f'http://127.0.0.1:{UTER_PORT}'
-        wait_json(base + '/ready', attempts=45)
+        print('Stage: Uter readiness', flush=True)
+        wait_json(base + '/ready', attempts=45, timeout_category='UTER_READY_TIMEOUT')
         credentials = json.loads((home / 'credentials.json').read_text())
-        auth = json_request(base + '/auth/token', {'username': 'admin', 'password': credentials['admin']}, form=True)
+        print('Stage: Uter authentication', flush=True)
+        try:
+            auth = json_request(base + '/auth/token', {'username': 'admin', 'password': credentials['admin']}, form=True)
+        except TimeoutError:
+            raise DiagnosticError('UTER_AUTH_TIMEOUT') from None
+        except urllib.error.HTTPError:
+            raise DiagnosticError('UTER_AUTH_HTTP_FAILED') from None
+        except urllib.error.URLError as exc:
+            raise DiagnosticError('UTER_AUTH_TIMEOUT' if isinstance(exc.reason, TimeoutError) else 'UTER_AUTH_NETWORK_FAILED') from None
+        if not isinstance(auth, dict) or not isinstance(auth.get('access_token'), str) or not auth['access_token']:
+            raise DiagnosticError('UTER_AUTH_RESPONSE_INVALID')
         with urllib.request.urlopen(vllm_url + '/metrics', timeout=15) as response:
             before = metric_total(response.read().decode())
+        print('Stage: Uter completion', flush=True)
         completion(base, 'uter-guardrail-chat', token=auth['access_token'],
-                   extra_headers={'X-Uter-Ingress-Secret': credentials['openai_ingress_key']})
+                   extra_headers={'X-Uter-Ingress-Secret': credentials['openai_ingress_key']}, stage='UTER')
+        print('Stage: Uter completion passed', flush=True)
         with urllib.request.urlopen(vllm_url + '/metrics', timeout=15) as response:
             after = metric_total(response.read().decode())
         if after <= before:

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import unittest
+import urllib.error
 from types import SimpleNamespace
 import yaml
 from unittest.mock import patch
@@ -196,6 +197,7 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         self.assertEqual(args[args.index('--kv-cache-memory-bytes') + 1], '268435456')
         self.assertEqual(args[args.index('--dtype') + 1], 'float32')
         self.assertFalse(any('VLLM_CPU_KVCACHE_SPACE' in str(arg) for arg in args))
+        self.assertIn('--enforce-eager', args)
         self.assertIn('no-new-privileges', args)
         self.assertNotIn('seccomp=unconfined', args)
 
@@ -221,9 +223,12 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         with patch.object(ci, 'json_request', return_value={'choices': [{'message': {'content': 'hello'}}]}) as request:
             self.assertTrue(ci.completion('http://127.0.0.1:1', 'test', token='example', extra_headers={'X-Test': 'x'}))
             self.assertEqual(request.call_args.kwargs['extra_headers'], {'X-Test': 'x'})
-        for value in ({'choices': []}, {'choices': [{'message': {'content': ''}}]}, {}):
+            self.assertEqual(request.call_args.kwargs['timeout'], 360)
+            self.assertEqual(request.call_args.args[1]['max_tokens'], 4)
+            self.assertEqual(request.call_args.args[1]['messages'][0]['content'], 'Say hi.')
+        for value in ({'choices': []}, {'choices': [{'message': {'content': ''}}]}, {}, [], {'choices': [None]}):
             with self.subTest(value=value), patch.object(ci, 'json_request', return_value=value):
-                with self.assertRaises(ValueError):
+                with self.assertRaises(ci.DiagnosticError):
                     ci.completion('http://127.0.0.1:1', 'test')
 
     def test_driver_refuses_non_ci_execution_before_docker(self):
@@ -239,6 +244,36 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         self.assertEqual(params['model'], 'hosted_vllm/' + ci.MODEL)
         self.assertEqual(params['api_base'], 'http://vllm:8000')
         self.assertEqual(config['general_settings']['master_key'], 'os.environ/LITELLM_MASTER_KEY')
+
+    def test_completion_timeouts_are_distinguished_and_sanitized(self):
+        for stage in ('VLLM', 'LITELLM', 'UTER'):
+            for error in (TimeoutError('private-value'), urllib.error.URLError(TimeoutError('private-value'))):
+                with self.subTest(stage=stage, error=type(error).__name__), \
+                     patch.object(ci, 'json_request', side_effect=error):
+                    with self.assertRaises(ci.DiagnosticError) as caught:
+                        ci.completion('http://127.0.0.1:1', 'test', stage=stage)
+                    self.assertEqual(caught.exception.category, stage + '_COMPLETION_TIMEOUT')
+                    self.assertNotIn('private-value', str(caught.exception))
+        with patch.object(ci, 'json_request', side_effect=urllib.error.HTTPError(
+                'http://example', 503, 'private-value', {}, None)):
+            with self.assertRaises(ci.DiagnosticError) as caught:
+                ci.completion('http://127.0.0.1:1', 'test', stage='LITELLM')
+            self.assertEqual(caught.exception.category, 'LITELLM_COMPLETION_HTTP_FAILED')
+
+    def test_readiness_timeouts_name_the_correct_stage(self):
+        for stage in ('VLLM_MODELS_READY_TIMEOUT', 'LITELLM_MODELS_READY_TIMEOUT', 'UTER_READY_TIMEOUT'):
+            with self.subTest(stage=stage), patch.object(ci, 'json_request', side_effect=OSError('private-value')), \
+                 patch.object(ci.time, 'sleep'):
+                with self.assertRaises(ci.DiagnosticError) as caught:
+                    ci.wait_json('http://127.0.0.1:1', attempts=1, timeout_category=stage)
+                self.assertEqual(caught.exception.category, stage)
+                self.assertNotIn('private-value', str(caught.exception))
+        with patch.object(ci, 'json_request', side_effect=OSError('private-value')), patch.object(ci.time, 'sleep'):
+            with self.assertRaises(ci.DiagnosticError) as caught:
+                ci.wait_json('http://127.0.0.1:1', attempts=1,
+                             state_probe=lambda timeout: 'VLLM_READINESS_TIMEOUT_RUNNING' if timeout else None,
+                             timeout_category='VLLM_MODELS_READY_TIMEOUT')
+            self.assertEqual(caught.exception.category, 'VLLM_MODELS_READY_TIMEOUT_STATE_RUNNING')
 
     def test_release_and_third_party_inputs_are_pinned(self):
         self.assertRegex(ci.VLLM_IMAGE, r'@sha256:[0-9a-f]{64}$')
