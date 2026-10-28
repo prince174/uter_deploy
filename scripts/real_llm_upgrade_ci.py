@@ -60,7 +60,7 @@ print(json.dumps({'first_sha256':hashlib.sha256(lines[0]).hexdigest(),'lines':le
     return json.loads(call(cmd, input=program.encode(), env=env))
 
 
-def verify_active_images(backend, name, home, cfg, kube, images):
+def verify_active_images(backend, name, home, cfg, kube, images, publication):
     if backend == 'compose':
         env = os.environ.copy()
         env.update({key.upper()+'_IMAGE': value for key, value in cfg['images'].items()})
@@ -81,8 +81,13 @@ def verify_active_images(backend, name, home, cfg, kube, images):
             matching = [p for p in pods if p['metadata'].get('labels',{}).get('app.kubernetes.io/name') == service
                         and p['metadata'].get('labels',{}).get('app.kubernetes.io/instance') == name
                         and not p['metadata'].get('deletionTimestamp')]
-            assert matching and any(c['ready'] and c['image'] == reference for p in matching
-                                    for c in p.get('status',{}).get('containerStatuses',[])), f'No ready {service} pod with expected digest'
+            expected_ids = {reference.split('@',1)[1], publication['images'][service]['image_id']}
+            matches = [c for p in matching if p['spec']['containers'][0]['image'] == reference
+                       for c in p.get('status',{}).get('containerStatuses',[]) if c.get('ready')
+                       and any(c.get('imageID','').endswith(expected) for expected in expected_ids)]
+            observed = [(c.get('image'),c.get('imageID'),c.get('ready')) for p in matching
+                        for c in p.get('status',{}).get('containerStatuses',[])]
+            assert matches, f'No ready {service} pod with expected digest; observed {observed}'
 
 
 def main():
@@ -220,7 +225,8 @@ finally:
         assert audit_before['first_sha256']==audit_after['first_sha256'] and audit_after['lines']>audit_before['lines']
         state=json.loads((home/'state.json').read_text());assert state['current']['version']=='0.0.2' and state['previous']['version']=='0.0.1' and state['pending'] is None
         assert state['current']['images']==json.loads((work/'input'/NEW/'images.json').read_text())
-        verify_active_images(backend,name,home,cfg,kube,state['current']['images'])
+        publication=json.loads((work/'input'/NEW/'publication.json').read_text())
+        verify_active_images(backend,name,home,cfg,kube,state['current']['images'],publication)
         assert any(x['name']==MODEL for x in request('http://127.0.0.1:11434/api/ps')['models'])
         result={'backend':backend,'old_release':OLD,'new_release':NEW,'model':MODEL,'model_digest':MODEL_DIGEST,'real_inference':'pass','llm_completions_before':stats_before['successful_completions'],'llm_completions_after':stats_after['successful_completions'],'before':before,'after':after,'backup_receipt_required':'pass','upgrade':'pass','running_images_match_new_release':'pass','redis_sentinel':'pass','audit_chain_and_persistence':'pass','audit_lines_before':audit_before['lines'],'audit_lines_after':audit_after['lines'],'test_signing_key':'ephemeral CI only','backup':'synthetic receipt only; backup/restore not tested','adoption_of_install_py':'not tested or supported','data_epoch':'CI assumption, not a production compatibility declaration'}
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
