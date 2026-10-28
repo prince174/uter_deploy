@@ -87,6 +87,32 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         self.assertIsNone(ci.classify_container_log('some unknown secret-value'))
         self.assertIsNone(ci.classify_container_log('unrelated service HTTP 401'))
 
+    def test_vllm_032_cpu_memory_and_kv_messages(self):
+        samples = [
+            ('ValueError: Available memory on node 0 (4.0/16.0 GiB) on startup is less than desired CPU memory utilization (0.92, 14.72 GiB).',
+             'CPU_REQUESTED_MEMORY_EXCEEDS_AVAILABLE'),
+            ('ValueError: Available memory on node 0 (0.5/16.0 GiB) on kv cache allocation is less than requested memory for kv (1.0 GiB).',
+             'CPU_KV_ALLOCATION_EXCEEDS_AVAILABLE'),
+            ("ValueError: To serve at least one request with the model's max seq len (2048), (1.2 GiB KV cache is needed, which is larger than the available KV cache memory (1.0 GiB).",
+             'KV_CACHE_TOO_SMALL_FOR_MODEL_CONTEXT'),
+            ('ValueError: Invalid prefix_match_unit=31; prefix-cacheable KV cache group block sizes must be divisible by prefix_match_unit.',
+             'KV_PREFIX_MATCH_INVALID'),
+            ("ValueError: KV cache layout BLHNC cannot express this model's mixed page sizes (1, 2).",
+             'KV_CACHE_LAYOUT_UNSUPPORTED'),
+        ]
+        for message, category in samples:
+            with self.subTest(category=category):
+                self.assertIn(category, ci.classify_container_log(message))
+
+    def test_valueerror_keywords_are_only_allowlisted_and_only_on_valueerror_lines(self):
+        output = ci.classify_container_log('ValueError: CPU memory cache secret=VERYSECRET\nRuntimeError: thread affinity super-secret')
+        for word in ('VALWORD_CPU', 'VALWORD_MEMORY', 'VALWORD_CACHE'):
+            self.assertIn(word, output)
+        self.assertNotIn('VALWORD_THREAD', output)
+        self.assertNotIn('VALWORD_AFFINITY', output)
+        self.assertNotIn('VERYSECRET', output)
+        self.assertNotIn('super-secret', output)
+
     def test_log_classifier_returns_all_safe_diagnostics_without_raw_content(self):
         message = ("PermissionError: secret=super-secret\n"
                    "sched_setaffinity failed with EACCES\n"

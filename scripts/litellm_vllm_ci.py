@@ -139,6 +139,12 @@ def completion(base, model, *, token=None, extra_headers=None):
 LOG_LIMIT = 2 * 1024 * 1024
 # Fixed, non-interpolated categories. Never return any matching log text.
 LOG_PATTERNS = (
+    # Literal message fragments from vLLM v0.32.0 CPU worker / KV-cache utils.
+    ('CPU_REQUESTED_MEMORY_EXCEEDS_AVAILABLE', r'available memory on node [^\n]{0,160} on startup is less than desired cpu memory utilization'),
+    ('CPU_KV_ALLOCATION_EXCEEDS_AVAILABLE', r'available memory on node [^\n]{0,160} on kv cache allocation is less than requested memory for kv'),
+    ('KV_CACHE_TOO_SMALL_FOR_MODEL_CONTEXT', r'to serve at least one request with the model.s max seq len[^\n]{0,240} larger than the available kv cache memory'),
+    ('KV_PREFIX_MATCH_INVALID', r'invalid prefix_match_unit=[^\n]{0,160}(?:kv cache|prefix-cache)'),
+    ('KV_CACHE_LAYOUT_UNSUPPORTED', r'kv cache layout [^\n]{0,100} cannot express this model.s mixed page sizes'),
     ('PERMISSION_DENIED', r'permissionerror|permission denied|operation not permitted|\bEACCES\b|\bEPERM\b'),
     ('NUMA_BINDING_FAILED', r'(?:numa|set_mempolicy|mbind)[^\n]{0,150}(?:fail|invalid|cannot|error|denied|not permitted)|(?:fail|cannot|error)[^\n]{0,100}(?:numa|set_mempolicy|mbind)'),
     ('THREAD_BINDING_FAILED', r'(?:sched_setaffinity|thread affinity|cpu binding|omp_threads_bind)[^\n]{0,150}(?:fail|invalid|cannot|error|denied|not permitted)|(?:fail|cannot|error)[^\n]{0,100}(?:bind threads?|thread affinity|sched_setaffinity|omp_threads_bind)'),
@@ -174,6 +180,26 @@ SAFE_EXCEPTIONS = (
 )
 
 
+SAFE_VALUEERROR_WORDS = (
+    'memory', 'available', 'numa', 'cpu', 'dtype', 'block', 'config', 'model',
+    'cache', 'shape', 'float', 'thread', 'affinity', 'size', 'unsupported',
+    'utilization', 'desired', 'requested', 'node', 'kv', 'seq', 'allocation',
+    'worker', 'device', 'capacity', 'space', 'max', 'tokens',
+)
+
+
+def valueerror_keywords(text):
+    lines = [line for line in text.splitlines()
+             if re.search(r'(?<![A-Za-z0-9_])ValueError\s*:', line)]
+    words = []
+    for word in SAFE_VALUEERROR_WORDS:
+        # Each output is one fixed allowlisted word, never user-controlled text.
+        pattern = r'(?<![A-Za-z])' + re.escape(word) + r'(?![A-Za-z])'
+        if any(re.search(pattern, line, re.IGNORECASE) for line in lines):
+            words.append('VALWORD_' + word.upper())
+    return words
+
+
 def classify_container_log(text):
     categories = []
     # HTTP code alone is ambiguous: classify as Hugging Face only with Hub context.
@@ -186,7 +212,7 @@ def classify_container_log(text):
                       if re.search(pattern, text, re.IGNORECASE))
     exceptions = ['EXC_' + name.upper() for name in SAFE_EXCEPTIONS
                   if re.search(r'(?<![A-Za-z0-9_])' + re.escape(name) + r'\s*:', text)]
-    values = categories + exceptions
+    values = categories + exceptions + valueerror_keywords(text)
     return '_'.join(values) if values else None
 
 
