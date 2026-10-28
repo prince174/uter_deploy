@@ -19,7 +19,7 @@ jobs:
           python - <<'PY'
           import json,os
           pages=json.load(open(os.environ['RUNNER_TEMP']+'/inventory.json'))
-          items=[{'id':a['id'],'name':a['name']} for page in pages for a in page['artifacts'] if not a['expired'] and a['name'] in ('protected-guardrail','protected-agent','protected-redis')]
+          items=[{'id':a['id'],'name':a['name']} for page in pages for a in page['artifacts'] if not a['expired'] and a['size_in_bytes']>=5_000_000 and a['name'] in ('protected-guardrail','protected-agent','protected-redis')]
           assert items and len(items)<=50
           with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write('matrix='+json.dumps(items,separators=(',',':'))+'\n')
           PY
