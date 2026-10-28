@@ -1,0 +1,62 @@
+name: Audit every GHCR version before public disclosure
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [guardrail, agent, redis]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Read exact source revision for audit
+        id: source
+        run: |
+          python - <<'PY'
+          import json,os,re
+          sha=json.load(open('candidates/source.json'))['source_commit']
+          assert re.fullmatch(r'[0-9a-f]{40}',sha)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('sha='+sha+'\n')
+          PY
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: prince174/uter
+          ref: ${{ steps.source.outputs.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.SOURCE_READ_TOKEN }}
+          path: work/upstream
+          persist-credentials: false
+      - name: Login to GHCR
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Install Trivy and refresh database
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc
+          scanners: vuln,secret
+          format: json
+          output: work/seed-findings.json
+          exit-code: '0'
+          timeout: 10m
+      - name: Scan all image versions and layers
+        env:
+          SERVICE: ${{ matrix.service }}
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/audit_public_packages.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: public-audit-${{ matrix.service }}
+          path: work/public-audit/${{ matrix.service }}.json
+          retention-days: 7
+          if-no-files-found: warn
