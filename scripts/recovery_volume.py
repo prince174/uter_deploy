@@ -11,7 +11,7 @@ import sys
 import tarfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.restore_backup import check_tar
+from scripts.archive_safety import check_tar
 
 
 def empty_directory(path):
