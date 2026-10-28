@@ -28,6 +28,7 @@ KIND_IMAGE = 'kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce
 VLLM_PORT = 18081
 PROXY_PORT = 18082
 UTER_PORT = 18083
+VLLM_KV_CACHE_BYTES = 256 * 1024 * 1024
 GIB = 1024 ** 3
 
 
@@ -35,6 +36,19 @@ class DiagnosticError(Exception):
     def __init__(self, category):
         super().__init__(category)
         self.category = category
+
+
+def vllm_container_command(name, network, cache):
+    # vLLM v0.32 legacy env overrides the CLI value when non-empty; explicitly
+    # clear it and use exact bytes so CI is not limited to whole GiB.
+    return ['docker', 'run', '-d', '--name', name, '--network', network, '--network-alias', 'vllm',
+            '--memory', '6g', '--cpus', '2', '--shm-size', '2g', '--cap-drop', 'ALL',
+            '--security-opt', 'no-new-privileges', '-p', f'127.0.0.1:{VLLM_PORT}:8000',
+            '-v', f'{cache}:/root/.cache/huggingface', '-e', 'VLLM_CPU_KVCACHE_SPACE=',
+            VLLM_IMAGE, '--model', MODEL, '--revision', MODEL_REVISION,
+            '--tokenizer-revision', MODEL_REVISION, '--dtype', 'float32',
+            '--kv-cache-memory-bytes', str(VLLM_KV_CACHE_BYTES),
+            '--max-model-len', '2048', '--max-num-seqs', '1']
 
 
 def proxy_config():
@@ -345,13 +359,7 @@ def main():
         gateway = docker_gateway(backend, gateway_info)
         print('Stage: isolated CPU vLLM', flush=True)
         call(['docker', 'network', 'create', network], failure='LLM_NETWORK_CREATE_FAILED')
-        call(['docker', 'run', '-d', '--name', vllm, '--network', network, '--network-alias', 'vllm',
-              '--memory', '6g', '--cpus', '2', '--shm-size', '2g', '--cap-drop', 'ALL',
-              '--security-opt', 'no-new-privileges', '-p', f'127.0.0.1:{VLLM_PORT}:8000',
-              '-v', f'{cache}:/root/.cache/huggingface', '-e', 'VLLM_CPU_KVCACHE_SPACE=1',
-              VLLM_IMAGE, '--model', MODEL, '--revision', MODEL_REVISION,
-              '--tokenizer-revision', MODEL_REVISION, '--dtype', 'float32',
-              '--max-model-len', '2048', '--max-num-seqs', '1'], failure='VLLM_START_FAILED')
+        call(vllm_container_command(vllm, network, cache), failure='VLLM_START_FAILED')
         vllm_url = f'http://127.0.0.1:{VLLM_PORT}'
         models = wait_json(vllm_url + '/v1/models', attempts=225,
                            state_probe=lambda timeout: container_state_category(vllm, 'VLLM', timeout=timeout))
