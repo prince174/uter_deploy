@@ -110,12 +110,13 @@ def finish_disposable_test(home, evidence, cfg, backend, kube, name, cluster, to
         diagnostic('compose-services',base+['ps','-a'],env)
         diagnostic('compose-logs',base+['logs','--no-color','--tail','80'],env)
         subprocess.run(base+['down','--volumes','--remove-orphans'],env=env,capture_output=True)
-    if created:
-        try:
+    try:
+        if created:
             collect_kubernetes_categories(kube,name,evidence)
-        finally:
+    finally:
+        if created:
             subprocess.run(['kind','delete','cluster','--name',cluster],capture_output=True)
-    if ollama: subprocess.run(['docker','rm','-f','uter-real-llm-ci'],capture_output=True)
+        if ollama: subprocess.run(['docker','rm','-f','uter-real-llm-ci'],capture_output=True)
 
 
 def call(args, *, input=None, env=None):
@@ -402,8 +403,10 @@ finally:
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
     finally:
         if forward: forward.terminate();forward.wait(timeout=10)
-        finish_disposable_test(home,evidence,cfg,backend,kube,name,cluster,token,auth,created,ollama)
-        if proxy:proxy.terminate();proxy.wait(timeout=10)
+        try:
+            finish_disposable_test(home,evidence,cfg,backend,kube,name,cluster,token,auth,created,ollama)
+        finally:
+            if proxy:proxy.terminate();proxy.wait(timeout=10)
 
 
 if __name__=='__main__': main()

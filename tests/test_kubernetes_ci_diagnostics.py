@@ -61,6 +61,18 @@ class KubernetesCiEvidenceTests(unittest.TestCase):
                 self.assertNotIn('redis-sensitive', item.read_text())
                 self.assertNotIn('audit-sensitive', item.read_text())
 
+    def test_cleanup_runs_even_if_collecting_categories_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(ci, 'collect_kubernetes_categories', side_effect=OSError('full disk')), \
+                 patch.object(ci.subprocess, 'run') as run:
+                with self.assertRaises(OSError):
+                    ci.finish_disposable_test(root/'missing-home', root, None, 'kubernetes', ['kubectl'],
+                        'test-ns', 'test-cluster', 'token', 'auth', True, True)
+            self.assertEqual([call.args[0] for call in run.call_args_list], [
+                ['kind', 'delete', 'cluster', '--name', 'test-cluster'],
+                ['docker', 'rm', '-f', 'uter-real-llm-ci']])
+
 
 if __name__ == '__main__':
     unittest.main()
