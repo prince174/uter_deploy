@@ -30,7 +30,7 @@ jobs:
           mkdir -p work/download
           gh release download "$RELEASE_TAG" --pattern 'installation-inputs.tar.gz*' --dir work/download
           (cd work/download && sha256sum -c installation-inputs.tar.gz.sha256)
-          python scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/validated
+          python scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/validated --legacy-unverified
           mkdir work/published
           tar -xzf work/download/installation-inputs.tar.gz -C work/published
           diff -r work/validated work/published

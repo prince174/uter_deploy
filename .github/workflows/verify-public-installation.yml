@@ -23,7 +23,7 @@ jobs:
             curl -fL -o "work/download/$file" "https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-2/$file"
           done
           (cd work/download && sha256sum -c installation-inputs.tar.gz.sha256)
-          python scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/validated
+          python scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/validated --legacy-unverified
           tar -xzf work/download/installation-inputs.tar.gz -C work/published
           diff -r work/validated work/published
       - name: Install Python tooling and pinned Helm

@@ -40,7 +40,7 @@ def export_git_snapshot(destination):
     return commit
 
 
-def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expected_fingerprint,output):
+def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expected_fingerprint,output, installation_archive=None):
     private=Path(private_key)
     if private.is_symlink() or not private.is_file():raise ValueError('Publisher private key must be a regular file')
     if private.resolve().is_relative_to(Path(__file__).resolve().parents[1]):
@@ -53,6 +53,22 @@ def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expect
     output=Path(output)
     if output.exists() or output.is_symlink():raise ValueError('Release output already exists')
     manifest=release_manifest.make_manifest(inputs,version,data_epoch,upgrade_from)
+    if installation_archive is not None:
+        archive_path=Path(installation_archive)
+        # Compare every archive member with the data used to construct the manifest.
+        from scripts.extract_release_inputs import REQUIRED, OPTIONAL
+        with tarfile.open(archive_path, 'r:gz') as tar:
+            members=tar.getmembers(); names=[m.name for m in members]
+            if len(names)!=len(set(names)) or not REQUIRED <= set(names) or set(names)-REQUIRED-OPTIONAL:
+                raise ValueError('Unexpected installation archive contents')
+            for member in members:
+                if not member.isfile() or member.size>1024*1024:
+                    raise ValueError('Unexpected installation archive member')
+                path=Path(inputs)/member.name
+                if not path.is_file() or path.is_symlink() or tar.extractfile(member).read()!=path.read_bytes():
+                    raise ValueError('Installation archive differs from release inputs')
+        with archive_path.open('rb') as stream:
+            manifest['installation_archive_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
     output.mkdir(mode=0o700,parents=False)
     marker=output/'INCOMPLETE';marker.write_text('Signed release packaging incomplete.\n')
     with tempfile.TemporaryDirectory(prefix='.uter-source-',dir=output) as tmp:
@@ -81,9 +97,10 @@ def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expect
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('inputs','private-key','public-key','output'):p.add_argument('--'+name,type=Path,required=True)
+    p.add_argument('--installation-archive',type=Path,required=True)
     p.add_argument('--version',required=True);p.add_argument('--data-epoch',type=int,required=True)
     p.add_argument('--upgrade-from',action='append',default=[]);p.add_argument('--expected-fingerprint',required=True)
-    a=p.parse_args();print(json.dumps(package(a.inputs,a.version,a.data_epoch,a.upgrade_from,a.private_key,a.public_key,a.expected_fingerprint,a.output),indent=2))
+    a=p.parse_args();print(json.dumps(package(a.inputs,a.version,a.data_epoch,a.upgrade_from,a.private_key,a.public_key,a.expected_fingerprint,a.output,a.installation_archive),indent=2))
 
 
 if __name__=='__main__':

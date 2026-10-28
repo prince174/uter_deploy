@@ -32,7 +32,6 @@ jobs:
           done
           (cd work/download && sha256sum -c installation-inputs.tar.gz.sha256 && sha256sum -c signed-bundle.tar.gz.sha256)
           echo '65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2  work/download/publisher-public.pem' | sha256sum -c -
-          python scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/published
       - name: Install Python tooling and pinned Helm
         run: |
           python3 -m venv .venv
@@ -47,6 +46,7 @@ jobs:
           .venv/bin/python scripts/extract_signed_bundle.py --archive work/download/signed-bundle.tar.gz \
             --key work/download/publisher-public.pem --output work/signed
           .venv/bin/python -c 'import json,subprocess; m=json.load(open("work/signed/manifest.json")); assert m["deployment_commit"]==subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()'
+          .venv/bin/python work/signed/scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/published --bundle work/signed --key work/download/publisher-public.pem
       - name: Install pinned kind
         if: matrix.backend == 'kubernetes'
         run: |

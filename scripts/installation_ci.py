@@ -81,7 +81,8 @@ def main():
             run(kube + ['-n', 'uter-fixtures', 'expose', 'deployment', 'llm', '--port=8080'])
             run(kube + ['-n', 'uter-fixtures', 'rollout', 'status', 'deployment/llm', '--timeout=180s'])
             url = 'http://llm.uter-fixtures.svc.cluster.local:8080'
-        prepare = [sys.executable, ROOT / 'scripts/install.py', 'prepare', '--home', home,
+        installer_script = Path(os.environ['SIGNED_BUNDLE_PATH']) / 'scripts/install.py' if os.environ.get('SIGNED_BUNDLE_PATH') else ROOT / 'scripts/install.py'
+        prepare = [sys.executable, installer_script, 'prepare', '--home', home,
             '--backend', backend, '--name', name, '--inputs', inputs,
             '--llm-url', url, '--llm-model', 'test-model', '--llm-key-file', ROOT / 'work/llm-key', '--allow-http-llm']
         if backend == 'compose':
@@ -91,8 +92,8 @@ def main():
             if not public: prepare += ['--registry-config', registry / 'config.json']
         run(prepare)
         cfg = json.loads((home / 'install.json').read_text())
-        run([sys.executable, ROOT / 'scripts/install.py', 'check', '--home', home])
-        run([sys.executable, ROOT / 'scripts/install.py', 'install', '--home', home])
+        run([sys.executable, installer_script, 'check', '--home', home])
+        run([sys.executable, installer_script, 'install', '--home', home])
         signed=os.environ.get('SIGNED_BUNDLE_PATH');trusted=os.environ.get('PUBLISHER_KEY_PATH')
         if bool(signed)!=bool(trusted):raise ValueError('Both signed bundle and trusted publisher key are required')
         if signed:

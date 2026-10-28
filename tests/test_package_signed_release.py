@@ -39,6 +39,19 @@ class SignedReleasePackagingTests(unittest.TestCase):
         with tarfile.open(out/'signed-bundle.tar.gz','r:gz') as archive:
             self.assertTrue(all(m.uid==0 and m.gid==0 and not m.uname and not m.gname for m in archive))
 
+    def test_rejects_archive_that_does_not_match_inputs(self):
+        archive=self.root/'inputs.tar.gz'
+        with tarfile.open(archive,'w:gz') as tar:
+            for name in ('images.json','publication.json'):
+                tar.add(self.inputs/name,arcname=name)
+            for name in ('policy.toml','model_profiles.toml'):
+                (self.inputs/name).write_text('expected')
+                tar.add(self.inputs/name,arcname=name)
+        (self.inputs/'policy.toml').write_text('changed')
+        with self.assertRaisesRegex(ValueError,'differs from release inputs'):
+            package(self.inputs,'1.0.0',1,[],self.private,self.public,self.fingerprint,
+                    self.root/'release',archive)
+
     def test_rejects_wrong_fingerprint_before_creating_output(self):
         out=self.root/'release'
         with self.assertRaisesRegex(ValueError,'fingerprint'):

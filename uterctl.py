@@ -92,6 +92,10 @@ def verify(folder, key_path):
                      'scripts/recover_kubernetes.py','scripts/recovery_kube_volumes.py',
                      'scripts/extract_signed_bundle.py','scripts/managed_smoke.py','scripts/adopt_managed.py',
                      'scripts/update_installation.py','scripts/smoke_http.py']
+    if manifest.get('installation_archive_sha256') is not None:
+        if not re.fullmatch(r'[0-9a-f]{64}', manifest['installation_archive_sha256']):
+            raise ValueError('Invalid signed installation archive hash')
+        required.append('scripts/extract_release_inputs.py')
     for name in required:
         if not (folder / name).is_file():
             raise ValueError(f"Missing {name}")

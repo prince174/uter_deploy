@@ -23,7 +23,7 @@ jobs:
           for version in deploy-2026.10.28 deploy-2026.10.28-2; do
             mkdir -p "work/download/$version"
             gh release download "$version" --pattern 'installation-inputs.tar.gz*' --dir "work/download/$version"
-            python scripts/extract_release_inputs.py "work/download/$version/installation-inputs.tar.gz" "work/download/$version/installation-inputs.tar.gz.sha256" "work/input/$version"
+            python scripts/extract_release_inputs.py "work/download/$version/installation-inputs.tar.gz" "work/download/$version/installation-inputs.tar.gz.sha256" "work/input/$version" --legacy-unverified
           done
       - name: Install isolated tooling
         run: |

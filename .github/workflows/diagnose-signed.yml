@@ -31,7 +31,7 @@ jobs:
           done
           (cd work/download && sha256sum -c installation-inputs.tar.gz.sha256 && sha256sum -c signed-bundle.tar.gz.sha256)
           echo '65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2  work/download/publisher-public.pem' | sha256sum -c -
-          python scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/published
+          python scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/published --legacy-unverified
       - name: Install Python tooling and pinned Helm
         run: |
           python3 -m venv .venv
