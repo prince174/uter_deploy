@@ -22,11 +22,12 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
             ci.metric_total('vllm:generation_tokens_total NaN\n')
 
     def test_resources_fail_before_download_with_safe_categories(self):
-        ci.preflight_resources('compose', {'avx2'}, 8 * ci.GIB, 8 * ci.GIB)
-        ci.preflight_resources('kubernetes', {'avx512f'}, 10 * ci.GIB, 10 * ci.GIB)
+        ci.preflight_resources('compose', {'avx2'}, 12 * ci.GIB, 8 * ci.GIB)
+        ci.preflight_resources('kubernetes', {'avx512f'}, 12 * ci.GIB, 10 * ci.GIB)
         cases = [('compose', set(), 20, 20, 'CPU_FLAGS_UNSUPPORTED'),
                  ('compose', {'avx2'}, 20, 7, 'DISK_SPACE_INSUFFICIENT'),
-                 ('kubernetes', {'avx2'}, 9, 20, 'AVAILABLE_MEMORY_INSUFFICIENT'),
+                 ('compose', {'avx2'}, 11, 20, 'AVAILABLE_MEMORY_INSUFFICIENT'),
+                 ('kubernetes', {'avx2'}, 11, 20, 'AVAILABLE_MEMORY_INSUFFICIENT'),
                  ('kubernetes', {'avx2'}, 20, 9, 'DISK_SPACE_INSUFFICIENT')]
         for backend, flags, mem, disk, category in cases:
             with self.subTest(category=category), self.assertRaises(ci.DiagnosticError) as caught:
@@ -196,6 +197,8 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         args = ci.vllm_container_command('fixture-vllm', 'fixture-network', '/tmp/fixture-cache')
         self.assertEqual(args[args.index('--kv-cache-memory-bytes') + 1], '268435456')
         self.assertEqual(args[args.index('--dtype') + 1], 'float32')
+        self.assertEqual(args[args.index('--memory') + 1], '9g')
+        self.assertEqual(args[args.index('--memory-swap') + 1], '9g')
         self.assertFalse(any('VLLM_CPU_KVCACHE_SPACE' in str(arg) for arg in args))
         self.assertIn('--enforce-eager', args)
         self.assertIn('no-new-privileges', args)

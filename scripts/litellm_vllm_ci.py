@@ -42,7 +42,7 @@ def vllm_container_command(name, network, cache):
     # vLLM v0.32 legacy env overrides the CLI value whenever it is non-empty,
     # including "0". This pinned image does not set it; do not pass it at all.
     return ['docker', 'run', '-d', '--name', name, '--network', network, '--network-alias', 'vllm',
-            '--memory', '6g', '--cpus', '2', '--shm-size', '2g', '--cap-drop', 'ALL',
+            '--memory', '9g', '--memory-swap', '9g', '--cpus', '2', '--shm-size', '2g', '--cap-drop', 'ALL',
             '--security-opt', 'no-new-privileges', '-p', f'127.0.0.1:{VLLM_PORT}:8000',
             '-v', f'{cache}:/root/.cache/huggingface',
             VLLM_IMAGE, '--model', MODEL, '--revision', MODEL_REVISION,
@@ -63,7 +63,8 @@ def preflight_resources(backend, flags, mem_available, disk_available):
     if not {'avx2', 'avx512f'}.intersection(flags):
         raise DiagnosticError('CPU_FLAGS_UNSUPPORTED')
     minimum_disk = 10 if backend == 'kubernetes' else 8
-    minimum_memory = 10 if backend == 'kubernetes' else 8
+    # 9 GiB vLLM ceiling plus initial host/service headroom; not a reservation.
+    minimum_memory = 12
     if disk_available < minimum_disk * GIB:
         raise DiagnosticError('DISK_SPACE_INSUFFICIENT')
     if mem_available < minimum_memory * GIB:
