@@ -56,7 +56,7 @@ kind использует стандартный CNI без применения
 ```bash
 git clone https://github.com/prince174/uter_deploy.git
 cd uter_deploy
-git checkout deploy-2026.10.28-signed-1
+git checkout deploy-2026.10.28-3
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p incoming
@@ -72,7 +72,7 @@ tar -xzf incoming/installation-inputs.tar.gz -C incoming
 публикации, а также security-summary для каждого образа. Digest уже заполнены — ничего придумывать или копировать из Docker image ID
 не нужно. SHA256 архива выявляет повреждение; это не независимая подпись. Доступ и
 подлинность комплекта здесь опираются на доверенный GitHub-репозиторий и HTTPS.
-Подписанный комплект начальной управляемой версии описан ниже.
+Подписанный комплект для `uterctl.py` пока не выпущен.
 
 Образы этой версии:
 
@@ -81,34 +81,6 @@ tar -xzf incoming/installation-inputs.tar.gz -C incoming
 | Guardrail | `ghcr.io/prince174/uter-guardrail@sha256:2b157a9d01f454cd7fdaf67345b5d872cd26e8f5785132cce933ee22c9fa296e` |
 | Agent | `ghcr.io/prince174/uter-agent@sha256:a6f03a1f102fcc941b1aad0a0ada9f664b2451c0e0acb06a46c5aaaedee86da1` |
 | Redis | `ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc` |
-
-### Подписанный комплект начальной версии
-
-Управляемый комплект `0.1.0` использует те же digest, что установочные файлы
-выше. Это начальная версия без заявленных переходов с других управляемых версий;
-существующую установку с этими образами можно принять под управление. Следующее
-обновление потребует отдельного подписанного комплекта с проверенным переходом.
-
-Получите и **независимо сверьте** SHA256 публичного ключа издателя:
-`65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2`.
-Затем скачайте комплект и проверьте его подпись до использования:
-
-```bash
-mkdir -p signed
-curl -fL -o signed/publisher-public.pem \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-signed-1/publisher-public.pem
-curl -fL -o signed/signed-bundle.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-signed-1/signed-bundle.tar.gz
-echo '65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2  signed/publisher-public.pem' | sha256sum -c -
-.venv/bin/python scripts/extract_signed_bundle.py \
-  --archive signed/signed-bundle.tar.gz --key signed/publisher-public.pem \
-  --output signed/0.1.0
-```
-
-Проверка ключа по значению только из этого же репозитория не является независимым
-подтверждением доверия: сравните отпечаток с полученным отдельно. Подробный порядок
-принятия установки, обновления и восстановления — в
-[инструкции](docs/managed-update-recovery.md).
 
 ## 2A. Установить через Compose
 
@@ -228,7 +200,7 @@ Readiness не заменяет проверку поведения. До отк
 сверяет работающие образы, файлы развёртывания и подписанный комплект, затем выполняет
 проверку сервиса. При обновлении контроллер создаёт зашифрованную резервную копию
 перед заменой компонентов. Для этого нужны выпущенные подписанные комплекты и отдельно
-полученный и проверенный доверенный ключ. Тестовые ключи
+полученный доверенный ключ; **сейчас таких комплектов в релизе нет**. Тестовые ключи
 и версии из CI не предназначены для эксплуатации. Детали проверок и ограничений:
 [реальная LLM и обновление](docs/real-llm-upgrade-validation.md).
 Команды восстановления создают новую отдельную установку из проверенной копии;
