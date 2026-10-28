@@ -1,0 +1,68 @@
+# Downloads the CPU vLLM image (~1.72 GB compressed), Qwen 0.5B weights (~0.99 GB),
+# LiteLLM, Uter images and (for Kubernetes) kind. Extracted sizes are larger;
+# the runner checks free resources but actual requirements and network access can vary.
+name: Verify Uter with LiteLLM and CPU vLLM
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Public signed release whose manifest authenticates installation-inputs.tar.gz
+        required: true
+        type: string
+        default: deploy-2026.10.28-signed-5
+permissions:
+  contents: read
+jobs:
+  real-llm:
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [compose, kubernetes]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout test driver
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: driver
+          persist-credentials: false
+      - name: Checkout published release
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.release_tag }}
+          path: release
+          persist-credentials: false
+      - name: Download public assets
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          case "$RELEASE_TAG" in *[!a-zA-Z0-9._-]*|'') exit 1;; esac
+          mkdir -p work/download
+          for f in installation-inputs.tar.gz installation-inputs.tar.gz.sha256 signed-bundle.tar.gz publisher-public.pem; do
+            curl --fail --location --silent --show-error -o "work/download/$f" "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$f"
+          done
+          echo '65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2  work/download/publisher-public.pem' | sha256sum -c -
+      - name: Prepare verification and authenticate release
+        run: |
+          python3 -m venv work/venv
+          work/venv/bin/pip install --quiet -r release/requirements.txt
+          work/venv/bin/python release/scripts/extract_signed_bundle.py --archive work/download/signed-bundle.tar.gz --key work/download/publisher-public.pem --output work/signed
+          work/venv/bin/python -c 'import json, subprocess; m=json.load(open("work/signed/manifest.json")); assert m["deployment_commit"] == subprocess.check_output(["git", "-C", "release", "rev-parse", "HEAD"], text=True).strip(); assert m.get("installation_archive_sha256")'
+          work/venv/bin/python work/signed/scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/published --bundle work/signed --key work/download/publisher-public.pem
+      - name: Install pinned Helm and kind for Kubernetes
+        if: matrix.backend == 'kubernetes'
+        run: |
+          curl -fsSLO https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz
+          curl -fsSLO https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz.sha256sum
+          sha256sum -c helm-v3.17.3-linux-amd64.tar.gz.sha256sum
+          tar -xzf helm-v3.17.3-linux-amd64.tar.gz
+          sudo install linux-amd64/helm /usr/local/bin/helm
+          curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o kind-bin
+          echo 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind-bin' | sha256sum -c -
+          sudo install kind-bin /usr/local/bin/kind
+      - name: Validate CPU and exercise real inference
+        env:
+          BACKEND: ${{ matrix.backend }}
+          TEST_WORKSPACE: ${{ github.workspace }}/work
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_RUN_ID,GITHUB_EVENT_NAME,TEST_WORKSPACE,BACKEND "$PWD/work/venv/bin/python" driver/scripts/litellm_vllm_ci.py
