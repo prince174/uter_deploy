@@ -24,9 +24,9 @@ def call(args, data=None):
     return result.stdout
 
 
-def test(kube, namespace, image, redis_image, exported):
+def test(kube, namespace, image, redis_image, exported, *, keep_pvcs=False):
     """Create and remove only unique CI test PVCs and pods, never production PVCs."""
-    if (os.environ.get('GITHUB_ACTIONS') != 'true' or namespace != 'uter-upgrade-ci'
+    if (os.environ.get('GITHUB_ACTIONS') != 'true' or namespace not in ('uter-upgrade-ci','uter-restored-ci')
             or kube != ['kubectl','--context','kind-uter-upgrade-ci']):
         raise ValueError('This test only runs in its explicitly named disposable CI cluster')
     kube=kube+['-n',namespace]; cm='uter-recovery-ci-code'; names=[]
@@ -35,9 +35,18 @@ def test(kube, namespace, image, redis_image, exported):
                    '--from-file=recovery_volume.py='+str(ROOT/'scripts/recovery_volume.py'),
                    '--from-file=archive_safety.py='+str(ROOT/'scripts/archive_safety.py')])
         for kind,uid,gid,file in [('redis',999,1000,'redis.rdb'),('audit',10001,10001,'audit.tar')]:
-            pvc='uter-recovery-ci-'+kind;helper=pvc+'-helper';names.append((pvc,helper))
-            pvc_spec={'apiVersion':'v1','kind':'PersistentVolumeClaim','metadata':{'name':pvc},
-                'spec':{'accessModes':['ReadWriteOnce'],'resources':{'requests':{'storage':'1Gi'}}}}
+            pvc=('uter-restored-ci-'+('guardrail' if kind=='audit' else 'redis')) if keep_pvcs else 'uter-recovery-ci-'+kind
+            helper=pvc+'-helper';names.append((pvc,helper))
+            metadata={'name':pvc}
+            size='1Gi'
+            if keep_pvcs:
+                if namespace!='uter-restored-ci':raise ValueError('Retained recovery PVCs require the disposable recovery namespace')
+                size='10Gi' if kind=='audit' else '2Gi'
+                metadata.update(labels={'app.kubernetes.io/managed-by':'Helm'},annotations={
+                    'meta.helm.sh/release-name':'uter-restored-ci','meta.helm.sh/release-namespace':namespace,
+                    'helm.sh/resource-policy':'keep'})
+            pvc_spec={'apiVersion':'v1','kind':'PersistentVolumeClaim','metadata':metadata,
+                'spec':{'accessModes':['ReadWriteOnce'],'resources':{'requests':{'storage':size}}}}
             call(kube+['create','-f','-'],json.dumps(pvc_spec).encode())
             pod={'apiVersion':'v1','kind':'Pod','metadata':{'name':helper},'spec':{
                 'restartPolicy':'Never','automountServiceAccountToken':False,
@@ -121,5 +130,5 @@ def test(kube, namespace, image, redis_image, exported):
     finally:
         for pvc,helper in names:
             subprocess.run(kube+['delete','pod',helper,helper+'-redis',helper+'-check','--ignore-not-found','--wait=true'],capture_output=True)
-            subprocess.run(kube+['delete','pvc',pvc,'--ignore-not-found','--wait=true'],capture_output=True)
+            if not keep_pvcs:subprocess.run(kube+['delete','pvc',pvc,'--ignore-not-found','--wait=true'],capture_output=True)
         subprocess.run(kube+['delete','configmap',cm,'--ignore-not-found'],capture_output=True)

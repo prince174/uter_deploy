@@ -276,8 +276,8 @@ finally:
         finally:
             subprocess.run(['docker','rm','-f',restored_name],capture_output=True)
         if backend=='kubernetes':
-            from scripts import recovery_pvc_ci
-            recovery_pvc_ci.test(kube,name,images['guardrail'],redis_image,exported)
+            from scripts import recovery_kubernetes_ci
+            recovery_kubernetes_ci.test(home,backup_dir,backup_key,public,exported,audit_before)
         else:
             from scripts import recovery_compose_ci
             recovery_compose_ci.test(home,backup_dir,backup_key,public,exported,audit_before)
@@ -302,7 +302,7 @@ finally:
                 'separate_kubernetes_pvc_restore':'pass' if backend=='kubernetes' else 'not applicable',
                 'audit_chain_and_persistence':'pass','audit_lines_before':audit_before['lines'],
                 'audit_lines_after':audit_after['lines'],'test_signing_key':'ephemeral CI only',
-                'full_restore_to_workloads':'separate Compose project passed' if backend=='compose' else 'not tested',
+                'full_restore_to_workloads':'separate isolated installation passed',
                 'data_epoch':'CI assumption, not a production compatibility declaration'}
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
     finally:
