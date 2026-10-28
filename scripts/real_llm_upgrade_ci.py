@@ -60,6 +60,31 @@ print(json.dumps({'first_sha256':hashlib.sha256(lines[0]).hexdigest(),'lines':le
     return json.loads(call(cmd, input=program.encode(), env=env))
 
 
+def verify_active_images(backend, name, home, cfg, kube, images):
+    if backend == 'compose':
+        env = os.environ.copy()
+        env.update({key.upper()+'_IMAGE': value for key, value in cfg['images'].items()})
+        env['RUNTIME_DIR'] = str(home/'runtime')
+        base = ['docker', 'compose', '--project-name', name, '--env-file', home/'empty.env',
+                '-f', home/'compose/compose.yaml']
+        for service, reference in images.items():
+            container = call(base+['ps','-q',service],env=env).decode().strip()
+            assert container, f'No running {service} container'
+            live = json.loads(call(['docker','inspect',container]))[0]
+            image = json.loads(call(['docker','image','inspect',reference]))[0]
+            assert live['State']['Running'] and live['Image'] == image['Id'], f'Wrong running {service} image'
+    else:
+        pods = json.loads(call(kube+['-n',name,'get','pods','-o','json']))['items']
+        for service, reference in images.items():
+            deployment = json.loads(call(kube+['-n',name,'get','deployment',name+'-'+service,'-o','json']))
+            assert deployment['spec']['template']['spec']['containers'][0]['image'] == reference
+            matching = [p for p in pods if p['metadata'].get('labels',{}).get('app.kubernetes.io/name') == service
+                        and p['metadata'].get('labels',{}).get('app.kubernetes.io/instance') == name
+                        and not p['metadata'].get('deletionTimestamp')]
+            assert matching and any(c['ready'] and c['image'] == reference for p in matching
+                                    for c in p.get('status',{}).get('containerStatuses',[])), f'No ready {service} pod with expected digest'
+
+
 def main():
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.name != 'posix':
         raise SystemExit('Disposable GitHub-hosted runner required')
@@ -77,12 +102,14 @@ def main():
     cfg=None
     try:
         # Runner-only network: no local daemon, no external paid model or API token.
+        print('Stage: start isolated Ollama',flush=True)
         call(['docker','run','-d','--name','uter-real-llm-ci','--network','host','-e','OLLAMA_HOST=0.0.0.0:11434','-e','OLLAMA_CONTEXT_LENGTH=2048',OLLAMA]);ollama=True
         for attempt in range(60):
             try: request('http://127.0.0.1:11434/api/tags');break
             except (OSError,urllib.error.URLError):
                 if attempt==59: raise
                 time.sleep(1)
+        print('Stage: download and verify model',flush=True)
         call(['docker','exec','uter-real-llm-ci','ollama','pull',MODEL])
         models=request('http://127.0.0.1:11434/api/tags')['models']
         assert any(x['name']==MODEL and x['digest']==MODEL_DIGEST for x in models), 'Model digest mismatch'
@@ -108,6 +135,7 @@ def main():
         assert gateway, 'No IPv4 gateway for isolated LLM'
         llm_url=f'http://{gateway}:11435/v1'
         (work/'empty-key').write_text('')
+        print('Stage: prepare isolated runtime',flush=True)
         prepare=[sys.executable,ROOT/'scripts/install.py','prepare','--home',home,'--backend',backend,'--name',name,'--inputs',work/'input'/OLD,'--llm-url',llm_url,'--llm-model',MODEL,'--llm-key-file',work/'empty-key','--allow-http-llm','--guardrail-cpus','2']
         if backend=='kubernetes': prepare += ['--context','kind-'+cluster,'--registry-config',registry/'config.json']
         call(prepare)
@@ -166,6 +194,7 @@ finally:
         site={'backend':'compose' if backend=='compose' else 'helm','name':name,'namespace':name,'smoke_command':[sys.executable,str(smoke_file)]}
         uterctl.write(runtime/'site.json',site)
         base=[sys.executable,ROOT/'uterctl.py']; common=['--home',home,'--key',public]
+        print('Stage: first signed deployment',flush=True)
         call(base+['apply',*common,'--bundle',bundles[0]])
         before=json.loads(call([sys.executable,smoke_file]))
         if backend=='compose':
@@ -174,12 +203,15 @@ finally:
         else: cmd=kube+['-n',name,'exec','-i','deployment/'+name+'-guardrail','--','python','-'];env=None
         stats_before=request('http://127.0.0.1:11435/stats')
         assert stats_before['successful_completions'] > 0 and stats_before['completion_tokens'] > 0
+        print('Stage: real LLM and persistent state before update',flush=True)
         audit_before=audit_and_redis(cmd,env,'write')
         # Negative check: a managed update without a receipt must fail before changing workloads.
         missing=subprocess.run([str(x) for x in base+['apply',*common,'--bundle',bundles[1]]],capture_output=True)
         assert missing.returncode and b'backup-receipt' in missing.stderr
         receipt=work/'receipt.json';receipt.write_text(json.dumps({'version':'0.0.1','backup_id':'ephemeral-ci-only-not-a-real-backup'}))
+        print('Stage: managed upgrade',flush=True)
         call(base+['apply',*common,'--bundle',bundles[1],'--backup-receipt',receipt])
+        print('Stage: real LLM and persistent state after update',flush=True)
         after=json.loads(call([sys.executable,smoke_file]))
         stats_after=request('http://127.0.0.1:11435/stats')
         assert stats_after['successful_completions'] > stats_before['successful_completions']
@@ -188,8 +220,9 @@ finally:
         assert audit_before['first_sha256']==audit_after['first_sha256'] and audit_after['lines']>audit_before['lines']
         state=json.loads((home/'state.json').read_text());assert state['current']['version']=='0.0.2' and state['previous']['version']=='0.0.1' and state['pending'] is None
         assert state['current']['images']==json.loads((work/'input'/NEW/'images.json').read_text())
+        verify_active_images(backend,name,home,cfg,kube,state['current']['images'])
         assert any(x['name']==MODEL for x in request('http://127.0.0.1:11434/api/ps')['models'])
-        result={'backend':backend,'old_release':OLD,'new_release':NEW,'model':MODEL,'model_digest':MODEL_DIGEST,'real_inference':'pass','llm_completions_before':stats_before['successful_completions'],'llm_completions_after':stats_after['successful_completions'],'before':before,'after':after,'backup_receipt_required':'pass','upgrade':'pass','redis_sentinel':'pass','audit_chain_and_persistence':'pass','audit_lines_before':audit_before['lines'],'audit_lines_after':audit_after['lines'],'test_signing_key':'ephemeral CI only','backup':'synthetic receipt only; backup/restore not tested','adoption_of_install_py':'not tested or supported','data_epoch':'CI assumption, not a production compatibility declaration'}
+        result={'backend':backend,'old_release':OLD,'new_release':NEW,'model':MODEL,'model_digest':MODEL_DIGEST,'real_inference':'pass','llm_completions_before':stats_before['successful_completions'],'llm_completions_after':stats_after['successful_completions'],'before':before,'after':after,'backup_receipt_required':'pass','upgrade':'pass','running_images_match_new_release':'pass','redis_sentinel':'pass','audit_chain_and_persistence':'pass','audit_lines_before':audit_before['lines'],'audit_lines_after':audit_after['lines'],'test_signing_key':'ephemeral CI only','backup':'synthetic receipt only; backup/restore not tested','adoption_of_install_py':'not tested or supported','data_epoch':'CI assumption, not a production compatibility declaration'}
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
     finally:
         if forward: forward.terminate();forward.wait(timeout=10)
