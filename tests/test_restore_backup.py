@@ -54,3 +54,11 @@ class RestoreExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Unsafe path'):
             restore_backup.stage_archive(path,self.root/'stage')
         self.assertFalse((self.root/'stage').exists())
+
+    def test_prepare_staging_exports_and_unpacks_without_live_changes(self):
+        w=self.build();dest=self.root/'prepared'
+        restore_backup.prepare_staging(w.path,self.keyfile,dest)
+        self.assertEqual((dest/'runtime-staged/runtime/file').read_bytes(),b'secret')
+        self.assertTrue((dest/'audit-staged/audit/audit.jsonl').exists())
+        self.assertFalse((dest/'INCOMPLETE').exists())
+        self.assertEqual(list(self.home.iterdir()),[])

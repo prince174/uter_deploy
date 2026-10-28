@@ -82,12 +82,26 @@ def export(backup, key_path, destination):
     return manifest
 
 
+def prepare_staging(backup, key_path, destination):
+    """Decrypt and unpack into a new directory only; no running workload is modified."""
+    manifest=export(backup,key_path,destination)
+    destination=Path(destination)
+    marker=destination/'INCOMPLETE'
+    marker.write_text('Sensitive recovery data. Staging not completed.\n')
+    if os.name=='posix': marker.chmod(0o600)
+    stage_archive(destination/'runtime.tar',destination/'runtime-staged')
+    stage_archive(destination/'audit.tar',destination/'audit-staged')
+    marker.unlink()
+    return manifest
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--backup',type=Path,required=True);p.add_argument('--backup-key',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
-    args=p.parse_args();m=export(args.backup,args.backup_key,args.output)
-    print('Verified backup '+m['id']+' exported to a new private directory. Contents include secrets.')
+    p.add_argument('--stage',action='store_true',help='Also unpack archives into new private staging directories')
+    args=p.parse_args();m=(prepare_staging if args.stage else export)(args.backup,args.backup_key,args.output)
+    print('Verified backup '+m['id']+' exported to a new private directory. Contents include secrets; workloads are unchanged.')
 
 
 if __name__=='__main__':
