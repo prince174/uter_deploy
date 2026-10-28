@@ -13,7 +13,7 @@ import tarfile
 import threading
 import time
 
-from scripts import adopt_installation, backup_store
+from scripts import adopt_installation, backup_crypto, backup_store, restore_backup
 
 
 class PrefixStream:
@@ -40,6 +40,50 @@ def process_component(writer, label, command, *, env=None, prefix=None):
         timer.cancel()
         if process.poll() is None: process.kill();process.wait()
         process.stdout.close()
+
+
+def verify_encrypted_tar(writer, label):
+    """Validate the actual encrypted tar without writing plaintext to disk."""
+    read_fd,write_fd=os.pipe()
+    errors=[]
+    def decrypt():
+        try:
+            with os.fdopen(write_fd,'wb') as sink:
+                backup_crypto.decrypt_verify(writer.path/(label+'.enc'),writer.key,
+                    backup_store.aad(writer.manifest['id'],label),writer.manifest['files'][label],sink)
+        except BaseException as exc:
+            errors.append(exc)
+    thread=threading.Thread(target=decrypt,daemon=True)
+    thread.start()
+    try:
+        with os.fdopen(read_fd,'rb') as source:
+            with tarfile.open(fileobj=source,mode='r|*') as archive:
+                restore_backup.check_tar_members(archive)
+            while source.read(1024*1024): pass
+    finally:
+        thread.join(timeout=300)
+    if thread.is_alive(): raise RuntimeError('Timed out verifying encrypted archive')
+    if errors: raise ValueError('Encrypted archive authentication failed') from errors[0]
+
+
+def verify_redis_snapshot(writer, command, *, env=None):
+    """Run redis-check-rdb in the existing Redis container's temporary filesystem."""
+    metadata=writer.manifest['files']['redis']
+    if metadata['plaintext_bytes'] > 100*1024*1024:
+        raise ValueError('Redis snapshot exceeds the safe validation size for the 128 MiB tmpfs')
+    process=subprocess.Popen([str(x) for x in command],env=env,stdin=subprocess.PIPE,
+                             stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    timer=threading.Timer(300,lambda: process.kill() if process.poll() is None else None)
+    timer.start()
+    try:
+        backup_crypto.decrypt_verify(writer.path/'redis.enc',writer.key,
+            backup_store.aad(writer.manifest['id'],'redis'),metadata,process.stdin)
+        process.stdin.close()
+        if process.wait(timeout=120) != 0: raise ValueError('Redis snapshot failed structural validation')
+    finally:
+        timer.cancel()
+        if process.poll() is None: process.kill();process.wait()
+        if not process.stdin.closed: process.stdin.close()
 
 
 def archive_runtime(home, writer):
@@ -146,11 +190,12 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
         cmd[cmd.index('-f')+1] = str(home/'releases'/current['version']/'compose/compose.yaml')
     kube=['kubectl','--context',cfg['context'],'-n',site['namespace']]
     stopped=False;helper=None;success=False;guardpod=None
+    objects=None;cluster_snapshot=None
     if site['backend']=='helm':
         # Validate scope and capture live Secrets/ConfigMaps, not just stale local copies.
         objects=kube_objects(home,site)
-        raw=checked(kube+['get',*objects,'-o','json'])
-        writer.put('kubernetes',io.BytesIO(raw))
+        cluster_snapshot=checked(kube+['get',*objects,'-o','json'])
+        writer.put('kubernetes',io.BytesIO(cluster_snapshot))
         pods=json.loads(checked(kube+['get','pods','-l','app.kubernetes.io/instance='+site['name'],'-o','json']))['items']
         guards=[p for p in pods if p['metadata'].get('labels',{}).get('app.kubernetes.io/name')=='guardrail' and not p['metadata'].get('deletionTimestamp')]
         if len(guards)!=1: raise ValueError('Expected exactly one Guardrail pod')
@@ -172,6 +217,8 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
         else:
             checked(kube+['scale','deployment/'+site['name']+'-guardrail','deployment/'+site['name']+'-agent','--replicas=0'])
             wait_no_pods(kube,site)
+            if checked(kube+['get',*objects,'-o','json']) != cluster_snapshot:
+                raise ValueError('Kubernetes runtime resources changed during backup')
         archive_runtime(home,writer)
         if site['backend']=='compose':
             redis=cmd+['exec','-T','redis','sh','-ec','export REDISCLI_AUTH="$(cat /run/secrets/redis_password)"; exec redis-cli --rdb -']
@@ -187,13 +234,24 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
             checked(kube+['wait','--for=condition=Ready','pod/'+helper,'--timeout=180s'])
             code='import sys,tarfile; t=tarfile.open(fileobj=sys.stdout.buffer,mode="w|"); t.add("/snapshot",arcname="audit",recursive=True); t.close()'
             process_component(writer,'audit',kube+['exec',helper,'-c','reader','--','python','-c',code])
+        verify_encrypted_tar(writer,'runtime')
+        verify_encrypted_tar(writer,'audit')
+        check_script='p=$(mktemp /tmp/uter-rdb.XXXXXX); trap \'rm -f "$p"\' EXIT; cat > "$p"; redis-check-rdb "$p" >/dev/null'
+        if site['backend']=='compose':
+            check=cmd+['exec','-T','redis','sh','-ec',check_script]
+            verify_redis_snapshot(writer,check,env=env)
+        else:
+            check=kube+['exec','-i','deployment/'+site['name']+'-redis','-c','redis','--','sh','-ec',check_script]
+            verify_redis_snapshot(writer,check)
         manifest=writer.finish()
         backup_store.verify_set(destination,key,home=home,site=site,version=current['version'])
         success=True
         return manifest
     finally:
+        cleanup_error=None
         if helper:
-            subprocess.run(kube+['delete','pod',helper,'--ignore-not-found','--wait=true'],capture_output=True)
+            try: checked(kube+['delete','pod',helper,'--ignore-not-found','--wait=true'])
+            except Exception as exc: cleanup_error=exc;success=False
         if stopped and not (success and leave_stopped):
             try:
                 resume_writers(home,cfg,site,current)
@@ -204,3 +262,4 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
         elif success and leave_stopped:
             uterctl.write(journal,{'operation':'backup','phase':'quiesced','version':current['version'],
                                     'backup_id':writer.manifest['id'],'backend':site['backend']})
+        if cleanup_error: raise RuntimeError('Could not remove temporary backup pod; workloads were resumed') from cleanup_error

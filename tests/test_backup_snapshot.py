@@ -2,6 +2,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 import yaml
@@ -30,10 +31,18 @@ class SnapshotTests(unittest.TestCase):
         if 'ps' in args:return b'container-id\n'
         return b''
 
-    def fake_component(self,writer,label,command,**kwargs):writer.put(label,io.BytesIO(b'REDIS-snapshot' if label=='redis' else b'audit-tar'))
+    def fake_component(self,writer,label,command,**kwargs):
+        if label=='redis': data=b'REDIS-snapshot'
+        else:
+            buf=io.BytesIO()
+            with tarfile.open(fileobj=buf,mode='w') as tar:
+                payload=b'audit';info=tarfile.TarInfo('audit.jsonl');info.size=len(payload)
+                tar.addfile(info,io.BytesIO(payload))
+            data=buf.getvalue()
+        writer.put(label,io.BytesIO(data))
 
     def test_snapshot_is_encrypted_and_restarts_on_success(self):
-        with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as cmd, patch.object(backup_snapshot,'process_component',side_effect=self.fake_component):
+        with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as cmd, patch.object(backup_snapshot,'process_component',side_effect=self.fake_component), patch.object(backup_snapshot,'verify_redis_snapshot'):
             result=backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key)
         self.assertEqual(result['version'],'1.0.0')
         store=backup_store.verify_set(self.root/'backup',self.key,home=self.home,site=self.site,version='1.0.0')
@@ -52,10 +61,27 @@ class SnapshotTests(unittest.TestCase):
         self.assertFalse((self.home/'backup-operation.json').exists())
 
     def test_leave_stopped_keeps_recovery_journal(self):
-        with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as cmd, patch.object(backup_snapshot,'process_component',side_effect=self.fake_component):
+        with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as cmd, patch.object(backup_snapshot,'process_component',side_effect=self.fake_component), patch.object(backup_snapshot,'verify_redis_snapshot'):
             backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key,leave_stopped=True)
         self.assertFalse(any('up' in c.args[0] for c in cmd.call_args_list))
         self.assertEqual(uterctl.read(self.home/'backup-operation.json')['phase'],'quiesced')
+
+    def test_invalid_rdb_resumes_writers_and_never_issues_backup(self):
+        with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as cmd, patch.object(backup_snapshot,'process_component',side_effect=self.fake_component), patch.object(backup_snapshot,'verify_redis_snapshot',side_effect=ValueError('invalid RDB')):
+            with self.assertRaisesRegex(ValueError,'invalid RDB'):
+                backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key,leave_stopped=True)
+        self.assertFalse((self.root/'backup/manifest.json').exists())
+        self.assertTrue(any('up' in c.args[0] for c in cmd.call_args_list))
+        self.assertFalse((self.home/'backup-operation.json').exists())
+
+    def test_rejects_unsafe_encrypted_tar(self):
+        writer=backup_store.BackupWriter(self.root/'backup',self.key,self.home,self.site,'1.0.0')
+        buf=io.BytesIO()
+        with tarfile.open(fileobj=buf,mode='w') as tar:
+            info=tarfile.TarInfo('../escape');info.size=1;tar.addfile(info,io.BytesIO(b'x'))
+        writer.put('audit',io.BytesIO(buf.getvalue()))
+        with self.assertRaisesRegex(ValueError,'Unsafe path'):
+            backup_snapshot.verify_encrypted_tar(writer,'audit')
 
     def test_kubernetes_rejects_unbacked_model_volume(self):
         self.site['backend']='helm';(self.home/'runtime/values.yaml').write_text(yaml.safe_dump({'useEmbeddedModels':False}))
