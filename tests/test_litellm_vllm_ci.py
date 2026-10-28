@@ -67,6 +67,14 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         request.assert_called_once()
         sleep.assert_not_called()
 
+    def test_kind_memory_and_swap_limits_are_set_together(self):
+        args = ci.kind_resource_limit_command('isolated-kind')
+        self.assertEqual(args[:2], ['docker', 'update'])
+        self.assertEqual(args[args.index('--memory') + 1], '7g')
+        self.assertEqual(args[args.index('--memory-swap') + 1], '7g')
+        self.assertEqual(args[args.index('--cpus') + 1], '2')
+        self.assertEqual(args[-1], 'isolated-kind-control-plane')
+
     def test_backend_uses_its_own_private_docker_gateway(self):
         bridge = [{'IPAM': {'Config': [{'Gateway': '172.17.0.1'}]}}]
         node = [{'NetworkSettings': {'Networks': {'kind': {'Gateway': '172.19.0.1'}}}}]

@@ -74,6 +74,13 @@ def read_host_resources(root):
     return flags, int(match.group(1)) * 1024, min(available)
 
 
+def kind_resource_limit_command(cluster):
+    # Docker defines memory-swap as combined RAM+swap. Set both together to
+    # establish a 7 GiB RAM limit with no swap on the isolated kind node.
+    return ['docker', 'update', '--memory', '7g', '--memory-swap', '7g',
+            '--cpus', '2', cluster + '-control-plane']
+
+
 def docker_gateway(backend, info):
     if backend == 'compose':
         value = info[0]['IPAM']['Config'][0]['Gateway']
@@ -234,7 +241,7 @@ def main():
         if backend == 'kubernetes':
             print('Stage: isolated kind cluster', flush=True)
             call(['kind', 'create', 'cluster', '--name', cluster, '--image', KIND_IMAGE, '--wait', '180s'], failure='KIND_CREATE_FAILED')
-            call(['docker', 'update', '--memory', '7g', '--cpus', '2', cluster + '-control-plane'], failure='KIND_RESOURCE_LIMIT_FAILED')
+            call(kind_resource_limit_command(cluster), failure='KIND_RESOURCE_LIMIT_FAILED')
             gateway_info = json.loads(call(['docker', 'inspect', cluster + '-control-plane'], failure='KIND_GATEWAY_INSPECT_FAILED'))
         else:
             gateway_info = json.loads(call(['docker', 'network', 'inspect', 'bridge'], failure='DOCKER_NETWORK_INSPECT_FAILED'))
