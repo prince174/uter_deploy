@@ -45,6 +45,7 @@ def main():
     registry = ROOT / 'work/registry'
     registry.mkdir(mode=0o700)
     public = os.environ.get('PUBLIC_REGISTRY') == '1'
+    token = auth = ''
     if not public:
         token = os.environ['REGISTRY_TOKEN']
         registry_host = os.environ.get('REGISTRY_HOST', 'ghcr.io')
