@@ -234,6 +234,21 @@ finally:
         call(['docker','run','--rm','--network','none','--user','0:0',
               '--mount','type=bind,source='+str(exported/'redis.rdb')+',target=/snapshot.rdb,readonly',
               '--entrypoint','redis-check-rdb',redis_image,'/snapshot.rdb'])
+        # Restore the RDB into a separate disposable Redis, never into the active workload.
+        restored_name='uter-ci-restored-redis'
+        os.chown(exported/'redis.rdb',999,1000);os.chmod(exported/'redis.rdb',0o400)
+        try:
+            call(['docker','run','-d','--name',restored_name,'--network','none','--user','999:1000',
+                  '--mount','type=bind,source='+str(exported/'redis.rdb')+',target=/snapshot.rdb,readonly',
+                  '--entrypoint','redis-server',redis_image,'--dir','/','--dbfilename','snapshot.rdb',
+                  '--save','','--appendonly','no','--bind','127.0.0.1'])
+            for attempt in range(30):
+                value=subprocess.run(['docker','exec',restored_name,'redis-cli','--raw','GET','ci:upgrade:sentinel'],capture_output=True)
+                if value.returncode==0 and value.stdout.strip()==b'uter-upgrade-check': break
+                if attempt==29: raise ValueError('Redis snapshot restore failed')
+                time.sleep(1)
+        finally:
+            subprocess.run(['docker','rm','-f',restored_name],capture_output=True)
         print('Stage: real LLM and persistent state after update',flush=True)
         after=json.loads(call([sys.executable,smoke_file]))
         stats_after=request('http://127.0.0.1:11435/stats')
@@ -248,7 +263,7 @@ finally:
         assert any(x['name']==MODEL for x in request('http://127.0.0.1:11434/api/ps')['models'])
         result={'backend':backend,'old_release':OLD,'new_release':NEW,'model':MODEL,'model_digest':MODEL_DIGEST,
                 'real_inference':'pass','install_py':'pass','adoption':'pass','receipt_bypass_rejected':'pass',
-                'encrypted_backup':'pass','backup_export':'pass','redis_rdb_validation':'pass','backup_audit_matches':'pass',
+                'encrypted_backup':'pass','backup_export':'pass','redis_rdb_validation':'pass','redis_restore':'pass','backup_audit_matches':'pass',
                 'backup_id':backup_manifest['id'],'upgrade':'pass','running_images_match_new_release':'pass',
                 'redis_sentinel':'pass','audit_chain_and_persistence':'pass','audit_lines_before':audit_before['lines'],
                 'audit_lines_after':audit_after['lines'],'test_signing_key':'ephemeral CI only',
