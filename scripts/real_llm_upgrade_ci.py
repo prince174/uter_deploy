@@ -99,7 +99,13 @@ def main():
             call(['kind','create','cluster','--name',cluster,'--image',NODE,'--wait','180s']);created=True
             network='kind'
         else: network='bridge'
-        gateway=json.loads(call(['docker','network','inspect',network]))[0]['IPAM']['Config'][0]['Gateway']
+        if backend=='kubernetes':
+            node=json.loads(call(['docker','inspect',cluster+'-control-plane']))[0]
+            gateway=node['NetworkSettings']['Networks'][network]['Gateway']
+        else:
+            configs=json.loads(call(['docker','network','inspect',network]))[0]['IPAM']['Config']
+            gateway=next(x['Gateway'] for x in configs if x.get('Gateway') and ':' not in x['Gateway'])
+        assert gateway, 'No IPv4 gateway for isolated LLM'
         llm_url=f'http://{gateway}:11435/v1'
         (work/'empty-key').write_text('')
         prepare=[sys.executable,ROOT/'scripts/install.py','prepare','--home',home,'--backend',backend,'--name',name,'--inputs',work/'input'/OLD,'--llm-url',llm_url,'--llm-model',MODEL,'--llm-key-file',work/'empty-key','--allow-http-llm','--guardrail-cpus','2']
