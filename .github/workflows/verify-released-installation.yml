@@ -30,7 +30,11 @@ jobs:
           test "$(git describe --tags --exact-match HEAD)" = "$RELEASE_TAG"
           mkdir -p work/download
           gh release download "$RELEASE_TAG" --pattern 'installation-inputs.tar.gz*' --dir work/download
-          python scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/published
+          (cd work/download && sha256sum -c installation-inputs.tar.gz.sha256)
+          python scripts/extract_release_inputs.py work/download/installation-inputs.tar.gz work/download/installation-inputs.tar.gz.sha256 work/validated
+          mkdir work/published
+          tar -xzf work/download/installation-inputs.tar.gz -C work/published
+          diff -r work/validated work/published
       - name: Install Python tooling and pinned Helm
         run: |
           python3 -m venv .venv
