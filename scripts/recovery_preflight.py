@@ -1,0 +1,82 @@
+"""Authenticate a backup and stage the matching signed installation before recovery.
+
+Preflight does not change workloads, restore data, or perform cutover.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import uterctl
+from scripts import backup_crypto, backup_store, restore_backup
+
+
+def preflight(home, backup, backup_key, publisher_key, output):
+    home=Path(home).resolve(strict=True)
+    site=uterctl.site_config(home)
+    key=backup_crypto.read_key(backup_key)
+    # Authenticate the whole backup and bind it to the exact selected installation.
+    manifest=backup_store.verify_set(backup,key,home=home,site=site)
+    output=Path(output)
+    restore_backup.prepare_staging(backup,backup_key,output)
+    marker=output/'INCOMPLETE'
+    marker.write_text('Sensitive recovery data. Preflight has not completed.\n')
+    if os.name=='posix': marker.chmod(0o600)
+    staged=output/'runtime-staged'
+    state=uterctl.read(staged/'state.json')
+    config=uterctl.read(staged/'install.json')
+    staged_site=uterctl.site_config(staged)
+    if state.get('adopted_installer') is not True or state.get('pending') is not None:
+        raise ValueError('Backup must contain a completed adopted installation state')
+    current=state.get('current')
+    if not isinstance(current,dict) or current.get('version') != manifest['version']:
+        raise ValueError('Backup version and recorded installation state differ')
+    signed=uterctl.verify(staged/'releases'/manifest['version'],publisher_key)
+    if signed != current:
+        raise ValueError('Backed-up installation state does not match its signed release')
+    for field in ('backend','name','namespace','context'):
+        if staged_site.get(field) != site.get(field):
+            raise ValueError('Backed-up installation identity does not match selected installation')
+    expected_backend='kubernetes' if site['backend']=='helm' else 'compose'
+    if (config.get('backend') != expected_backend or config.get('name') != site['name'] or
+            config.get('context') != site.get('context')):
+        raise ValueError('Backed-up installer identity does not match selected installation')
+    if manifest['backend']=='helm':
+        from scripts.backup_snapshot import kube_objects
+        objects=json.loads((output/'kubernetes.json').read_text(encoding='utf-8'))
+        if not isinstance(objects.get('items'),list): raise ValueError('Kubernetes resource list is missing')
+        if any(item.get('metadata',{}).get('namespace') != site['namespace'] for item in objects['items']):
+            raise ValueError('Kubernetes backup contains resources outside the installation namespace')
+        kinds={'Secret':'secret','ConfigMap':'configmap','PersistentVolumeClaim':'pvc'}
+        actual=[]
+        for item in objects['items']:
+            kind=kinds.get(item.get('kind'));name=item.get('metadata',{}).get('name')
+            if not kind or not isinstance(name,str): raise ValueError('Unsupported Kubernetes backup resource')
+            actual.append(kind+'/'+name)
+        expected=kube_objects(staged,staged_site)
+        if len(actual)!=len(set(actual)) or set(actual)!=set(expected):
+            raise ValueError('Kubernetes backup resources do not match installation configuration')
+    marker.unlink()
+    return {'backup_id':manifest['id'],'version':manifest['version'],'backend':manifest['backend']}
+
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--home',type=Path,required=True)
+    p.add_argument('--backup',type=Path,required=True)
+    p.add_argument('--backup-key',type=Path,required=True)
+    p.add_argument('--publisher-key',type=Path,required=True)
+    p.add_argument('--output',type=Path,required=True)
+    a=p.parse_args()
+    result=preflight(a.home,a.backup,a.backup_key,a.publisher_key,a.output)
+    print(json.dumps(result))
+    print('Preflight only: workloads and volumes are unchanged; staging contains sensitive plaintext.')
+
+
+if __name__=='__main__':
+    try:main()
+    except Exception as exc:
+        print(f'recovery preflight: {type(exc).__name__}: {exc}',file=sys.stderr)
+        sys.exit(1)
