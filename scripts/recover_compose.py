@@ -58,7 +58,8 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,port):
         if uterctl.verify(bundle,publisher_key)!=current:raise ValueError('Signed backup release changed')
         # Validate the actual snapshot with the signed Redis image before creating a target.
         for image in current['images'].values():run(['docker','--context','default','pull',image])
-        run(['docker','--context','default','run','--rm','--network','none','--user','0:0',
+        run(['docker','--context','default','run','--rm','--network','none','--read-only',
+             '--cap-drop','ALL','--security-opt','no-new-privileges','--user','0:0',
              '--mount','type=bind,source='+str(stage/'redis.rdb')+',target=/snapshot.rdb,readonly',
              '--entrypoint','redis-check-rdb',current['images']['redis'],'/snapshot.rdb'])
         shutil.copytree(source,target)
@@ -101,15 +102,19 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,port):
                 transfer=temp/(kind+'-input');shutil.copyfile(stage/filename,transfer)
                 os.chown(transfer,uid,gid);os.chmod(transfer,0o400)
                 image=current['images']['guardrail'];mount='type=volume,source='+volumes[kind]+',target=/data'
-                run(['docker','--context','default','run','--rm','--network','none','--user','0','--mount',mount,
+                run(['docker','--context','default','run','--rm','--network','none','--read-only',
+                     '--cap-drop','ALL','--cap-add','CHOWN','--security-opt','no-new-privileges','--user','0','--mount',mount,
                      '--entrypoint','python',image,'-c',f"import os;os.chown('/data',{uid},{gid})"])
-                run(['docker','--context','default','run','--rm','--network','none','--user',f'{uid}:{gid}','--mount',mount,
+                run(['docker','--context','default','run','--rm','--network','none','--read-only',
+                     '--cap-drop','ALL','--security-opt','no-new-privileges','--user',f'{uid}:{gid}','--mount',mount,
                      '--mount','type=bind,source='+str(transfer)+',target=/snapshot,readonly',
                      '--mount','type=bind,source='+str(ROOT/'scripts')+',target=/tool/scripts,readonly',
                      '--entrypoint','python',image,'/tool/scripts/recovery_volume.py',kind,
                      '--snapshot','/snapshot','--destination','/data'])
             run(['docker','--context','default','run','-d','--name',temp_container,'--label','uter.recovery.id='+marker_id,
-                 '--network','none','--user','999:1000','--mount','type=volume,source='+volumes['redis']+',target=/data',
+                 '--network','none','--read-only','--tmpfs','/tmp:size=128m,mode=1777',
+                 '--cap-drop','ALL','--security-opt','no-new-privileges','--user','999:1000',
+                 '--mount','type=volume,source='+volumes['redis']+',target=/data',
                  '--entrypoint','redis-server',current['images']['redis'],'--dir','/data','--dbfilename','dump.rdb',
                  '--save','','--appendonly','no','--bind','127.0.0.1'])
             created_container=True
