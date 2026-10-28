@@ -31,14 +31,14 @@ class ManagedUpdateTests(unittest.TestCase):
         uterctl.write(self.home/'install.json',{'backend':'compose','name':'uter-test','context':'default','port':18000,'images':self.images})
 
     def test_unsupported_transition_rejected_before_adoption_or_key_creation(self):
-        with patch.object(update_installation.uterctl,'transition',side_effect=ValueError('Unsupported upgrade path')),patch.object(update_installation.adopt_installation,'adopt') as adopt:
+        with patch.object(update_installation.uterctl,'transition',side_effect=ValueError('Unsupported upgrade path')),patch.object(update_installation.adopt_managed,'adopt') as adopt:
             with self.assertRaisesRegex(ValueError,'Unsupported upgrade path'):
                 update_installation.update(self.home,self.root/'new',self.public,self.backups,self.backup_key,current_bundle=self.root/'old',create_backup_key=True)
             adopt.assert_not_called()
         self.assertFalse(self.backup_key.exists());self.assertEqual(list((self.home/'runtime').iterdir()),[])
 
     def test_failed_adoption_removes_created_smoke_files(self):
-        with patch.object(update_installation.adopt_installation,'adopt',side_effect=ValueError('smoke failed')):
+        with patch.object(update_installation.adopt_managed.adopt_installation,'adopt',side_effect=ValueError('smoke failed')):
             with self.assertRaisesRegex(ValueError,'smoke failed'):
                 update_installation.update(self.home,self.root/'new',self.public,self.backups,self.backup_key,current_bundle=self.root/'old',create_backup_key=True)
         self.assertEqual(list((self.home/'runtime').iterdir()),[])

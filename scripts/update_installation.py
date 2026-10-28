@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import uterctl
-from scripts import adopt_installation, backup_crypto, managed_smoke
+from scripts import adopt_managed, backup_crypto
 
 
 def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=None,create_backup_key=False):
@@ -34,7 +34,7 @@ def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=Non
     if recovery.exists() and uterctl.read(recovery).get('phase')!='complete':
         raise ValueError('Recovery is incomplete; inspect its journal before update')
     new=uterctl.verify(bundle,publisher_key)
-    state_path=home/'state.json';created=[]
+    state_path=home/'state.json'
     if state_path.exists():
         state=uterctl.read(state_path)
         if not state.get('adopted_installer') or state.get('pending'):
@@ -54,13 +54,7 @@ def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=Non
         if not create_backup_key:raise ValueError('Backup key not found; explicitly request key creation')
         backup_crypto.create_key(backup_key)
     if not state_path.exists():
-        smoke,created=managed_smoke.prepare(home)
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                adopt_installation.adopt(home,current_bundle,publisher_key,smoke)
-        except BaseException:
-            for path in created:path.unlink(missing_ok=True)
-            raise
+        adopt_managed.adopt(home,current_bundle,publisher_key)
     label=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+secrets.token_hex(8)
     destination=backup_root/('uter-'+label)
     with contextlib.redirect_stdout(io.StringIO()):

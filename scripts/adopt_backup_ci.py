@@ -210,10 +210,9 @@ finally:
         prefix='SCRIPTS='+repr(str(ROOT/'scripts'))+'\nCREDENTIALS='+repr(str(home/'credentials.json'))+'\nKUBE='+repr(kube if backend=='kubernetes' else [])+'\nNAME='+repr(name)+'\n'
         smoke_file.write_text(prefix+wrapper)
         base=[sys.executable,ROOT/'uterctl.py']; common=['--home',home,'--key',public]
-        smoke_argv=work/'smoke-argv.json';smoke_argv.write_text(json.dumps([sys.executable,str(smoke_file)]))
         print('Stage: adopt the install.py installation',flush=True)
-        call([sys.executable,ROOT/'scripts/adopt_installation.py','--home',home,'--bundle',bundles[0],
-              '--key',public,'--smoke-argv-json',smoke_argv])
+        call([sys.executable,ROOT/'scripts/adopt_managed.py','--home',home,'--bundle',bundles[0],
+              '--publisher-key',public])
         assert json.loads((home/'state.json').read_text())['adopted_installer'] is True
         before=json.loads(call([sys.executable,smoke_file]))
         if backend=='compose':
