@@ -179,6 +179,8 @@ def main(argv=None):
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
     parser.add_argument("--backup-receipt", type=Path)
+    parser.add_argument("--backup-dir", type=Path, help="New, external directory for an encrypted backup")
+    parser.add_argument("--backup-key", type=Path, help="Protected 32-byte backup encryption key")
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args(argv)
     home = args.home.resolve()
@@ -224,7 +226,10 @@ def main(argv=None):
             active = state.get("pending") or state["current"]
             if active["data_epoch"] != m["data_epoch"]:
                 raise ValueError("Rollback requires data restoration; refused")
-        if state["current"] or state.get("pending"):
+        adopted = state.get("adopted_installer") is True
+        if adopted and state.get("pending") and args.command == "rollback":
+            raise ValueError("Adopted pending update requires verified data restoration; automatic rollback is unavailable")
+        if (state["current"] or state.get("pending")) and not adopted:
             if not args.backup_receipt:
                 raise ValueError("Existing installation: --backup-receipt required")
             receipt = read(args.backup_receipt)
@@ -243,15 +248,57 @@ def main(argv=None):
                 verify(stage, args.key)
                 stage.rename(destination)
         deploy(home, destination, m, site, check=True)
+        backup_meta = None
+        if adopted and state["current"]:
+            from scripts import backup_crypto, backup_snapshot, backup_store
+            if not args.backup_dir or not args.backup_key or args.backup_receipt:
+                raise ValueError("Adopted installation requires --backup-dir and --backup-key; receipts alone are insufficient")
+            if args.backup_key.resolve().is_relative_to(home):
+                raise ValueError("Backup key must be outside the installation home")
+            backup_key = backup_crypto.read_key(args.backup_key)
+            signed_current = verify(home / "releases" / state["current"]["version"], args.key)
+            if signed_current != state["current"]:
+                raise ValueError("Current state does not match the signed installed bundle")
+            cfg = read(home / "install.json")
+            if (cfg.get("name") != site["name"] or site["namespace"] != site["name"] or
+                    cfg.get("context") != site.get("context") or
+                    cfg.get("backend") != ("kubernetes" if site["backend"] == "helm" else "compose")):
+                raise ValueError("Installation identity changed since adoption")
+            if state.get("pending"):
+                recorded = state.get("last_backup") or {}
+                if str(args.backup_dir.resolve()) != recorded.get("path"):
+                    raise ValueError("Resume requires the backup created before the pending operation")
+                backup_meta = backup_store.verify_set(args.backup_dir, backup_key, home=home, site=site,
+                                                       version=state["current"]["version"])
+                if backup_meta["id"] != recorded.get("id"):
+                    raise ValueError("Pending operation backup identity mismatch")
+            else:
+                if (home / "backup-operation.json").exists():
+                    raise ValueError("Previous backup operation requires inspection before update")
+                backup_meta = backup_snapshot.capture(home, cfg, site, state["current"], args.backup_dir,
+                                                      backup_key, leave_stopped=True)
+                state["last_backup"] = {"id": backup_meta["id"], "path": str(args.backup_dir.resolve()),
+                                        "version": backup_meta["version"]}
         state["pending"] = m
-        write(state_path, state)
+        try:
+            write(state_path, state)
+        except BaseException:
+            if adopted and backup_meta and not current_state.get("pending"):
+                backup_snapshot.resume_writers(home, cfg, site, current_state["current"])
+                (home / "backup-operation.json").unlink(missing_ok=True)
+            raise
         try:
             deploy(home, destination, m, site, offline=args.offline)
             run(site["smoke_command"], cwd=home / "runtime")
         except Exception:
             print("Update incomplete. State retained; inspect workloads before explicit rollback.", file=sys.stderr)
             raise
-        write(state_path, {"current": m, "previous": state["current"], "pending": None})
+        updated = {"current": m, "previous": state["current"], "pending": None}
+        if adopted:
+            updated.update(adopted_installer=True, last_backup=state.get("last_backup"))
+        write(state_path, updated)
+        if adopted and backup_meta:
+            (home / "backup-operation.json").unlink(missing_ok=True)
         print(f"Uter {m['version']} applied and runtime smoke test passed")
 
 

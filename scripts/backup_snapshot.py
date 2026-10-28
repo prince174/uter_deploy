@@ -114,6 +114,20 @@ def audit_pod(kube, site, manifest, guardrail_pod):
     return podname
 
 
+def resume_writers(home, cfg, site, current):
+    from scripts import install as installer
+    cfg=dict(cfg,images=current['images'])
+    cmd,env=installer.commands(home,cfg)
+    if site['backend']=='compose':
+        cmd[cmd.index('-f')+1]=str(Path(home)/'releases'/current['version']/'compose/compose.yaml')
+        checked(cmd+['up','-d','--no-build','--pull','never','--wait','--wait-timeout','300','redis','agent','guardrail'],env=env)
+    else:
+        kube=['kubectl','--context',cfg['context'],'-n',site['namespace']]
+        checked(kube+['scale','deployment/'+site['name']+'-guardrail','deployment/'+site['name']+'-agent','--replicas=1'])
+        for svc in ('agent','guardrail'):
+            checked(kube+['rollout','status','deployment/'+site['name']+'-'+svc,'--timeout=300s'])
+
+
 def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
     """Capture while Uter writers are stopped; caller must already hold controller lock.
 
@@ -182,12 +196,7 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
             subprocess.run(kube+['delete','pod',helper,'--ignore-not-found','--wait=true'],capture_output=True)
         if stopped and not (success and leave_stopped):
             try:
-                if site['backend']=='compose':
-                    checked(cmd+['up','-d','--no-build','--pull','never','--wait','--wait-timeout','300','redis','agent','guardrail'],env=env)
-                else:
-                    checked(kube+['scale','deployment/'+site['name']+'-guardrail','deployment/'+site['name']+'-agent','--replicas=1'])
-                    for svc in ('agent','guardrail'):
-                        checked(kube+['rollout','status','deployment/'+site['name']+'-'+svc,'--timeout=300s'])
+                resume_writers(home,cfg,site,current)
                 journal.unlink(missing_ok=True)
             except Exception:
                 print('Backup recovery failed; inspect backup-operation.json and workloads.',file=__import__('sys').stderr)

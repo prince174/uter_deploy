@@ -109,7 +109,8 @@ def adopt(home, bundle, key, smoke):
             with (runtime/'site.json').open('x', encoding='utf-8') as f: json.dump(site, f, indent=2)
             os.chmod(runtime/'site.json', 0o600);created.append(runtime/'site.json')
             uterctl.site_config(home)
-            uterctl.write(home/'state.json', {'current': manifest, 'previous': None, 'pending': None})
+            uterctl.write(home/'state.json', {'current': manifest, 'previous': None, 'pending': None,
+                                               'adopted_installer': True})
         except BaseException:
             for path in reversed(created):
                 if path.is_dir(): shutil.rmtree(path)

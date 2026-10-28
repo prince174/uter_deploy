@@ -148,6 +148,52 @@ class ControllerTests(unittest.TestCase):
             self.call("rollback", old, ["--backup-receipt", str(receipt)])
         self.assertEqual(u.read(self.home / "state.json")["current"]["version"], "1.0.0")
 
+    def prepare_adopted(self):
+        old = self.bundle()
+        releases = self.home / 'releases'; releases.mkdir()
+        import shutil
+        shutil.copytree(old, releases / '1.0.0')
+        site = u.site_config(self.home); site['context'] = 'default'
+        u.write(self.home / 'runtime/site.json', site)
+        u.write(self.home / 'install.json', {'backend':'compose','name':'uter-test','context':'default','images':manifest()['images']})
+        u.write(self.home / 'state.json', {'current':manifest(),'previous':None,'pending':None,'adopted_installer':True})
+        key = self.root / 'backup-key'; key.write_bytes(b'k'*32)
+        if __import__('os').name == 'posix': key.chmod(0o600)
+        return key
+
+    def test_adopted_update_requires_actual_backup_not_receipt(self):
+        key=self.prepare_adopted();new=self.bundle(manifest('1.1.0',['1.0.0']),'new')
+        receipt=self.root/'receipt';u.write(receipt,{'version':'1.0.0','backup_id':'fake'})
+        with patch.object(u,'deploy'):
+            with self.assertRaisesRegex(ValueError,'receipts alone'):
+                self.call('apply',new,['--backup-receipt',str(receipt)])
+        self.assertIsNone(u.read(self.home/'state.json')['pending'])
+
+    def test_adopted_backup_failure_never_changes_pending_state(self):
+        key=self.prepare_adopted();new=self.bundle(manifest('1.1.0',['1.0.0']),'new')
+        with patch.object(u,'deploy'), patch('scripts.backup_snapshot.capture',side_effect=RuntimeError('snapshot failed')):
+            with self.assertRaisesRegex(RuntimeError,'snapshot failed'):
+                self.call('apply',new,['--backup-dir',str(self.root/'backup'),'--backup-key',str(key)])
+        state=u.read(self.home/'state.json')
+        self.assertEqual(state['current']['version'],'1.0.0');self.assertIsNone(state['pending'])
+
+    def test_adopted_update_records_backup_and_preserves_marker(self):
+        key=self.prepare_adopted();new=self.bundle(manifest('1.1.0',['1.0.0']),'new')
+        info={'id':'d'*32,'version':'1.0.0'}
+        with patch.object(u,'deploy') as deploy, patch.object(u,'run'), patch('scripts.backup_snapshot.capture',return_value=info) as capture:
+            self.call('apply',new,['--backup-dir',str(self.root/'backup'),'--backup-key',str(key)])
+        state=u.read(self.home/'state.json')
+        self.assertEqual(state['current']['version'],'1.1.0');self.assertTrue(state['adopted_installer'])
+        self.assertEqual(state['last_backup']['id'],info['id']);self.assertTrue(capture.call_args.kwargs['leave_stopped'])
+        self.assertEqual(deploy.call_count,2)
+
+    def test_adopted_backup_cannot_use_key_inside_installation(self):
+        self.prepare_adopted();new=self.bundle(manifest('1.1.0',['1.0.0']),'new')
+        key=self.home/'runtime/backup.key';key.write_bytes(b'k'*32)
+        with patch.object(u,'deploy'):
+            with self.assertRaisesRegex(ValueError,'outside the installation'):
+                self.call('apply',new,['--backup-dir',str(self.root/'backup'),'--backup-key',str(key)])
+
     def test_check_does_not_apply(self):
         with patch.object(u, "deploy") as deploy:
             self.call("check", self.bundle())
