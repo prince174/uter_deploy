@@ -365,7 +365,9 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
     def test_release_and_third_party_inputs_are_pinned(self):
         self.assertRegex(ci.VLLM_IMAGE, r'@sha256:[0-9a-f]{64}$')
         self.assertRegex(ci.LITELLM_IMAGE, r'@sha256:[0-9a-f]{64}$')
-        self.assertRegex(ci.MODEL_REVISION, r'^[0-9a-f]{40}$')
+        self.assertEqual(ci.MODEL, 'HuggingFaceTB/SmolLM2-135M-Instruct')
+        self.assertEqual(ci.MODEL_REVISION, 'a5cf62c9a838db1be8f34394f02edb89f718a9ed')
+        self.assertEqual(ci.MODEL_ALIAS, 'uter-ci-smollm')
         workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/litellm-vllm-ci.yml').read_text(encoding='utf-8-sig')
         self.assertIn('installation_archive_sha256', workflow)
         self.assertIn('work/signed/scripts/extract_release_inputs.py', workflow)

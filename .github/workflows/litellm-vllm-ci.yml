@@ -1,4 +1,4 @@
-# Downloads the CPU vLLM image (~1.72 GB compressed), Qwen 0.5B weights (~0.99 GB),
+# Downloads the CPU vLLM image (~1.72 GB compressed), SmolLM2 135M weights (~0.269 GB),
 # LiteLLM, Uter images and (for Kubernetes) kind. Extracted sizes are larger;
 # the runner checks free resources but actual requirements and network access can vary.
 name: Verify Uter with LiteLLM and CPU vLLM

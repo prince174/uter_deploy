@@ -21,9 +21,9 @@ import uuid
 
 VLLM_IMAGE = 'vllm/vllm-openai-cpu@sha256:827ef38187f9b52f2bb838695ef815ec5b65f4bf3e4c061b002b2b0a19cb0701'
 LITELLM_IMAGE = 'ghcr.io/berriai/litellm@sha256:c169fb3adc514fcf210377c203f3de406d54f10bfdacf13948a4a839db9af7de'
-MODEL = 'Qwen/Qwen2.5-0.5B-Instruct'
-MODEL_REVISION = '2b01de6d1108f9b2b5e46a726aa678a359b6c03b'
-MODEL_ALIAS = 'uter-ci-qwen'
+MODEL = 'HuggingFaceTB/SmolLM2-135M-Instruct'
+MODEL_REVISION = 'a5cf62c9a838db1be8f34394f02edb89f718a9ed'
+MODEL_ALIAS = 'uter-ci-smollm'
 KIND_IMAGE = 'kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0'
 VLLM_PORT = 18081
 PROXY_PORT = 18082
