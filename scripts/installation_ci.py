@@ -22,7 +22,13 @@ def run(argv, **kw):
     result = subprocess.run([str(x) for x in argv], capture_output=True, **kw)
     if result.returncode:
         # Callers only get sanitized diagnostics, never process output with credentials.
-        raise RuntimeError(f'{argv[0]} failed with exit {result.returncode}')
+        message = f'{argv[0]} failed with exit {result.returncode}'
+        if len(argv) > 1 and str(argv[1]).endswith('adopt_managed.py'):
+            diagnostic = result.stderr.decode(errors='replace')
+            allowed = ('Current bundle does not match installed images', 'Installation deployment assets do not match signed bundle', 'Image configuration ID mismatch', 'does not match the signed image', 'Pre-adoption smoke failed', 'Bundle inventory mismatch', 'No module named', 'Permission denied', 'No such file or directory', 'Expected exactly one running', 'Expected one ready', 'installation context', 'runtime file', 'Unsupported tooling schema', 'InvalidSignature')
+            match = next((item for item in allowed if item in diagnostic), 'unclassified adoption failure')
+            message += ': ' + match
+        raise RuntimeError(message)
     return result.stdout
 
 
