@@ -25,12 +25,16 @@
 Они содержат исходники — держать только внутри builder, не публиковать:
 
 ```bash
-docker build -t uter-guardrail-buildbase --build-arg PRELOAD_MODELS=true work/upstream/guardrail
-docker build -t uter-agent-buildbase work/upstream/agent
+docker build --target builder -t uter-guardrail-buildbase --build-arg PRELOAD_MODELS=true work/upstream/guardrail
+docker build --target builder -t uter-agent-buildbase work/upstream/agent
 docker build --build-arg SOURCE_IMAGE=uter-guardrail-buildbase -f packaging/Dockerfile.protected -t uter-guardrail-protected packaging
 docker build --build-arg SOURCE_IMAGE=uter-agent-buildbase -f packaging/Dockerfile.protected -t uter-agent-protected-base packaging
 docker build --build-arg PROTECTED_IMAGE=uter-agent-protected-base -f packaging/Dockerfile.agent -t uter-agent-protected packaging
 ```
+
+Для текущих Dockerfile целевой `builder` содержит зависимости и исходники для
+компиляции; его нельзя публиковать. Финальный upstream stage — минимальный runtime,
+в нём нет инструментов, необходимых для компиляции.
 
 Эти команды скачивают base images, apt/pip зависимости, компилятор и toxicity-модель;
 потребляют CPU/RAM/диск и сеть. Результаты не считаются готовыми только потому, что
@@ -55,6 +59,18 @@ CLI-модули скомпилированы, вызывать как `python -
 5. Обновление с каждой версии из upgrade_from, проверка неудачного обновления и отката.
 6. Для air-gap — запуск с пустыми runtime-кешами при запрещённой внешней сети.
 7. Записать реальные digest опубликованных образов в новый manifest.
+
+## Проверка прямого установочного архива
+
+Для каждого нового прямого установочного релиза дополнительно запускайте
+`verify-released-installation.yml` из проверяемого release tag, указывая тот же tag
+в `release_tag`. Workflow скачивает `installation-inputs.tar.gz` и SHA256 из Release,
+проверяет и распаковывает архив, затем запускает README-установку в отдельных Compose
+и Kubernetes runners. В этих jobs есть доступ чтения только к `uter_deploy` и registry;
+токен доступа к исходному репозиторию им не передаётся. Оба задания должны успешно
+завершиться до объявления релиза проверенным. Сохраняйте ссылки на run и результаты в
+release notes. Проверка прямой установки не заменяет тест межверсионного обновления
+или подписанного комплекта `uterctl`.
 
 ## Подпись
 
