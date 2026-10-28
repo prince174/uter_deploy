@@ -42,7 +42,7 @@ jobs:
         env:
           SERVICE: ${{ matrix.service }}
         run: |
-          docker build --build-arg PRELOAD_MODELS=true --provenance=false -t "uter-$SERVICE-buildbase" "work/upstream/$SERVICE"
+          docker build --target builder --build-arg PRELOAD_MODELS=true --provenance=false -t "uter-$SERVICE-buildbase" "work/upstream/$SERVICE"
       - name: Compile and assemble final image
         id: compiled
         env:
