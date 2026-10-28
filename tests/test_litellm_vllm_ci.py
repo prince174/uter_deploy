@@ -195,7 +195,7 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         args = ci.vllm_container_command('fixture-vllm', 'fixture-network', '/tmp/fixture-cache')
         self.assertEqual(args[args.index('--kv-cache-memory-bytes') + 1], '268435456')
         self.assertEqual(args[args.index('--dtype') + 1], 'float32')
-        self.assertIn('VLLM_CPU_KVCACHE_SPACE=', args)
+        self.assertIn('VLLM_CPU_KVCACHE_SPACE=0', args)
         self.assertNotIn('VLLM_CPU_KVCACHE_SPACE=1', args)
         self.assertIn('no-new-privileges', args)
         self.assertNotIn('seccomp=unconfined', args)

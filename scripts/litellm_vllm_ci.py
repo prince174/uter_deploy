@@ -44,7 +44,7 @@ def vllm_container_command(name, network, cache):
     return ['docker', 'run', '-d', '--name', name, '--network', network, '--network-alias', 'vllm',
             '--memory', '6g', '--cpus', '2', '--shm-size', '2g', '--cap-drop', 'ALL',
             '--security-opt', 'no-new-privileges', '-p', f'127.0.0.1:{VLLM_PORT}:8000',
-            '-v', f'{cache}:/root/.cache/huggingface', '-e', 'VLLM_CPU_KVCACHE_SPACE=',
+            '-v', f'{cache}:/root/.cache/huggingface', '-e', 'VLLM_CPU_KVCACHE_SPACE=0',
             VLLM_IMAGE, '--model', MODEL, '--revision', MODEL_REVISION,
             '--tokenizer-revision', MODEL_REVISION, '--dtype', 'float32',
             '--kv-cache-memory-bytes', str(VLLM_KV_CACHE_BYTES),
