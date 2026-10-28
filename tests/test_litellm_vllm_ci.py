@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
 import yaml
 from unittest.mock import patch
 
@@ -30,6 +31,41 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
             with self.subTest(category=category), self.assertRaises(ci.DiagnosticError) as caught:
                 ci.preflight_resources(backend, flags, mem * ci.GIB, disk * ci.GIB)
             self.assertEqual(caught.exception.category, category)
+
+    def test_commands_report_fixed_safe_categories_without_output(self):
+        failed = SimpleNamespace(returncode=1, stdout=b'confidential', stderr=b'secret-value')
+        with patch.object(ci.subprocess, 'run', return_value=failed):
+            for category in ('KIND_CREATE_FAILED', 'KIND_RESOURCE_LIMIT_FAILED'):
+                with self.subTest(category=category), self.assertRaises(ci.DiagnosticError) as caught:
+                    ci.call(['kind', 'create'], failure=category)
+                self.assertEqual(caught.exception.category, category)
+                self.assertNotIn('secret', str(caught.exception))
+            with self.assertRaises(ValueError):
+                ci.call(['kind', 'create'], failure='SECRET_MUST_NOT_BECOME_CATEGORY')
+
+    def test_container_inspection_uses_only_fixed_state_fields(self):
+        states = [(b'running false 0', False, None),
+                  (b'running false 0', True, 'VLLM_READINESS_TIMEOUT_RUNNING'),
+                  (b'exited true 137', False, 'VLLM_OOM_KILLED_EXIT_137'),
+                  (b'exited false 1', False, 'VLLM_EXITED_1'),
+                  (b'broken secret-value', True, 'VLLM_STATE_UNAVAILABLE')]
+        for output, timeout, expected in states:
+            with self.subTest(output=output), patch.object(ci.subprocess, 'run', return_value=SimpleNamespace(
+                    returncode=0, stdout=output, stderr=b'secret-value')) as run:
+                self.assertEqual(ci.container_state_category('fixed-name', 'VLLM', timeout=timeout), expected)
+                args = run.call_args.args[0]
+                self.assertIn('--format', args)
+                self.assertIn('{{.State.Status}} {{.State.OOMKilled}} {{.State.ExitCode}}', args)
+                self.assertNotIn('Config', ' '.join(args))
+
+    def test_readiness_stops_immediately_when_container_exited(self):
+        with patch.object(ci, 'json_request', side_effect=OSError('sensitive')) as request, \
+             patch.object(ci.time, 'sleep') as sleep:
+            with self.assertRaises(ci.DiagnosticError) as caught:
+                ci.wait_json('http://127.0.0.1:1', attempts=5, state_probe=lambda timeout: 'VLLM_EXITED_1')
+        self.assertEqual(caught.exception.category, 'VLLM_EXITED_1')
+        request.assert_called_once()
+        sleep.assert_not_called()
 
     def test_backend_uses_its_own_private_docker_gateway(self):
         bridge = [{'IPAM': {'Config': [{'Gateway': '172.17.0.1'}]}}]

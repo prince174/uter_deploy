@@ -129,19 +129,61 @@ def completion(base, model, *, token=None, extra_headers=None):
     return True
 
 
-def wait_json(url, *, token=None, attempts=150, interval=4):
+def container_state_category(container, component, *, timeout=False):
+    """Inspect only fixed State fields; never fetch logs, Config or environment."""
+    if component not in ('VLLM', 'LITELLM'):
+        raise ValueError('Invalid component')
+    result = subprocess.run(
+        ['docker', 'inspect', '--format', '{{.State.Status}} {{.State.OOMKilled}} {{.State.ExitCode}}', container],
+        capture_output=True,
+    )
+    if result.returncode:
+        return component + '_STATE_UNAVAILABLE' if timeout else None
+    raw = result.stdout.decode('ascii', errors='replace').strip()
+    match = re.fullmatch(r'(created|running|paused|restarting|removing|exited|dead) (true|false) ([0-9]{1,3})', raw)
+    if not match or int(match.group(3)) > 255:
+        return component + '_STATE_UNAVAILABLE' if timeout else None
+    state, oom, code = match.groups()
+    if oom == 'true':
+        return component + '_OOM_KILLED_EXIT_' + code
+    if state in ('exited', 'dead'):
+        return component + '_EXITED_' + code
+    if timeout:
+        return component + '_READINESS_TIMEOUT_' + state.upper()
+    return None
+
+
+def wait_json(url, *, token=None, attempts=150, interval=4, state_probe=None):
     for _ in range(attempts):
         try:
             return json_request(url, token=token, timeout=5)
         except (OSError, ValueError, urllib.error.HTTPError):
+            if state_probe:
+                category = state_probe(False)
+                if category:
+                    raise DiagnosticError(category)
             time.sleep(interval)
+    if state_probe:
+        category = state_probe(True)
+        if category:
+            raise DiagnosticError(category)
     raise TimeoutError('Service readiness timed out')
 
 
-def call(argv, *, env=None):
+COMMAND_CATEGORIES = frozenset({
+    'DOCKER_NETWORK_INSPECT_FAILED', 'KIND_CREATE_FAILED', 'KIND_RESOURCE_LIMIT_FAILED',
+    'KIND_GATEWAY_INSPECT_FAILED', 'LLM_NETWORK_CREATE_FAILED', 'VLLM_START_FAILED',
+    'LITELLM_START_FAILED', 'UTER_PREPARE_FAILED', 'UTER_CHECK_FAILED',
+    'UTER_INSTALL_FAILED',
+})
+
+
+def call(argv, *, env=None, failure):
+    if failure not in COMMAND_CATEGORIES:
+        raise ValueError('Invalid diagnostic category')
     result = subprocess.run([str(x) for x in argv], env=env, capture_output=True)
     if result.returncode:
-        raise RuntimeError('Isolated command failed; output withheld')
+        raise DiagnosticError(failure)
     return result.stdout
 
 
@@ -191,23 +233,24 @@ def main():
     try:
         if backend == 'kubernetes':
             print('Stage: isolated kind cluster', flush=True)
-            call(['kind', 'create', 'cluster', '--name', cluster, '--image', KIND_IMAGE, '--wait', '180s'])
-            call(['docker', 'update', '--memory', '7g', '--cpus', '2', cluster + '-control-plane'])
-            gateway_info = json.loads(call(['docker', 'inspect', cluster + '-control-plane']))
+            call(['kind', 'create', 'cluster', '--name', cluster, '--image', KIND_IMAGE, '--wait', '180s'], failure='KIND_CREATE_FAILED')
+            call(['docker', 'update', '--memory', '7g', '--cpus', '2', cluster + '-control-plane'], failure='KIND_RESOURCE_LIMIT_FAILED')
+            gateway_info = json.loads(call(['docker', 'inspect', cluster + '-control-plane'], failure='KIND_GATEWAY_INSPECT_FAILED'))
         else:
-            gateway_info = json.loads(call(['docker', 'network', 'inspect', 'bridge']))
+            gateway_info = json.loads(call(['docker', 'network', 'inspect', 'bridge'], failure='DOCKER_NETWORK_INSPECT_FAILED'))
         gateway = docker_gateway(backend, gateway_info)
         print('Stage: isolated CPU vLLM', flush=True)
-        call(['docker', 'network', 'create', network])
+        call(['docker', 'network', 'create', network], failure='LLM_NETWORK_CREATE_FAILED')
         call(['docker', 'run', '-d', '--name', vllm, '--network', network, '--network-alias', 'vllm',
               '--memory', '6g', '--cpus', '2', '--shm-size', '2g', '--cap-drop', 'ALL',
               '--security-opt', 'no-new-privileges', '-p', f'127.0.0.1:{VLLM_PORT}:8000',
               '-v', f'{cache}:/root/.cache/huggingface', '-e', 'VLLM_CPU_KVCACHE_SPACE=1',
               VLLM_IMAGE, '--model', MODEL, '--revision', MODEL_REVISION,
               '--tokenizer-revision', MODEL_REVISION, '--dtype', 'float32',
-              '--max-model-len', '2048', '--max-num-seqs', '1'])
+              '--max-model-len', '2048', '--max-num-seqs', '1'], failure='VLLM_START_FAILED')
         vllm_url = f'http://127.0.0.1:{VLLM_PORT}'
-        models = wait_json(vllm_url + '/v1/models', attempts=225)
+        models = wait_json(vllm_url + '/v1/models', attempts=225,
+                           state_probe=lambda timeout: container_state_category(vllm, 'VLLM', timeout=timeout))
         if not any(x.get('id') == MODEL for x in models.get('data', [])):
             raise ValueError('Expected pinned vLLM model missing')
         completion(vllm_url, MODEL)
@@ -215,9 +258,10 @@ def main():
         call(['docker', 'run', '-d', '--name', proxy, '--network', network,
               '--memory', '2g', '--cpus', '1', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
               '-p', f'{gateway}:{PROXY_PORT}:4000', '--env-file', envfile,
-              '-v', f'{config}:/app/uter-ci.yaml:ro', LITELLM_IMAGE, '--config', '/app/uter-ci.yaml', '--num_workers', '1'])
+              '-v', f'{config}:/app/uter-ci.yaml:ro', LITELLM_IMAGE, '--config', '/app/uter-ci.yaml', '--num_workers', '1'], failure='LITELLM_START_FAILED')
         proxy_url = f'http://{gateway}:{PROXY_PORT}'
-        wait_json(proxy_url + '/v1/models', token=key)
+        wait_json(proxy_url + '/v1/models', token=key,
+                  state_probe=lambda timeout: container_state_category(proxy, 'LITELLM', timeout=timeout))
         completion(proxy_url, MODEL_ALIAS, token=key)
         print('Stage: public Uter ' + backend + ' installation', flush=True)
         installer = bundle / 'scripts/install.py'
@@ -226,15 +270,15 @@ def main():
                    '--llm-key-file', keyfile, '--allow-http-llm', '--port', str(UTER_PORT), '--guardrail-cpus', '2']
         if backend == 'kubernetes':
             prepare += ['--context', 'kind-' + cluster]
-        call(prepare)
+        call(prepare, failure='UTER_PREPARE_FAILED')
         cfg = json.loads((home / 'install.json').read_text())
         if backend == 'compose':
             env.update({k.upper() + '_IMAGE': v for k, v in cfg['images'].items()})
             env.update(RUNTIME_DIR=(home / 'runtime').as_posix(), GUARDRAIL_PORT=str(UTER_PORT), GUARDRAIL_CPUS='2')
             compose = ['docker', '--context', 'default', 'compose', '--project-name', name,
                        '--env-file', str(home / 'empty.env'), '-f', str(home / 'compose/compose.yaml')]
-        call([python, installer, 'check', '--home', home])
-        call([python, installer, 'install', '--home', home])
+        call([python, installer, 'check', '--home', home], failure='UTER_CHECK_FAILED')
+        call([python, installer, 'install', '--home', home], failure='UTER_INSTALL_FAILED')
         if backend == 'kubernetes':
             forward = subprocess.Popen(['kubectl', '--context', 'kind-' + cluster, '-n', name,
                                         'port-forward', 'service/' + name + '-guardrail',
