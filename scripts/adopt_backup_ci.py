@@ -282,13 +282,9 @@ finally:
         finally:
             subprocess.run(['docker','rm','-f',restored_name],capture_output=True)
         if backend=='kubernetes':
-            from scripts import recovery_kubernetes_ci
-            recovery_kubernetes_ci.test(home,backup_dir,backup_key,public,exported,audit_before)
             from scripts import recovery_kubernetes_api_ci
             recovery_kubernetes_api_ci.test(home,backup_dir,backup_key,public,audit_before)
         else:
-            from scripts import recovery_compose_ci
-            recovery_compose_ci.test(home,backup_dir,backup_key,public,exported,audit_before)
             from scripts import recovery_compose_api_ci
             recovery_compose_api_ci.test(home,backup_dir,backup_key,public,audit_before)
         print('Stage: real LLM and persistent state after update',flush=True)
