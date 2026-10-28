@@ -34,7 +34,14 @@ def create_key(path):
     path = Path(path)
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
-        with os.fdopen(fd, 'wb') as stream: stream.write(secrets.token_bytes(32))
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(secrets.token_bytes(32))
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name=='posix':
+            directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+            try:os.fsync(directory)
+            finally:os.close(directory)
     except BaseException:
         path.unlink(missing_ok=True); raise
 

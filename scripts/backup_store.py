@@ -13,6 +13,13 @@ REQUIRED = {'compose': {'runtime', 'redis', 'audit'},
             'helm': {'runtime', 'redis', 'audit', 'kubernetes'}}
 
 
+def sync_directory(path):
+    if os.name=='posix':
+        fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+
+
 def installation_fingerprint(home, site):
     data = json.dumps({'home':str(Path(home).resolve()),'backend':site['backend'],
                        'name':site['name'],'namespace':site['namespace'],
@@ -34,6 +41,7 @@ class BackupWriter:
         if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?',version): raise ValueError('Invalid version')
         if self.path.exists(): raise ValueError('Backup destination already exists')
         self.path.mkdir(mode=0o700,parents=False)
+        sync_directory(self.path.parent)
         self.key=key
         self.manifest={'schema':1,'id':secrets.token_hex(16),'created_at':datetime.now(timezone.utc).isoformat(),
                        'installation':installation_fingerprint(home,site),'backend':site['backend'],
@@ -71,7 +79,12 @@ class BackupWriter:
         path=self.path/'manifest.json';fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'w',encoding='utf-8') as stream:
             json.dump(data,stream,sort_keys=True,indent=2);stream.flush();os.fsync(stream.fileno())
-        verify_set(self.path,self.key)
+        try:
+            sync_directory(self.path)
+            verify_set(self.path,self.key)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
         return self.manifest
 
 

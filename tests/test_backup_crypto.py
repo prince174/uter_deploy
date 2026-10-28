@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from cryptography.exceptions import InvalidTag
 from scripts import backup_crypto as backup
@@ -47,3 +48,9 @@ class BackupCryptoTests(unittest.TestCase):
         if os.name=='posix':
             path.chmod(0o644)
             with self.assertRaises(ValueError):backup.read_key(path)
+
+    def test_key_is_not_kept_when_fsync_fails(self):
+        path=self.root/'key'
+        with patch.object(backup.os,'fsync',side_effect=OSError('sync failed')):
+            with self.assertRaisesRegex(OSError,'sync failed'):backup.create_key(path)
+        self.assertFalse(path.exists())

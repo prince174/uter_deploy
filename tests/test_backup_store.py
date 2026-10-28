@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from scripts import backup_store as store
 
 
@@ -25,6 +26,13 @@ class BackupSetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'different installation'):store.verify_set(w.path,self.key,home=self.root/'other',site=self.site)
         with self.assertRaisesRegex(ValueError,'version mismatch'):store.verify_set(w.path,self.key,version='1.0.1')
         self.assertNotIn(b'redis-data',(w.path/'redis.enc').read_bytes())
+
+    def test_failed_durability_check_never_issues_complete_manifest(self):
+        w=self.writer()
+        for component in store.REQUIRED['compose']:w.put(component,io.BytesIO((component+'-data').encode()))
+        with patch.object(store,'sync_directory',side_effect=OSError('sync failed')):
+            with self.assertRaisesRegex(OSError,'sync failed'):w.finish()
+        self.assertFalse((w.path/'manifest.json').exists())
 
     def test_incomplete_or_tampered_set_cannot_pass(self):
         w=self.writer();w.put('redis',io.BytesIO(b'REDIS'))
