@@ -2,12 +2,12 @@
 
 ## Подтверждённые результаты
 
-Образы из remediation run `40622181009` опубликованы в приватный GHCR без пересборки
+Образы из remediation run `40626538293` опубликованы в приватный GHCR без пересборки
 продукта. Проверены SHA256 архивов, image ID, отсутствие собственных исходных файлов
 по правилам сканера, совпадение source commit Guardrail/Agent и запрет анонимного pull.
-Source commit: `04c13238e2182ddb870d39d499d677e0a539d21f`.
+Source commit: `2b9590aa2b03d94de94f0db1e63144a0e87aafff`.
 
-[Повторная реальная установка](https://github.com/prince174/uter_deploy/actions/runs/40622662447)
+[Повторная реальная установка](https://github.com/prince174/uter_deploy/actions/runs/40627054284)
 прошла для Compose и Kubernetes. Использовались `prepare`, `check`, `install` из
 репозитория, сгенерированные секреты и настоящие registry digest. Конфигурация сервисов
 после prepare не подменялась. Compose использовал документированный CPU-параметр 2.
@@ -31,25 +31,25 @@ Kubernetes: kind 0.33.0, node 1.35.8, один узел, standard/local-path PVC
 перезапуска; цепочка проверяется кодом аудита сервиса. Это не тест восстановления
 из резервной копии и не межверсионное обновление.
 
-Предыдущая версия `deploy-2026.10.27` сохраняется отдельно. Текущая проверка относится
+Предыдущая версия `deploy-2026.10.28` сохраняется отдельно. Текущая проверка относится
 к новым digest из `publication.json` нового установочного комплекта.
 
 ## Выбор registry
 
 Основной registry — приватный GHCR. Полный workflow публикации и обеих установок:
-[40622662447](https://github.com/prince174/uter_deploy/actions/runs/40622662447), success.
+[40627054284](https://github.com/prince174/uter_deploy/actions/runs/40627054284), success.
 Docker Hub не используется: создание отдельных приватных репозиториев недоступно
 в текущих настройках аккаунта. Образы туда не публиковались, подписки не менялись.
 
 ## Заключительный прогон
 
-[40622662447](https://github.com/prince174/uter_deploy/actions/runs/40622662447):
+[40627054284](https://github.com/prince174/uter_deploy/actions/runs/40627054284):
 оба backend — success. Проверен актуальный `--inputs` и HTTP smoke через опубликованный
 локальный порт/port-forward, включая вход и обычный запрос. Результаты:
 `installation-compose-evidence/http-smoke.json` и
 `installation-kubernetes-evidence/http-smoke.json` — все проверки pass.
 
-Установочный комплект закреплён в prerelease `deploy-2026.10.28`:
+Установочный комплект закреплён в prerelease `deploy-2026.10.28-2`:
 `installation-inputs.tar.gz` и SHA256. Это не подписанный bundle uterctl.
 
 ## Границы результата
@@ -67,8 +67,9 @@ Docker Hub не используется: создание отдельных п
 
 ## Воспроизведение
 
-В Actions запустите `verify-installation.yml`: `artifact_run_id` — run с артефактом
-`installation-inputs`, `registry` — `ghcr.io`. Создаются только временные
+Для проверки из Release в Actions запустите `verify-released-installation.yml`:
+выберите release tag как ref и укажите тот же `release_tag`. Для промежуточной
+проверки CI-артефакта можно использовать `verify-installation.yml`. Создаются только временные
 ресурсы GitHub runner. К реальному окружению эти CI-скрипты применять нельзя.
 Артефакты `installation-*-evidence` содержат результаты и очищенные диагностические
 логи; секретные env/YAML, kubeconfig и Docker credentials туда не включаются.

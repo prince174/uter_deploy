@@ -21,7 +21,7 @@ HTML открывается локально в браузере без внеш
 
 28.10.2026 обновлённые образы опубликованы в **приватный GHCR**. Анонимное скачивание
 запрещено; установка скачивает образы с авторизацией по неизменяемым digest.
-В [изолированном CI](https://github.com/prince174/uter_deploy/actions/runs/40622662447)
+В [изолированном CI](https://github.com/prince174/uter_deploy/actions/runs/40627054284)
 успешно выполнены обе установки с помощью `scripts/install.py`:
 
 - Compose: все сервисы healthy, `/ready` доступен на локальном порту.
@@ -54,11 +54,11 @@ LLM/RAG, работу дополнительного Ollama judge, TLS, высо
 gh auth login
 gh repo clone prince174/uter_deploy
 cd uter_deploy
-git checkout deploy-2026.10.28
+git checkout deploy-2026.10.28-2
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p incoming
-gh release download deploy-2026.10.28 --repo prince174/uter_deploy \
+gh release download deploy-2026.10.28-2 --repo prince174/uter_deploy \
   --pattern 'installation-inputs.tar.gz*' --dir incoming
 (cd incoming && sha256sum -c installation-inputs.tar.gz.sha256)
 tar -xzf incoming/installation-inputs.tar.gz -C incoming
@@ -74,8 +74,8 @@ tar -xzf incoming/installation-inputs.tar.gz -C incoming
 
 | Сервис | Registry reference |
 |---|---|
-| Guardrail | `ghcr.io/prince174/uter-guardrail@sha256:e7ecc0e83c54380d80a04f452e5054f4027a6d6ad7a93a267b1e48776a45b8d9` |
-| Agent | `ghcr.io/prince174/uter-agent@sha256:8c6ed4fbf0ec3669915c107752d6a6061e35cf831f3569d853ab659994043df7` |
+| Guardrail | `ghcr.io/prince174/uter-guardrail@sha256:2b157a9d01f454cd7fdaf67345b5d872cd26e8f5785132cce933ee22c9fa296e` |
+| Agent | `ghcr.io/prince174/uter-agent@sha256:a6f03a1f102fcc941b1aad0a0ada9f664b2451c0e0acb06a46c5aaaedee86da1` |
 | Redis | `ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc` |
 
 ## 2A. Установить через Compose
@@ -211,8 +211,9 @@ Readiness не заменяет проверку поведения. До отк
 
 - `publish-images.yml`: проверка исходного CI run, SHA256 архивов и слоёв, публикация
   трёх приватных образов GHCR, проверка запрета анонимного скачивания, обе установки.
-- `verify-installation.yml`: повторяет prepare/check/install и API/restart-проверки
-  из готового `installation-inputs` в отдельных GitHub-hosted jobs.
+- `verify-installation.yml`: проверяет установку из CI-артефакта.
+- `verify-released-installation.yml`: повторяет проверку из архива GitHub Release
+  и checkout его тега; job не имеет токена доступа к исходному проекту.
 Основной и единственный используемый registry — приватный GHCR.
 Docker Hub не используется. Результаты установки: [отчёт проверки](docs/registry-installation.md).
 

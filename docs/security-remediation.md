@@ -3,7 +3,15 @@
 Изменения выполняются в `uter_deploy`. Скомпилированные модули продукта берутся из
 закреплённых образов; исходный checkout и работающие окружения не используются.
 
-## Результат 28.10.2026
+## Повторная сборка Uter 2b9590a
+
+[Run 40626538293](https://github.com/prince174/uter_deploy/actions/runs/40626538293)
+применил те же проверки к сборке commit `2b9590aa2b03d94de94f0db1e63144a0e87aafff`.
+Итог: Guardrail 0 Critical / 0 High / 24 Medium / 11 Low, Agent 0 / 0 / 22 / 10,
+Redis 0 / 0 / 0 / 0; secrets findings — 0. Исходный commit и image ID сохранены в
+`publication.json`, отчёты и SBOM — в артефактах и архиве evidence релиза.
+
+## Предыдущая сборка 28.10.2026
 
 [Run 40622181009](https://github.com/prince174/uter_deploy/actions/runs/40622181009)
 успешно завершил все три задания. Trivy 0.74.0, актуальная база на момент запуска:

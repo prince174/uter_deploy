@@ -16,7 +16,7 @@ CNI/CSI, реального LLM/RAG, резервного копирования
 
 ## Актуальная повторная проверка
 
-28.10.2026 [remediation run 40622181009](https://github.com/prince174/uter_deploy/actions/runs/40622181009)
+28.10.2026 [remediation run 40626538293](https://github.com/prince174/uter_deploy/actions/runs/40626538293)
 успешно проверил Guardrail, Agent и Redis: **0 Critical / 0 High**, secrets findings 0.
 Guardrail: 24 Medium / 11 Low; Agent: 22 Medium / 10 Low; Redis: 0 / 0.
 Исправлен Pillow, использован совместимый официальный FastEmbed; ненужные OS-компоненты
@@ -24,7 +24,7 @@ Guardrail: 24 Medium / 11 Low; Agent: 22 Medium / 10 Low; Redis: 0 / 0.
 [Подробный процесс и сравнение](security-remediation.md).
 
 Реальная повторная установка и restart обоих backend:
-[40622662447](https://github.com/prince174/uter_deploy/actions/runs/40622662447).
+[40627054284](https://github.com/prince174/uter_deploy/actions/runs/40627054284).
 Ниже сохранён исторический разбор 22.10; он не описывает текущие release-образы.
 Результаты исследования защиты кода: [image-protection.md](image-protection.md).
 
