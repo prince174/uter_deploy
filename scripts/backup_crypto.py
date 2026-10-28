@@ -40,18 +40,43 @@ def create_key(path):
 
 
 def encrypt_stream(source, target, key, aad):
-    nonce = secrets.token_bytes(12)
-    cipher = Cipher(algorithms.AES(derive_key(key, b'encryption')), modes.GCM(nonce)).encryptor()
-    cipher.authenticate_additional_data(aad)
-    digest = hashlib.sha256(); plaintext_digest = hashlib.sha256(); size = 0
-    def put(data): target.write(data); digest.update(data)
-    put(MAGIC + nonce)
+    writer = EncryptedStreamWriter(target, key, aad)
     while True:
         chunk = source.read(CHUNK)
         if not chunk: break
-        size += len(chunk); plaintext_digest.update(chunk); put(cipher.update(chunk))
-    put(cipher.finalize()); put(cipher.tag)
-    return {'sha256': digest.hexdigest(), 'plaintext_sha256': plaintext_digest.hexdigest(), 'plaintext_bytes': size}
+        writer.write(chunk)
+    return writer.finish()
+
+
+class EncryptedStreamWriter:
+    def __init__(self, target, key, aad):
+        self.target = target
+        self.nonce = secrets.token_bytes(12)
+        self.cipher = Cipher(algorithms.AES(derive_key(key, b'encryption')), modes.GCM(self.nonce)).encryptor()
+        self.cipher.authenticate_additional_data(aad)
+        self.digest = hashlib.sha256()
+        self.plaintext_digest = hashlib.sha256()
+        self.size = 0
+        self.finished = False
+        self._put(MAGIC + self.nonce)
+
+    def _put(self, data):
+        self.target.write(data)
+        self.digest.update(data)
+
+    def write(self, data):
+        if self.finished: raise ValueError('Encrypted stream already finalized')
+        self.size += len(data)
+        self.plaintext_digest.update(data)
+        self._put(self.cipher.update(data))
+        return len(data)
+
+    def finish(self):
+        if self.finished: raise ValueError('Encrypted stream already finalized')
+        self._put(self.cipher.finalize())
+        self._put(self.cipher.tag)
+        self.finished = True
+        return {'sha256': self.digest.hexdigest(), 'plaintext_sha256': self.plaintext_digest.hexdigest(), 'plaintext_bytes': self.size}
 
 
 def decrypt_verify(path, key, aad, expected, sink=None):

@@ -40,13 +40,23 @@ class BackupWriter:
                        'version':version,'files':{}}
 
     def put(self, label, source):
+        return self.write_component(label, lambda stream: backup_crypto.encrypt_stream(source, stream, self.key, aad(self.manifest['id'], label)))
+
+    def put_generated(self, label, generate):
+        def write(stream):
+            writer=backup_crypto.EncryptedStreamWriter(stream,self.key,aad(self.manifest['id'],label))
+            generate(writer)
+            return writer.finish()
+        return self.write_component(label, write)
+
+    def write_component(self, label, write):
         if label not in REQUIRED[self.manifest['backend']] or label in self.manifest['files']:
             raise ValueError('Unexpected or duplicate backup component')
         path=self.path/(label+'.enc')
         fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         try:
             with os.fdopen(fd,'wb') as stream:
-                meta=backup_crypto.encrypt_stream(source,stream,self.key,aad(self.manifest['id'],label))
+                meta=write(stream)
                 stream.flush();os.fsync(stream.fileno())
             if not meta['plaintext_bytes']: raise ValueError('Empty backup component')
             backup_crypto.decrypt_verify(path,self.key,aad(self.manifest['id'],label),meta)
