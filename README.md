@@ -19,9 +19,9 @@ HTML открывается локально в браузере без внеш
 
 ## Что уже проверено
 
-27.10.2026 реальные образы опубликованы в **приватный GHCR**. Анонимное скачивание
+28.10.2026 обновлённые образы опубликованы в **приватный GHCR**. Анонимное скачивание
 запрещено; установка скачивает образы с авторизацией по неизменяемым digest.
-В [изолированном CI](https://github.com/prince174/uter_deploy/actions/runs/40534564830)
+В [изолированном CI](https://github.com/prince174/uter_deploy/actions/runs/40622662447)
 успешно выполнены обе установки с помощью `scripts/install.py`:
 
 - Compose: все сервисы healthy, `/ready` доступен на локальном порту.
@@ -37,9 +37,11 @@ LLM/RAG, работу дополнительного Ollama judge, TLS, высо
 между версиями. kind использует стандартный CNI без применения NetworkPolicy:
 правила рендерятся, но их сетевое действие этим тестом не проверено.
 
-Известные findings исходной проверки образов сохраняются: Guardrail — 0 Critical /
-44 High, Agent — 5 Critical / 67 High. Публикация не означает исправление этих findings
-или security approval. [Подробности и границы](docs/readiness.md).
+Свежая проверка всех трёх образов: **0 Critical / 0 High**, без исключений CVE.
+Остаются Medium/Low: Guardrail — 24/11, Agent — 22/10, Redis — 0/0.
+[Исправления, проверки и отчёты](docs/security-remediation.md). Это результат
+конкретного сканирования, а не гарантия отсутствия неизвестных уязвимостей.
+[Границы готовности](docs/readiness.md).
 
 ## 1. Получить установочные файлы
 
@@ -52,18 +54,18 @@ LLM/RAG, работу дополнительного Ollama judge, TLS, высо
 gh auth login
 gh repo clone prince174/uter_deploy
 cd uter_deploy
-git checkout deploy-2026.10.27
+git checkout deploy-2026.10.28
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p incoming
-gh release download deploy-2026.10.27 --repo prince174/uter_deploy \
+gh release download deploy-2026.10.28 --repo prince174/uter_deploy \
   --pattern 'installation-inputs.tar.gz*' --dir incoming
 (cd incoming && sha256sum -c installation-inputs.tar.gz.sha256)
 tar -xzf incoming/installation-inputs.tar.gz -C incoming
 ```
 
 Комплект содержит `images.json`, `policy.toml`, `model_profiles.toml` и метаданные
-публикации. Digest уже заполнены — ничего придумывать или копировать из Docker image ID
+публикации, а также security-summary для каждого образа. Digest уже заполнены — ничего придумывать или копировать из Docker image ID
 не нужно. SHA256 архива выявляет повреждение; это не независимая подпись. Доступ и
 подлинность комплекта здесь опираются на доверенный GitHub-репозиторий и HTTPS.
 Подписанный комплект для `uterctl.py` пока не выпущен.
@@ -72,9 +74,9 @@ tar -xzf incoming/installation-inputs.tar.gz -C incoming
 
 | Сервис | Registry reference |
 |---|---|
-| Guardrail | `ghcr.io/prince174/uter-guardrail@sha256:868f5b4868598c4fae7434f1086a1055cad8a34de01655fc5ff4b6007794b240` |
-| Agent | `ghcr.io/prince174/uter-agent@sha256:030e3f50d9b7a62b606003d511e89815bd1b35b8be94b4d4b0badf44630facd1` |
-| Redis | `ghcr.io/prince174/uter-redis@sha256:57b179f55b5f69f0674e7c93d5e1130bacb75f44398b02c610da439e1e3482a6` |
+| Guardrail | `ghcr.io/prince174/uter-guardrail@sha256:e7ecc0e83c54380d80a04f452e5054f4027a6d6ad7a93a267b1e48776a45b8d9` |
+| Agent | `ghcr.io/prince174/uter-agent@sha256:8c6ed4fbf0ec3669915c107752d6a6061e35cf831f3569d853ab659994043df7` |
+| Redis | `ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc` |
 
 ## 2A. Установить через Compose
 

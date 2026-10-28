@@ -1,13 +1,13 @@
-# Проверка registry и реальной установки — 27.10.2026
+# Проверка registry и реальной установки — 28.10.2026
 
 ## Подтверждённые результаты
 
-Образы из hardening run `40382405393` опубликованы в приватный GHCR без пересборки
+Образы из remediation run `40622181009` опубликованы в приватный GHCR без пересборки
 продукта. Проверены SHA256 архивов, image ID, отсутствие собственных исходных файлов
 по правилам сканера, совпадение source commit Guardrail/Agent и запрет анонимного pull.
 Source commit: `04c13238e2182ddb870d39d499d677e0a539d21f`.
 
-[Повторная реальная установка](https://github.com/prince174/uter_deploy/actions/runs/40531415005)
+[Повторная реальная установка](https://github.com/prince174/uter_deploy/actions/runs/40622662447)
 прошла для Compose и Kubernetes. Использовались `prepare`, `check`, `install` из
 репозитория, сгенерированные секреты и настоящие registry digest. Конфигурация сервисов
 после prepare не подменялась. Compose использовал документированный CPU-параметр 2.
@@ -31,27 +31,25 @@ Kubernetes: kind 0.33.0, node 1.35.8, один узел, standard/local-path PVC
 перезапуска; цепочка проверяется кодом аудита сервиса. Это не тест восстановления
 из резервной копии и не межверсионное обновление.
 
-Первый прогон `40530426483` успешно опубликовал образы и установил оба окружения,
-но API-тест завершился ошибкой: не передавал включённый установщиком ingress-secret.
-Исправлен именно тест, защита endpoint не отключалась. Полный первый run не считается
-успешным; успешная повторная проверка приведена выше.
+Предыдущая версия `deploy-2026.10.27` сохраняется отдельно. Текущая проверка относится
+к новым digest из `publication.json` нового установочного комплекта.
 
 ## Выбор registry
 
 Основной registry — приватный GHCR. Полный workflow публикации и обеих установок:
-[40531593278](https://github.com/prince174/uter_deploy/actions/runs/40531593278), success.
+[40622662447](https://github.com/prince174/uter_deploy/actions/runs/40622662447), success.
 Docker Hub не используется: создание отдельных приватных репозиториев недоступно
 в текущих настройках аккаунта. Образы туда не публиковались, подписки не менялись.
 
 ## Заключительный прогон
 
-[40534564830](https://github.com/prince174/uter_deploy/actions/runs/40534564830):
+[40622662447](https://github.com/prince174/uter_deploy/actions/runs/40622662447):
 оба backend — success. Проверен актуальный `--inputs` и HTTP smoke через опубликованный
 локальный порт/port-forward, включая вход и обычный запрос. Результаты:
 `installation-compose-evidence/http-smoke.json` и
 `installation-kubernetes-evidence/http-smoke.json` — все проверки pass.
 
-Установочный комплект закреплён в prerelease `deploy-2026.10.27`:
+Установочный комплект закреплён в prerelease `deploy-2026.10.28`:
 `installation-inputs.tar.gz` и SHA256. Это не подписанный bundle uterctl.
 
 ## Границы результата
@@ -60,8 +58,9 @@ Docker Hub не используется: создание отдельных п
 - kind default CNI не обеспечивает NetworkPolicy; проверено создание ресурсов,
   а не фактическая изоляция трафика этим механизмом.
 - TLS/Ingress, другой CSI/CNI, arm64, HA, нагрузка и upgrade/rollback версий не проверены.
-- Findings зависимостей не устранены этой публикацией. Последний security-отчёт:
-  Guardrail 0 Critical / 44 High; Agent 5 Critical / 67 High. Это не security approval.
+- Critical/High устранены в проверенных образах. Medium/Low: Guardrail 24/11,
+  Agent 22/10, Redis 0/0. [Security-отчёт](security-remediation.md) фиксирует дату
+  и границы сканирования; неизвестные уязвимости этим не исключаются.
 - Подписанный bundle `uterctl` пока не выпущен. Установочный архив и SHA256
   распространяются в приватном GitHub release; checksum не заменяет независимую подпись.
 - Локальный стенд и основной checkout не запускались и не изменялись.
