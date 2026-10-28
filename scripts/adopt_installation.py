@@ -46,7 +46,12 @@ def verify_live(home, cfg, manifest):
                     running['Image'] != image['Id']):
                 raise ValueError(f'Running {service} does not match the signed image')
             if manifest.get('image_config_ids') and image['Id'] != manifest['image_config_ids'][service]:
-                raise ValueError(f'Image configuration ID mismatch for {service}')
+                # Docker's containerd image store may expose the manifest digest as Id.
+                # Accept that representation only when the descriptor and signed ref agree.
+                digest = ref.rsplit('@', 1)[-1]
+                descriptor = image.get('Descriptor') or {}
+                if image['Id'] != digest or descriptor.get('digest') != digest:
+                    raise ValueError(f'Image configuration ID mismatch for {service}')
     else:
         kube = ['kubectl', '--context', cfg['context'], '-n', cfg['name']]
         pods = json.loads(output(kube + ['get', 'pods', '-o', 'json']))['items']

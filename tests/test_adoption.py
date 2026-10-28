@@ -15,6 +15,23 @@ import uterctl
 
 
 class AdoptionTests(unittest.TestCase):
+    def test_compose_containerd_descriptor_must_match_signed_digest(self):
+        ref='registry.example/guardrail@sha256:'+'a'*64
+        digest=ref.split('@')[1]
+        manifest={'images':{'guardrail':ref},'image_config_ids':{'guardrail':'sha256:'+'b'*64}}
+        cfg={'backend':'compose','context':'default','name':'uter-test'}
+        running={'State':{'Running':True},'Config':{'Image':ref,'Labels':{'com.docker.compose.project':'uter-test','com.docker.compose.service':'guardrail'}},'Image':digest}
+        image={'Id':digest,'Descriptor':{'digest':digest}}
+        def responses(command,env=None):
+            if 'context' in command and 'inspect' in command:return json.dumps([{'Endpoints':{'docker':{'Host':'unix:///var/run/docker.sock'}}}]).encode()
+            if 'ps' in command:return b'container-id'
+            return json.dumps([image if 'image' in command else running]).encode()
+        with patch.dict('os.environ',{},clear=True),patch.object(adopt_installation.installer,'commands',return_value=(['compose'],{})),patch.object(adopt_installation,'output',side_effect=responses):
+            adopt_installation.verify_live(Path('.'),cfg,manifest)
+            image['Descriptor']['digest']='sha256:'+'c'*64
+            with self.assertRaisesRegex(ValueError,'configuration ID mismatch'):
+                adopt_installation.verify_live(Path('.'),cfg,manifest)
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
         self.images={s:f'registry.example/{s}@sha256:'+'a'*64 for s in ('guardrail','agent','redis')}
