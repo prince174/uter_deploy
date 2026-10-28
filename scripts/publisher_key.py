@@ -14,6 +14,9 @@ def create(private_path, public_path):
         raise ValueError('Generate publisher keys on a POSIX system with private permissions')
     private_path, public_path = Path(private_path), Path(public_path)
     parent = private_path.parent.resolve(strict=True)
+    repository = Path(__file__).resolve().parents[1]
+    if parent == repository or parent.is_relative_to(repository):
+        raise ValueError('Private signing key must be outside the deployment repository')
     if private_path.is_symlink() or public_path.is_symlink() or private_path.exists() or public_path.exists():
         raise ValueError('Key paths must be new files')
     if parent.stat().st_uid != os.geteuid() or stat.S_IMODE(parent.stat().st_mode) & 0o077:
