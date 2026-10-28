@@ -30,7 +30,8 @@ def build(manifest, output, key):
         for name in ('install.py','adopt_installation.py','backup_crypto.py','backup_store.py',
                      'backup_snapshot.py','archive_safety.py','restore_backup.py','recovery_preflight.py',
                      'recovery_volume.py','recovery_aof.py','recover_compose.py','recover_kubernetes.py',
-                     'recovery_kube_volumes.py','extract_signed_bundle.py','smoke_http.py'):
+                     'recovery_kube_volumes.py','extract_signed_bundle.py','managed_smoke.py',
+                     'update_installation.py','smoke_http.py'):
             shutil.copy2(ROOT/'scripts'/name,scripts/name)
     (output / "empty.env").write_text("# Deliberately empty; runtime env files are explicit.\n")
     raw = json.dumps(inventory(output), sort_keys=True, indent=2).encode()

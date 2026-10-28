@@ -66,14 +66,14 @@ if ACTION=='write':
  r.rpush('ci:upgrade:list','first','second')
  r.sadd('ci:upgrade:set','one','two')
  r.zadd('ci:upgrade:sorted',{'one':1,'two':2})
- r.set('ci:upgrade:expiring','alive',ex=900)
+ r.set('ci:upgrade:expiring','alive',ex=3600)
  r1.set('ci:upgrade:other-db','retained')
 assert r.get('ci:upgrade:sentinel')=='uter-upgrade-check'
 assert r.hgetall('ci:upgrade:hash')=={'state':'pending','version':'1'}
 assert r.lrange('ci:upgrade:list',0,-1)==['first','second']
 assert r.smembers('ci:upgrade:set')=={'one','two'}
 assert r.zrange('ci:upgrade:sorted',0,-1,withscores=True)==[('one',1.0),('two',2.0)]
-assert r.get('ci:upgrade:expiring')=='alive' and 0<r.ttl('ci:upgrade:expiring')<=900
+assert r.get('ci:upgrade:expiring')=='alive' and 0<r.ttl('ci:upgrade:expiring')<=3600
 assert r1.get('ci:upgrade:other-db')=='retained'
 print(json.dumps({'first_sha256':hashlib.sha256(lines[0]).hexdigest(),'lines':len(lines),'redis':'pass'}))
 '''.replace('ACTION',repr(redis_action))
@@ -228,11 +228,14 @@ finally:
         fake=work/'fake-receipt.json';fake.write_text(json.dumps({'version':'0.0.1','backup_id':'fake'}))
         missing=subprocess.run([str(x) for x in base+['apply',*common,'--bundle',bundles[1],'--backup-receipt',fake]],capture_output=True)
         assert missing.returncode and b'receipts alone' in missing.stderr
-        from scripts import backup_crypto
-        backup_key=work/'backup-key';backup_crypto.create_key(backup_key)
-        backup_dir=work/'actual-backup'
+        from scripts import backup_crypto, update_installation
+        key_dir=work/'managed-backup-keys';key_dir.mkdir(mode=0o700)
+        backup_root=work/'managed-backups';backup_root.mkdir(mode=0o700)
+        backup_key=key_dir/'backup.key'
         print('Stage: actual encrypted backup and upgrade',flush=True)
-        call(base+['apply',*common,'--bundle',bundles[1],'--backup-dir',backup_dir,'--backup-key',backup_key])
+        updated=update_installation.update(home,bundles[1],public,backup_root,backup_key,
+                                           current_bundle=bundles[0],create_backup_key=True)
+        backup_dir=Path(updated['backup'])
         from scripts import backup_store, restore_backup
         backup_manifest=backup_store.verify_set(backup_dir,backup_crypto.read_key(backup_key),home=home,
                                                 site=uterctl.site_config(home),version='0.0.1')
@@ -275,7 +278,7 @@ finally:
                                          (['GET','ci:upgrade:expiring'],b'alive')]:
                 assert call(['docker','exec',restored_name,'redis-cli','--raw',*redis_args]).strip()==expected
             ttl=int(call(['docker','exec',restored_name,'redis-cli','--raw','TTL','ci:upgrade:expiring']).strip())
-            assert 0<ttl<=900, 'Redis snapshot did not retain expiry'
+            assert 0<ttl<=3600, 'Redis snapshot did not retain expiry'
             assert call(['docker','exec',restored_name,'redis-cli','--raw','-n','1','GET','ci:upgrade:other-db']).strip()==b'retained'
         finally:
             subprocess.run(['docker','rm','-f',restored_name],capture_output=True)
