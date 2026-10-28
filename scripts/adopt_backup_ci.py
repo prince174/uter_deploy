@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -232,6 +233,10 @@ finally:
         from scripts import backup_store, restore_backup
         backup_manifest=backup_store.verify_set(backup_dir,backup_crypto.read_key(backup_key),home=home,
                                                 site=uterctl.site_config(home),version='0.0.1')
+        from scripts import recovery_preflight
+        with tempfile.TemporaryDirectory(prefix='preflight-',dir=work) as preflight_parent:
+            verified=recovery_preflight.preflight(home,backup_dir,backup_key,public,Path(preflight_parent)/'stage')
+            assert verified['backup_id']==backup_manifest['id'] and verified['version']=='0.0.1'
         exported=work/'backup-export'
         restore_backup.export(backup_dir,backup_key,exported)
         # Read the actual encrypted audit snapshot after verified export, compare its first record.
@@ -287,7 +292,8 @@ finally:
         assert any(x['name']==MODEL for x in request('http://127.0.0.1:11434/api/ps')['models'])
         result={'backend':backend,'old_release':OLD,'new_release':NEW,'model':MODEL,'model_digest':MODEL_DIGEST,
                 'real_inference':'pass','install_py':'pass','adoption':'pass','receipt_bypass_rejected':'pass',
-                'encrypted_backup':'pass','backup_export':'pass','redis_rdb_validation':'pass','redis_restore':'pass','backup_audit_matches':'pass',
+                'encrypted_backup':'pass','authenticated_recovery_preflight':'pass',
+                'backup_export':'pass','redis_rdb_validation':'pass','redis_restore':'pass','backup_audit_matches':'pass',
                 'backup_id':backup_manifest['id'],'upgrade':'pass','running_images_match_new_release':'pass',
                 'redis_sentinel':'pass','redis_types_and_expiry':'pass',
                 'separate_kubernetes_pvc_restore':'pass' if backend=='kubernetes' else 'not applicable',
