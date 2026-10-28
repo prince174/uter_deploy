@@ -20,7 +20,9 @@ HTML открывается локально в браузере без внеш
 ## Что уже проверено
 
 Образы опубликованы в **публичном GHCR** и доступны без авторизации; установка
-использует неизменяемые digest.
+использует неизменяемые digest. [Анонимная установка Compose и Kubernetes](https://github.com/prince174/uter_deploy/actions/runs/40642468640) проверена в изолированном CI.
+Старые версии образов также публичны и содержат известные Critical/High; используйте
+только digest актуального установочного комплекта.
 В [изолированном CI](https://github.com/prince174/uter_deploy/actions/runs/40627054284)
 успешно выполнены обе установки с помощью `scripts/install.py`:
 
@@ -54,14 +56,14 @@ kind использует стандартный CNI без применения
 ```bash
 git clone https://github.com/prince174/uter_deploy.git
 cd uter_deploy
-git checkout deploy-2026.10.28-2
+git checkout deploy-2026.10.28-3
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p incoming
 curl -fL -o incoming/installation-inputs.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-2/installation-inputs.tar.gz
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-3/installation-inputs.tar.gz
 curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-2/installation-inputs.tar.gz.sha256
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-3/installation-inputs.tar.gz.sha256
 (cd incoming && sha256sum -c installation-inputs.tar.gz.sha256)
 tar -xzf incoming/installation-inputs.tar.gz -C incoming
 ```
