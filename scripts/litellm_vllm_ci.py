@@ -136,9 +136,15 @@ def completion(base, model, *, token=None, extra_headers=None):
     return True
 
 
-LOG_LIMIT = 128 * 1024
+LOG_LIMIT = 2 * 1024 * 1024
 # Fixed, non-interpolated categories. Never return any matching log text.
 LOG_PATTERNS = (
+    ('PERMISSION_DENIED', r'permissionerror|permission denied|operation not permitted|\bEACCES\b|\bEPERM\b'),
+    ('NUMA_BINDING_FAILED', r'(?:numa|set_mempolicy|mbind)[^\n]{0,150}(?:fail|invalid|cannot|error|denied|not permitted)|(?:fail|cannot|error)[^\n]{0,100}(?:numa|set_mempolicy|mbind)'),
+    ('THREAD_BINDING_FAILED', r'(?:sched_setaffinity|thread affinity|cpu binding|omp_threads_bind)[^\n]{0,150}(?:fail|invalid|cannot|error|denied|not permitted)|(?:fail|cannot|error)[^\n]{0,100}(?:bind threads?|thread affinity|sched_setaffinity|omp_threads_bind)'),
+    ('MODEL_DOWNLOAD_FAILED', r'hfhubhttperror|localentrynotfounderror|failed to download|cannot download|error downloading|unable to download|files in the disk cache|model download[^\n]{0,80}(?:failed|error)'),
+    ('WORKER_PROCESS_EXITED', r'worker[^\n]{0,100}(?:unexpectedly exited|died|failed|process exited)|(?:failed|error)[^\n]{0,80}(?:worker process|worker initialization)|worker process[^\n]{0,100}exit code'),
+    ('ENGINE_START_TIMEOUT', r'engine[^\n]{0,100}(?:timed out|timeout)|(?:timed out|timeout)[^\n]{0,100}(?:engine|core process)'),
     ('CPU_INSTRUCTION_UNSUPPORTED', r'illegal instruction|cpu (?:does not|doesn.t|must|should) support (?:avx|sse)|(?:avx2|avx512)[^\n]{0,80}(?:not supported|required|missing)'),
     ('MEMORY_ALLOCATION_FAILED', r'outofmemoryerror|out of memory|cannot allocate memory|std::bad_alloc|memoryerror'),
     ('DISK_FULL', r'no space left on device|errno[ :=\[]+28(?:\]|\b)|disk quota exceeded'),
@@ -158,17 +164,30 @@ LOG_PATTERNS = (
 )
 
 
+# Only these exception names can appear in diagnostic output; arbitrary exception
+# names and message text are never copied from container logs.
+SAFE_EXCEPTIONS = (
+    'AssertionError', 'RuntimeError', 'ValueError', 'OSError', 'PermissionError',
+    'TypeError', 'FileNotFoundError', 'ModuleNotFoundError', 'ImportError',
+    'MemoryError', 'ConnectionError', 'TimeoutError', 'NotImplementedError',
+    'AttributeError', 'KeyError', 'OverflowError', 'EOFError', 'BrokenPipeError',
+)
+
+
 def classify_container_log(text):
+    categories = []
     # HTTP code alone is ambiguous: classify as Hugging Face only with Hub context.
     if re.search(r'huggingface|hf\.co|hfhub', text, re.IGNORECASE):
         for code in (401, 403, 429):
             if re.search(r'(?:\b' + str(code) + r'\s+(?:client error|error|unauthorized|forbidden|too many)|'
                          r'(?:http|status(?: code)?)[^\n0-9]{0,16}' + str(code) + r'\b)', text, re.IGNORECASE):
-                return 'HF_HTTP_' + str(code)
-    for category, pattern in LOG_PATTERNS:
-        if re.search(pattern, text, re.IGNORECASE):
-            return category
-    return None
+                categories.append('HF_HTTP_' + str(code))
+    categories.extend(category for category, pattern in LOG_PATTERNS
+                      if re.search(pattern, text, re.IGNORECASE))
+    exceptions = ['EXC_' + name.upper() for name in SAFE_EXCEPTIONS
+                  if re.search(r'(?<![A-Za-z0-9_])' + re.escape(name) + r'\s*:', text)]
+    values = categories + exceptions
+    return '_'.join(values) if values else None
 
 
 def container_log_category(container):
@@ -176,7 +195,7 @@ def container_log_category(container):
     # unlinked temporary file, inspect a bounded tail, and never emit raw bytes.
     try:
         with tempfile.TemporaryFile() as output:
-            result = subprocess.run(['docker', 'logs', '--tail', '100', container],
+            result = subprocess.run(['docker', 'logs', '--tail', '1000', container],
                                     stdout=output, stderr=subprocess.STDOUT, timeout=15)
             if result.returncode:
                 return None

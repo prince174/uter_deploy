@@ -82,14 +82,32 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         ]
         for message, category in cases:
             with self.subTest(category=category):
-                self.assertEqual(ci.classify_container_log(message), category)
+                self.assertIn(category, ci.classify_container_log(message))
                 self.assertNotIn('secret-value', ci.classify_container_log(message))
         self.assertIsNone(ci.classify_container_log('some unknown secret-value'))
         self.assertIsNone(ci.classify_container_log('unrelated service HTTP 401'))
 
+    def test_log_classifier_returns_all_safe_diagnostics_without_raw_content(self):
+        message = ("PermissionError: secret=super-secret\n"
+                   "sched_setaffinity failed with EACCES\n"
+                   "numa binding failed\n"
+                   "worker process unexpectedly exited\n"
+                   "RuntimeError: Engine core initialization failed.\n"
+                   "UntrustedSecretError: should never be output\n"
+                   "ValueError: model download failed\n")
+        actual = ci.classify_container_log(message)
+        for category in ('PERMISSION_DENIED', 'THREAD_BINDING_FAILED', 'NUMA_BINDING_FAILED',
+                         'WORKER_PROCESS_EXITED', 'MODEL_DOWNLOAD_FAILED',
+                         'ENGINE_INITIALIZATION_FAILED', 'EXC_PERMISSIONERROR',
+                         'EXC_RUNTIMEERROR', 'EXC_VALUEERROR'):
+            self.assertIn(category, actual)
+        self.assertNotIn('UntrustedSecretError', actual)
+        self.assertNotIn('super-secret', actual)
+        self.assertNotIn('should never', actual)
+
     def test_log_reader_inspects_only_bounded_tail_without_printing(self):
         def docker_logs(args, **kwargs):
-            self.assertEqual(args, ['docker', 'logs', '--tail', '100', 'fixture'])
+            self.assertEqual(args, ['docker', 'logs', '--tail', '1000', 'fixture'])
             kwargs['stdout'].write(b'x' * ci.LOG_LIMIT + b'\nIllegal instruction token=secret-value')
             return SimpleNamespace(returncode=0)
         with patch.object(ci.subprocess, 'run', side_effect=docker_logs):
