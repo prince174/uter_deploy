@@ -245,7 +245,7 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         self.assertEqual(config['model_list'][0]['model_name'], ci.MODEL_ALIAS)
         params = config['model_list'][0]['litellm_params']
         self.assertEqual(params['model'], 'hosted_vllm/' + ci.MODEL)
-        self.assertEqual(params['api_base'], 'http://vllm:8000')
+        self.assertEqual(params['api_base'], 'http://vllm:8000/v1')
         self.assertEqual(config['general_settings']['master_key'], 'os.environ/LITELLM_MASTER_KEY')
 
     def test_completion_timeouts_are_distinguished_and_sanitized(self):
@@ -261,7 +261,37 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
                 'http://example', 503, 'private-value', {}, None)):
             with self.assertRaises(ci.DiagnosticError) as caught:
                 ci.completion('http://127.0.0.1:1', 'test', stage='LITELLM')
-            self.assertEqual(caught.exception.category, 'LITELLM_COMPLETION_HTTP_FAILED')
+            self.assertEqual(caught.exception.category, 'LITELLM_COMPLETION_HTTP_503')
+
+    def test_http_error_status_and_body_use_fixed_safe_categories(self):
+        cases = [(404, b'Not Found api-key=secret-value', 'HTTP_404_NOT_FOUND_TEXT'),
+                 (404, b'Model Qwen does not exist secret-value', 'HTTP_404_MODEL_NOT_FOUND'),
+                 (401, b'Invalid api key secret-value', 'HTTP_401_AUTHENTICATION_FAILED'),
+                 (400, b'Maximum context length exceeded', 'HTTP_400_CONTEXT_LIMIT'),
+                 (422, b'unsupported parameter', 'HTTP_422_UNSUPPORTED_PARAMETER'),
+                 (502, b'connection refused', 'HTTP_502_UPSTREAM_CONNECTION_FAILED'),
+                 (504, b'Upstream timed out', 'HTTP_504_UPSTREAM_TIMEOUT'),
+                 (429, b'Too many requests', 'HTTP_429_RATE_LIMITED'),
+                 (599, b'secret-value', 'HTTP_OTHER')]
+        for status, body, expected in cases:
+            with self.subTest(status=status, expected=expected):
+                error = urllib.error.HTTPError('http://example', status, 'secret-value', {}, io.BytesIO(body))
+                result = ci.http_failure_category('LITELLM', error)
+                self.assertIn(expected, result)
+                self.assertNotIn('secret-value', result)
+        error = urllib.error.HTTPError('http://example', 404, 'secret-value', {}, io.BytesIO(b'not found'))
+        self.assertEqual(ci.http_failure_category('LITELLM', error, log_probe=lambda: 'DNS_RESOLUTION_FAILED'),
+                         'LITELLM_COMPLETION_HTTP_404_NOT_FOUND_TEXT_LOG_DNS_RESOLUTION_FAILED')
+
+    def test_http_body_read_is_bounded(self):
+        class Bounded(io.BytesIO):
+            def read(self, size=-1):
+                self.requested_size = size
+                return super().read(size)
+        body = Bounded(b'x' * (ci.HTTP_BODY_LIMIT + 5))
+        error = urllib.error.HTTPError('http://example', 500, 'ignored', {}, body)
+        self.assertEqual(ci.http_failure_category('UTER', error), 'UTER_COMPLETION_HTTP_500')
+        self.assertEqual(body.requested_size, ci.HTTP_BODY_LIMIT)
 
     def test_readiness_timeouts_name_the_correct_stage(self):
         for stage in ('VLLM_MODELS_READY_TIMEOUT', 'LITELLM_MODELS_READY_TIMEOUT', 'UTER_READY_TIMEOUT'):

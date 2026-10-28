@@ -53,7 +53,7 @@ def vllm_container_command(name, network, cache):
 
 def proxy_config():
     return ('model_list:\n  - model_name: ' + MODEL_ALIAS + '\n    litellm_params:\n'
-            '      model: hosted_vllm/' + MODEL + '\n      api_base: http://vllm:8000\n'
+            '      model: hosted_vllm/' + MODEL + '\n      api_base: http://vllm:8000/v1\n'
             'general_settings:\n  master_key: os.environ/LITELLM_MASTER_KEY\n')
 
 
@@ -141,9 +141,43 @@ def json_request(url, payload=None, *, token=None, form=False, timeout=120, extr
 
 
 COMPLETION_STAGES = frozenset({'VLLM', 'LITELLM', 'UTER'})
+SAFE_HTTP_CODES = frozenset({400, 401, 403, 404, 408, 409, 413, 422, 429, 500, 502, 503, 504})
+HTTP_BODY_LIMIT = 64 * 1024
+HTTP_BODY_PATTERNS = (
+    ('MODEL_NOT_FOUND', r'(?:model[^\n]{0,160}(?:not found|does not exist|unknown)|unknown model)'),
+    ('NOT_FOUND_TEXT', r'\b404\b[^\n]{0,40}not found|\bnot found\b|no route matches'),
+    ('AUTHENTICATION_FAILED', r'invalid api key|incorrect api key|authentication error|unauthorized|forbidden'),
+    ('API_KEY_MISSING', r'api[ _-]?key[^\n]{0,80}(?:missing|not provided|required)|(?:missing|no)[^\n]{0,40}api[ _-]?key'),
+    ('CONTEXT_LIMIT', r'maximum context length|context length exceeded|maximum model length|max_model_len'),
+    ('UNSUPPORTED_PARAMETER', r'unsupported (?:parameter|param)|unrecognized (?:parameter|param)|invalid (?:parameter|param)'),
+    ('UPSTREAM_CONNECTION_FAILED', r'connection refused|cannot connect|failed to connect|connection error|name resolution'),
+    ('UPSTREAM_TIMEOUT', r'timed out|timeout|readtimeout|connecttimeout'),
+    ('RATE_LIMITED', r'rate limit|too many requests'),
+)
 
 
-def completion(base, model, *, token=None, extra_headers=None, stage='VLLM'):
+def http_failure_category(stage, error, *, log_probe=None):
+    if stage not in COMPLETION_STAGES:
+        raise ValueError('Invalid completion stage')
+    status = str(error.code) if error.code in SAFE_HTTP_CODES else 'OTHER'
+    try:
+        raw = error.read(HTTP_BODY_LIMIT)
+        text = raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else ''
+    except (OSError, ValueError, AttributeError):
+        text = ''
+    categories = [name for name, pattern in HTTP_BODY_PATTERNS if re.search(pattern, text, re.IGNORECASE)]
+    category = stage + '_COMPLETION_HTTP_' + status
+    if categories:
+        category += '_' + '_'.join(categories)
+    # Probe must itself return fixed classifier categories, never log content.
+    if log_probe:
+        extra = log_probe()
+        if extra:
+            category += '_LOG_' + extra
+    return category
+
+
+def completion(base, model, *, token=None, extra_headers=None, stage='VLLM', log_probe=None):
     if stage not in COMPLETION_STAGES:
         raise ValueError('Invalid completion stage')
     try:
@@ -153,8 +187,8 @@ def completion(base, model, *, token=None, extra_headers=None, stage='VLLM'):
         }, token=token, extra_headers=extra_headers, timeout=360)
     except TimeoutError:
         raise DiagnosticError(stage + '_COMPLETION_TIMEOUT') from None
-    except urllib.error.HTTPError:
-        raise DiagnosticError(stage + '_COMPLETION_HTTP_FAILED') from None
+    except urllib.error.HTTPError as error:
+        raise DiagnosticError(http_failure_category(stage, error, log_probe=log_probe)) from None
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
             raise DiagnosticError(stage + '_COMPLETION_TIMEOUT') from None
@@ -463,7 +497,8 @@ def main():
                   state_probe=lambda timeout: container_state_category(proxy, 'LITELLM', timeout=timeout),
                   timeout_category='LITELLM_MODELS_READY_TIMEOUT')
         print('Stage: LiteLLM direct completion', flush=True)
-        completion(proxy_url, MODEL_ALIAS, token=key, stage='LITELLM')
+        completion(proxy_url, MODEL_ALIAS, token=key, stage='LITELLM',
+                   log_probe=lambda: container_log_category(proxy))
         print('Stage: LiteLLM direct completion passed', flush=True)
         print('Stage: public Uter ' + backend + ' installation', flush=True)
         installer = bundle / 'scripts/install.py'
