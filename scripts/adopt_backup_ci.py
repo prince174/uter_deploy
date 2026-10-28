@@ -29,6 +29,95 @@ NODE = 'kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f
 OLD, NEW = 'deploy-2026.10.28', 'deploy-2026.10.28-2'
 
 
+# Never persist arbitrary Kubernetes messages, pod names, environment, or logs:
+# these may contain credentials even when the values are not known to this script.
+POD_PHASES = frozenset(('Pending', 'Running', 'Succeeded', 'Failed', 'Unknown'))
+PVC_PHASES = frozenset(('Pending', 'Bound', 'Lost'))
+WAITING_REASONS = frozenset(('ContainerCreating', 'PodInitializing', 'ErrImagePull',
+    'ImagePullBackOff', 'InvalidImageName', 'CreateContainerConfigError',
+    'CreateContainerError', 'CrashLoopBackOff', 'RunContainerError'))
+EVENT_REASONS = frozenset(('FailedScheduling', 'FailedMount', 'FailedAttachVolume',
+    'Failed', 'BackOff', 'Unhealthy', 'FailedCreate', 'FailedBinding', 'ProvisioningFailed',
+    'FailedCreatePodSandBox', 'Evicted', 'NodeNotReady'))
+
+
+def kubernetes_categories(pods, pvcs, events):
+    """Return counts of explicitly allowed state categories, never untrusted text."""
+    summary = {'pod_phases': {}, 'container_waiting': {}, 'pvc_phases': {}, 'warning_events': {}}
+    def add(group, value, allowed):
+        name = value if isinstance(value, str) and value in allowed else 'Other'
+        group[name] = group.get(name, 0) + 1
+    for pod in pods:
+        status = pod.get('status', {}) if isinstance(pod, dict) else {}
+        if not isinstance(status, dict): status = {}
+        add(summary['pod_phases'], status.get('phase'), POD_PHASES)
+        for field in ('initContainerStatuses', 'containerStatuses'):
+            entries = status.get(field, [])
+            if not isinstance(entries, list): continue
+            for container in entries:
+                if not isinstance(container, dict): continue
+                state = container.get('state', {})
+                if not isinstance(state, dict): continue
+                waiting = state.get('waiting')
+                if isinstance(waiting, dict): add(summary['container_waiting'], waiting.get('reason'), WAITING_REASONS)
+    for pvc in pvcs:
+        status = pvc.get('status', {}) if isinstance(pvc, dict) else {}
+        add(summary['pvc_phases'], status.get('phase') if isinstance(status, dict) else None, PVC_PHASES)
+    for event in events:
+        if isinstance(event, dict) and event.get('type') == 'Warning':
+            add(summary['warning_events'], event.get('reason'), EVENT_REASONS)
+    return summary
+
+
+def collect_kubernetes_categories(kube, namespace, evidence):
+    items, unavailable = [], []
+    for kind in ('pods', 'pvc', 'events'):
+        try:
+            result = subprocess.run([*kube, '-n', namespace, 'get', kind, '-o', 'json'], capture_output=True, timeout=30)
+            value = json.loads(result.stdout) if result.returncode == 0 else None
+            entries = value.get('items') if isinstance(value, dict) else None
+            if not isinstance(entries, list): raise ValueError('Missing items')
+        except (ValueError, UnicodeDecodeError, subprocess.TimeoutExpired, OSError):
+            unavailable.append(kind)
+            entries = []
+        items.append(entries)
+    summary = kubernetes_categories(*items)
+    summary['unavailable'] = unavailable
+    (evidence/'kubernetes-categories.json').write_text(json.dumps(summary, indent=2)+'\n')
+
+
+def finish_disposable_test(home, evidence, cfg, backend, kube, name, cluster, token, auth, created, ollama):
+    """Capture bounded diagnostics and clean up only this test's named resources."""
+    sensitive = [token, auth]
+    if home.exists():
+        for path in (home/'runtime').glob('*.env'):
+            sensitive += [line.split('=',1)[1] for line in path.read_text().splitlines() if '=' in line]
+        if (home/'credentials.json').exists():
+            sensitive += list(json.loads((home/'credentials.json').read_text()).values())
+        for filename in ('redis-password', 'audit-hmac-key'):
+            path = home/'runtime'/filename
+            if path.exists(): sensitive.append(path.read_text().strip())
+    def diagnostic(label, command, env=None):
+        result = subprocess.run([str(x) for x in command], env=env, capture_output=True)
+        text = (result.stdout+result.stderr).decode(errors='replace')
+        for secret in sorted(sensitive, key=len, reverse=True):
+            if secret: text=text.replace(secret, '[REDACTED]')
+        text=re.sub(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+','[REDACTED-JWT]',text)
+        (evidence/(label+'.txt')).write_text(text)
+    if cfg and backend == 'compose':
+        env=os.environ.copy();env.update({n.upper()+'_IMAGE':v for n,v in cfg['images'].items()});env['RUNTIME_DIR']=str(home/'runtime')
+        base=['docker','compose','--project-name',name,'--env-file',str(home/'empty.env'),'-f',str(home/'compose/compose.yaml')]
+        diagnostic('compose-services',base+['ps','-a'],env)
+        diagnostic('compose-logs',base+['logs','--no-color','--tail','80'],env)
+        subprocess.run(base+['down','--volumes','--remove-orphans'],env=env,capture_output=True)
+    if created:
+        try:
+            collect_kubernetes_categories(kube,name,evidence)
+        finally:
+            subprocess.run(['kind','delete','cluster','--name',cluster],capture_output=True)
+    if ollama: subprocess.run(['docker','rm','-f','uter-real-llm-ci'],capture_output=True)
+
+
 def call(args, *, input=None, env=None):
     p = subprocess.run([str(a) for a in args], input=input, capture_output=True, env=env)
     if p.returncode:
@@ -313,36 +402,8 @@ finally:
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
     finally:
         if forward: forward.terminate();forward.wait(timeout=10)
-        # Preserve diagnostics from this disposable environment without secrets.
-        sensitive=[token,auth]
-        if home.exists():
-            for path in (home/'runtime').glob('*.env'):
-                sensitive += [line.split('=',1)[1] for line in path.read_text().splitlines() if '=' in line]
-            if (home/'credentials.json').exists():
-                sensitive += list(json.loads((home/'credentials.json').read_text()).values())
-            for name in ('redis-password','audit-hmac-key'):
-                path=home/'runtime'/name
-                if path.exists(): sensitive.append(path.read_text().strip())
-        def diagnostic(label, command, env=None):
-            result=subprocess.run([str(x) for x in command],env=env,capture_output=True)
-            text=(result.stdout+result.stderr).decode(errors='replace')
-            for secret in sorted(sensitive,key=len,reverse=True):
-                if secret: text=text.replace(secret,'[REDACTED]')
-            text=re.sub(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+','[REDACTED-JWT]',text)
-            (evidence/(label+'.txt')).write_text(text)
-        if cfg and backend=='compose':
-            env=os.environ.copy();env.update({n.upper()+'_IMAGE':v for n,v in cfg['images'].items()});env['RUNTIME_DIR']=str(home/'runtime')
-            diagnostic('compose-services',['docker','compose','--project-name',name,'--env-file',home/'empty.env','-f',home/'compose/compose.yaml','ps','-a'],env)
-            diagnostic('compose-logs',['docker','compose','--project-name',name,'--env-file',home/'empty.env','-f',home/'compose/compose.yaml','logs','--no-color','--tail','80'],env)
-            subprocess.run(['docker','compose','--project-name',name,'--env-file',str(home/'empty.env'),'-f',str(home/'compose/compose.yaml'),'down','--volumes','--remove-orphans'],env=env,capture_output=True)
-        if created:
-            diagnostic('pods',kube+['-n',name,'get','pods,pvc','-o','wide'])
-            diagnostic('events',kube+['-n',name,'get','events','--sort-by=.lastTimestamp'])
-            for svc in ('guardrail','agent','redis'):
-                diagnostic(svc+'-logs',kube+['-n',name,'logs','deployment/'+name+'-'+svc,'--tail=80'])
-            subprocess.run(['kind','delete','cluster','--name',cluster],capture_output=True)
+        finish_disposable_test(home,evidence,cfg,backend,kube,name,cluster,token,auth,created,ollama)
         if proxy:proxy.terminate();proxy.wait(timeout=10)
-        if ollama:subprocess.run(['docker','rm','-f','uter-real-llm-ci'],capture_output=True)
 
 
 if __name__=='__main__': main()
