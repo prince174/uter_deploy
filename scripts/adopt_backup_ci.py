@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 import yaml
+import re
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -271,10 +272,34 @@ finally:
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
     finally:
         if forward: forward.terminate();forward.wait(timeout=10)
+        # Preserve diagnostics from this disposable environment without secrets.
+        sensitive=[token,auth]
+        if home.exists():
+            for path in (home/'runtime').glob('*.env'):
+                sensitive += [line.split('=',1)[1] for line in path.read_text().splitlines() if '=' in line]
+            if (home/'credentials.json').exists():
+                sensitive += list(json.loads((home/'credentials.json').read_text()).values())
+            for name in ('redis-password','audit-hmac-key'):
+                path=home/'runtime'/name
+                if path.exists(): sensitive.append(path.read_text().strip())
+        def diagnostic(label, command, env=None):
+            result=subprocess.run([str(x) for x in command],env=env,capture_output=True)
+            text=(result.stdout+result.stderr).decode(errors='replace')
+            for secret in sorted(sensitive,key=len,reverse=True):
+                if secret: text=text.replace(secret,'[REDACTED]')
+            text=re.sub(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+','[REDACTED-JWT]',text)
+            (evidence/(label+'.txt')).write_text(text)
         if cfg and backend=='compose':
             env=os.environ.copy();env.update({n.upper()+'_IMAGE':v for n,v in cfg['images'].items()});env['RUNTIME_DIR']=str(home/'runtime')
+            diagnostic('compose-services',['docker','compose','--project-name',name,'--env-file',home/'empty.env','-f',home/'compose/compose.yaml','ps','-a'],env)
+            diagnostic('compose-logs',['docker','compose','--project-name',name,'--env-file',home/'empty.env','-f',home/'compose/compose.yaml','logs','--no-color','--tail','80'],env)
             subprocess.run(['docker','compose','--project-name',name,'--env-file',str(home/'empty.env'),'-f',str(home/'compose/compose.yaml'),'down','--volumes','--remove-orphans'],env=env,capture_output=True)
-        if created:subprocess.run(['kind','delete','cluster','--name',cluster],capture_output=True)
+        if created:
+            diagnostic('pods',kube+['-n',name,'get','pods,pvc','-o','wide'])
+            diagnostic('events',kube+['-n',name,'get','events','--sort-by=.lastTimestamp'])
+            for svc in ('guardrail','agent','redis'):
+                diagnostic(svc+'-logs',kube+['-n',name,'logs','deployment/'+name+'-'+svc,'--tail=80'])
+            subprocess.run(['kind','delete','cluster','--name',cluster],capture_output=True)
         if proxy:proxy.terminate();proxy.wait(timeout=10)
         if ollama:subprocess.run(['docker','rm','-f','uter-real-llm-ci'],capture_output=True)
 
