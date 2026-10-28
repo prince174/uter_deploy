@@ -37,3 +37,9 @@ class ReleaseManifestTests(unittest.TestCase):
         self.write()
         with self.assertRaisesRegex(ValueError, 'digest'):
             make_manifest(self.root, '1.2.3', 1, [])
+
+    def test_refuses_redis_from_another_application_commit(self):
+        self.records['redis']['application_commit']='d'*40
+        self.write()
+        with self.assertRaisesRegex(ValueError,'Redis publication application commit'):
+            make_manifest(self.root,'1.2.3',1,[])

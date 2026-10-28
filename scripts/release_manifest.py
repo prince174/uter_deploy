@@ -22,6 +22,9 @@ def make_manifest(inputs, version, data_epoch, upgrade_from):
     sha = records['guardrail']['source_commit']
     if records['agent']['source_commit'] != sha:
         raise ValueError('Guardrail and Agent source commits differ')
+    redis_source = records['redis'].get('application_commit')
+    if redis_source is not None and redis_source != sha:
+        raise ValueError('Redis publication application commit differs')
     ids = {service: records[service]['image_id'] for service in images}
     manifest = {'schema': 1, 'config_schema': 1, 'status': 'released',
                 'version': version, 'source_commit': sha, 'data_epoch': data_epoch,
