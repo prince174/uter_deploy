@@ -38,8 +38,8 @@ def main():
     build = os.environ['BUILD_RUN_ID']
     assert re.fullmatch(r'\d+', build)
     identity = json.loads(run(['gh', 'api', f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{build}']))
-    assert identity['path'] in ('.github/workflows/harden-image-artifacts.yml', '.github/workflows/remediate-images.yml') and identity['conclusion'] == 'success'
-    remediated = identity['path'] == '.github/workflows/remediate-images.yml'
+    assert identity['path'] in ('.github/workflows/harden-image-artifacts.yml', '.github/workflows/remediate-images.yml', '.github/workflows/remediate-new-build.yml') and identity['conclusion'] == 'success'
+    remediated = identity['path'] in ('.github/workflows/remediate-images.yml', '.github/workflows/remediate-new-build.yml')
     images, metadata = {}, {}
     output = Path('work/published')
     output.mkdir(parents=True)
