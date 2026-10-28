@@ -54,8 +54,8 @@ def test(kube, namespace, image, redis_image, exported):
             call(kube+['wait','--for=condition=Ready','pod/'+helper,'--timeout=180s'])
             source=Path(exported)/file
             if source.stat().st_size>100*1024*1024:raise ValueError('CI recovery input exceeds bounded tmpfs')
-            copy='import sys; f=open("/tmp/snapshot","wb"); f.write(sys.stdin.buffer.read()); f.close()'
-            call(kube+['exec','-i',helper,'--','python','-c',copy],source.read_bytes())
+            copy_program='import sys; f=open("/tmp/snapshot","wb"); f.write(sys.stdin.buffer.read()); f.close()'
+            call(kube+['exec','-i',helper,'--','python','-c',copy_program],source.read_bytes())
             call(kube+['exec',helper,'--','python','/tool/scripts/recovery_volume.py',kind,
                        '--snapshot','/tmp/snapshot','--destination','/data'])
             if kind=='audit':
