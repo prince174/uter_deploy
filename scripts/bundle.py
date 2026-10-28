@@ -29,7 +29,7 @@ def build(manifest, output, key):
         scripts=output/'scripts';scripts.mkdir()
         for name in ('install.py','adopt_installation.py','backup_crypto.py','backup_store.py',
                      'backup_snapshot.py','archive_safety.py','restore_backup.py','recovery_preflight.py',
-                     'recovery_volume.py','recovery_aof.py','smoke_http.py'):
+                     'recovery_volume.py','recovery_aof.py','recover_compose.py','smoke_http.py'):
             shutil.copy2(ROOT/'scripts'/name,scripts/name)
     (output / "empty.env").write_text("# Deliberately empty; runtime env files are explicit.\n")
     raw = json.dumps(inventory(output), sort_keys=True, indent=2).encode()
