@@ -87,6 +87,13 @@ def main():
         cfg = json.loads((home / 'install.json').read_text())
         run([sys.executable, ROOT / 'scripts/install.py', 'check', '--home', home])
         run([sys.executable, ROOT / 'scripts/install.py', 'install', '--home', home])
+        signed=os.environ.get('SIGNED_BUNDLE_PATH');trusted=os.environ.get('PUBLISHER_KEY_PATH')
+        if bool(signed)!=bool(trusted):raise ValueError('Both signed bundle and trusted publisher key are required')
+        if signed:
+            run([sys.executable,Path(signed)/'scripts/adopt_managed.py','--home',home,
+                 '--bundle',signed,'--publisher-key',trusted])
+            state=json.loads((home/'state.json').read_text())
+            if not state.get('adopted_installer'):raise ValueError('Signed installation adoption did not complete')
         if backend == 'kubernetes':
             forward = subprocess.Popen(kube + ['-n', name, 'port-forward', 'service/' + name + '-guardrail', '18000:8000'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -125,6 +132,7 @@ def main():
         (evidence / 'after-restart.json').write_text(json.dumps(second, indent=2))
         (evidence / 'result.json').write_text(json.dumps(dict(backend=backend, install='pass', restart='pass',
             registry_pull='anonymous by digest' if public else 'authenticated by digest', images=cfg['images'], configuration='installer generated; no runtime overrides',
+            signed_adoption='pass' if signed else 'not requested',
             exposed_ready_endpoint='pass', restarted_services=['redis', 'agent', 'guardrail'],
             llm='deterministic HTTP fixture', judge='disabled; optional Ollama not exercised',
             kubernetes=NODE_IMAGE if backend == 'kubernetes' else None,
