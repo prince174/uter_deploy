@@ -41,3 +41,16 @@ class RestoreExportTests(unittest.TestCase):
         w=self.build();path=w.path/'redis.enc';data=bytearray(path.read_bytes());data[22]^=1;path.write_bytes(data)
         with self.assertRaises(Exception):restore_backup.export(w.path,self.keyfile,self.root/'output')
         self.assertFalse((self.root/'output').exists())
+
+    def test_stage_validated_archive_without_overwriting(self):
+        path=self.root/'data.tar';path.write_bytes(archive('audit/audit.jsonl',b'audit'))
+        stage=self.root/'stage';restore_backup.stage_archive(path,stage)
+        self.assertEqual((stage/'audit/audit.jsonl').read_bytes(),b'audit')
+        with self.assertRaisesRegex(ValueError,'already exists'):
+            restore_backup.stage_archive(path,stage)
+
+    def test_stage_rejects_traversal_before_creating_directory(self):
+        path=self.root/'bad.tar';path.write_bytes(archive('../outside'))
+        with self.assertRaisesRegex(ValueError,'Unsafe path'):
+            restore_backup.stage_archive(path,self.root/'stage')
+        self.assertFalse((self.root/'stage').exists())

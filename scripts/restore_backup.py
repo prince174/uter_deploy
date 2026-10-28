@@ -32,6 +32,34 @@ def check_tar(path):
     with tarfile.open(path,'r:*') as archive: check_tar_members(archive)
 
 
+def stage_archive(path, destination):
+    """Extract a validated archive into a new private directory; never overwrite live data."""
+    destination=Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError('Staging destination already exists')
+    # Validate the entire archive before creating any destination content.
+    check_tar(path)
+    destination.mkdir(mode=0o700, parents=False)
+    with tarfile.open(path,'r:*') as archive:
+        for member in archive:
+            normalized=posixpath.normpath(member.name)
+            if (member.name.startswith('/') or '\\' in member.name or normalized == '..'
+                    or normalized.startswith('../') or not (member.isfile() or member.isdir())):
+                raise ValueError('Unsafe entry in staging archive')
+            target=destination.joinpath(*normalized.split('/'))
+            if member.isdir():
+                target.mkdir(mode=0o700,parents=True,exist_ok=True)
+            else:
+                target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+                fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+                with os.fdopen(fd,'wb') as out, archive.extractfile(member) as source:
+                    while True:
+                        block=source.read(1024*1024)
+                        if not block:break
+                        out.write(block)
+    return destination
+
+
 def export(backup, key_path, destination):
     backup=Path(backup).resolve(strict=True);key=backup_crypto.read_key(key_path);destination=Path(destination).absolute()
     if destination.exists() or destination.is_symlink(): raise ValueError('Export destination already exists')
