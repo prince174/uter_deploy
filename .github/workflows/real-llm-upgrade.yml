@@ -1,0 +1,55 @@
+name: Test real LLM and managed upgrade in isolated CI
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+jobs:
+  real-llm-upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [compose, kubernetes]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Download and validate previous and current installation packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for version in deploy-2026.10.28 deploy-2026.10.28-2; do
+            mkdir -p "work/download/$version"
+            gh release download "$version" --pattern 'installation-inputs.tar.gz*' --dir "work/download/$version"
+            python scripts/extract_release_inputs.py "work/download/$version/installation-inputs.tar.gz" "work/download/$version/installation-inputs.tar.gz.sha256" "work/input/$version"
+          done
+      - name: Install isolated tooling
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+          curl -fsSLO https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz
+          curl -fsSLO https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz.sha256sum
+          sha256sum -c helm-v3.17.3-linux-amd64.tar.gz.sha256sum
+          tar -xzf helm-v3.17.3-linux-amd64.tar.gz
+          sudo install linux-amd64/helm /usr/local/bin/helm
+      - name: Install kind for Kubernetes
+        if: matrix.backend == 'kubernetes'
+        run: |
+          curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o kind-bin
+          echo 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind-bin' | sha256sum -c -
+          sudo install kind-bin /usr/local/bin/kind
+      - name: Real local LLM and signed test upgrade
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+          BACKEND: ${{ matrix.backend }}
+        run: sudo --preserve-env=GITHUB_ACTIONS,GITHUB_RUN_ID,GITHUB_ACTOR,REGISTRY_TOKEN,REGISTRY_USER,BACKEND "$PWD/.venv/bin/python" scripts/real_llm_upgrade_ci.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: real-llm-upgrade-${{ matrix.backend }}-evidence
+          path: work/real-llm-evidence/
+          retention-days: 30
+          if-no-files-found: warn
