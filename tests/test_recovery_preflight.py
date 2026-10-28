@@ -58,3 +58,10 @@ class RecoveryPreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'different installation'):
             recovery_preflight.preflight(other,self.backup,self.keyfile,self.public,out)
         self.assertFalse(out.exists())
+
+    def test_can_verify_backup_when_original_installation_is_missing(self):
+        self.home.rename(self.root/'disconnected-original')
+        out=self.root/'stage'
+        result=recovery_preflight.preflight(self.home,self.backup,self.keyfile,self.public,out)
+        self.assertEqual(result['version'],'1.0.0')
+        self.assertFalse((out/'INCOMPLETE').exists())

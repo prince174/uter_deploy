@@ -14,12 +14,16 @@ from scripts import backup_crypto, backup_store, restore_backup
 
 
 def preflight(home, backup, backup_key, publisher_key, output):
-    home=Path(home).resolve(strict=True)
-    site=uterctl.site_config(home)
+    home=Path(home).resolve()
     key=backup_crypto.read_key(backup_key)
-    # Authenticate the whole backup and bind it to the exact selected installation.
-    manifest=backup_store.verify_set(backup,key,home=home,site=site)
-    output=Path(output)
+    # Authenticate before staging; identity is checked against staged state below.
+    manifest=backup_store.verify_set(backup,key)
+    live_site=uterctl.site_config(home) if home.exists() else None
+    if live_site is not None:
+        backup_store.verify_set(backup,key,home=home,site=live_site)
+    output=Path(output).resolve()
+    if output == home or output.is_relative_to(home):
+        raise ValueError('Recovery staging must be outside the original installation')
     restore_backup.prepare_staging(backup,backup_key,output)
     marker=output/'INCOMPLETE'
     marker.write_text('Sensitive recovery data. Preflight has not completed.\n')
@@ -28,6 +32,10 @@ def preflight(home, backup, backup_key, publisher_key, output):
     state=uterctl.read(staged/'state.json')
     config=uterctl.read(staged/'install.json')
     staged_site=uterctl.site_config(staged)
+    backup_store.verify_set(backup,key,home=home,site=staged_site)
+    if manifest['backend'] != staged_site['backend']:
+        raise ValueError('Backup backend and staged installation state differ')
+    site=live_site if live_site is not None else staged_site
     if state.get('adopted_installer') is not True or state.get('pending') is not None:
         raise ValueError('Backup must contain a completed adopted installation state')
     current=state.get('current')
