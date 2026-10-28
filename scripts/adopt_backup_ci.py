@@ -57,8 +57,20 @@ lines=p.read_bytes().splitlines()
 password_path=os.environ.get('REDIS_PASSWORD_FILE')
 password=Path(password_path).read_text().strip() if password_path else os.environ['REDIS_PASSWORD']
 r=redis.Redis(host=os.environ['REDIS_HOST'],password=password,decode_responses=True)
-if ACTION=='write': r.set('ci:upgrade:sentinel','uter-upgrade-check')
+if ACTION=='write':
+ r.set('ci:upgrade:sentinel','uter-upgrade-check')
+ r.hset('ci:upgrade:hash',mapping={'state':'pending','version':'1'})
+ r.delete('ci:upgrade:list','ci:upgrade:set','ci:upgrade:sorted')
+ r.rpush('ci:upgrade:list','first','second')
+ r.sadd('ci:upgrade:set','one','two')
+ r.zadd('ci:upgrade:sorted',{'one':1,'two':2})
+ r.set('ci:upgrade:expiring','alive',ex=900)
 assert r.get('ci:upgrade:sentinel')=='uter-upgrade-check'
+assert r.hgetall('ci:upgrade:hash')=={'state':'pending','version':'1'}
+assert r.lrange('ci:upgrade:list',0,-1)==['first','second']
+assert r.smembers('ci:upgrade:set')=={'one','two'}
+assert r.zrange('ci:upgrade:sorted',0,-1,withscores=True)==[('one',1.0),('two',2.0)]
+assert r.get('ci:upgrade:expiring')=='alive' and 0<r.ttl('ci:upgrade:expiring')<=900
 print(json.dumps({'first_sha256':hashlib.sha256(lines[0]).hexdigest(),'lines':len(lines),'redis':'pass'}))
 '''.replace('ACTION',repr(redis_action))
     return json.loads(call(cmd, input=program.encode(), env=env))
@@ -248,6 +260,14 @@ finally:
                 if value.returncode==0 and value.stdout.strip()==b'uter-upgrade-check': break
                 if attempt==29: raise ValueError('Redis snapshot restore failed')
                 time.sleep(1)
+            for redis_args, expected in [(['HGET','ci:upgrade:hash','state'],b'pending'),
+                                         (['LLEN','ci:upgrade:list'],b'2'),
+                                         (['SCARD','ci:upgrade:set'],b'2'),
+                                         (['ZCARD','ci:upgrade:sorted'],b'2'),
+                                         (['GET','ci:upgrade:expiring'],b'alive')]:
+                assert call(['docker','exec',restored_name,'redis-cli','--raw',*redis_args]).strip()==expected
+            ttl=int(call(['docker','exec',restored_name,'redis-cli','--raw','TTL','ci:upgrade:expiring']).strip())
+            assert 0<ttl<=900, 'Redis snapshot did not retain expiry'
         finally:
             subprocess.run(['docker','rm','-f',restored_name],capture_output=True)
         print('Stage: real LLM and persistent state after update',flush=True)
@@ -266,7 +286,7 @@ finally:
                 'real_inference':'pass','install_py':'pass','adoption':'pass','receipt_bypass_rejected':'pass',
                 'encrypted_backup':'pass','backup_export':'pass','redis_rdb_validation':'pass','redis_restore':'pass','backup_audit_matches':'pass',
                 'backup_id':backup_manifest['id'],'upgrade':'pass','running_images_match_new_release':'pass',
-                'redis_sentinel':'pass','audit_chain_and_persistence':'pass','audit_lines_before':audit_before['lines'],
+                'redis_sentinel':'pass','redis_types_and_expiry':'pass','audit_chain_and_persistence':'pass','audit_lines_before':audit_before['lines'],
                 'audit_lines_after':audit_after['lines'],'test_signing_key':'ephemeral CI only',
                 'full_restore_to_workloads':'not tested','data_epoch':'CI assumption, not a production compatibility declaration'}
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
