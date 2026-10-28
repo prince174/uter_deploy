@@ -44,6 +44,9 @@ def populate(kube,namespace,name,marker,images,staged,sizes,storage_class,pull_s
         raise ValueError('Invalid storage class')
     if not isinstance(pull_secrets,list) or any(not re.fullmatch(r'[a-z0-9]([-a-z0-9.]*[a-z0-9])?',x) for x in pull_secrets):
         raise ValueError('Invalid image pull secret')
+    ns=json.loads(run(kube+['get','namespace',namespace,'-o','json']))
+    if ns.get('metadata',{}).get('labels',{}).get('uter.io/recovery-id')!=marker:
+        raise ValueError('Recovery namespace ownership could not be verified')
     kube=kube+['-n',namespace];cm='uter-recovery-'+marker[:12];pods=[];created_cm=False
     try:
         run(kube+['create','configmap',cm,'--from-file=recovery_volume.py='+str(ROOT/'scripts/recovery_volume.py'),

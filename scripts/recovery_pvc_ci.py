@@ -125,6 +125,8 @@ def test(kube, namespace, image, redis_image, exported, *, keep_pvcs=False):
                     if actual != expected:raise ValueError('AOF restart did not retain Redis data')
                 ttl=int(call(kube+['exec',helper+'-check','--','redis-cli','--raw','TTL','ci:upgrade:expiring']).strip())
                 if not 0<ttl<=900:raise ValueError('AOF restart did not retain key expiry')
+                other=call(kube+['exec',helper+'-check','--','redis-cli','--raw','-n','1','GET','ci:upgrade:other-db']).strip()
+                if other!=b'retained':raise ValueError('AOF restart did not retain another Redis database')
                 call(kube+['delete','pod',helper+'-check','--wait=true','--timeout=180s'])
         print('New Kubernetes PVCs: audit extracted and Redis restored: PASS',flush=True)
     finally:

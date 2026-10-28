@@ -120,6 +120,9 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,context,port
             pull_secrets=[x['name'] for x in values.get('imagePullSecrets',[])]
             recovery_kube_volumes.populate(kube,name,name,marker_id,current['images'],stage,sizes,selected,pull_secrets)
             record('starting')
+            observed=json.loads(run(kube+['get','namespace',name,'-o','json']))
+            if observed.get('metadata',{}).get('labels',{}).get('uter.io/recovery-id')!=marker_id:
+                raise ValueError('Recovery namespace ownership could not be verified')
             run(['helm','--kube-context',context,'install',name,signed/'charts/uter','--namespace',name,
                  '-f',runtime/'values.yaml','--wait','--timeout','5m'])
             adopt_installation.verify_live(target,cfg,current)

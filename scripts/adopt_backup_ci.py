@@ -58,6 +58,7 @@ lines=p.read_bytes().splitlines()
 password_path=os.environ.get('REDIS_PASSWORD_FILE')
 password=Path(password_path).read_text().strip() if password_path else os.environ['REDIS_PASSWORD']
 r=redis.Redis(host=os.environ['REDIS_HOST'],password=password,decode_responses=True)
+r1=redis.Redis(host=os.environ['REDIS_HOST'],password=password,decode_responses=True,db=1)
 if ACTION=='write':
  r.set('ci:upgrade:sentinel','uter-upgrade-check')
  r.hset('ci:upgrade:hash',mapping={'state':'pending','version':'1'})
@@ -66,12 +67,14 @@ if ACTION=='write':
  r.sadd('ci:upgrade:set','one','two')
  r.zadd('ci:upgrade:sorted',{'one':1,'two':2})
  r.set('ci:upgrade:expiring','alive',ex=900)
+ r1.set('ci:upgrade:other-db','retained')
 assert r.get('ci:upgrade:sentinel')=='uter-upgrade-check'
 assert r.hgetall('ci:upgrade:hash')=={'state':'pending','version':'1'}
 assert r.lrange('ci:upgrade:list',0,-1)==['first','second']
 assert r.smembers('ci:upgrade:set')=={'one','two'}
 assert r.zrange('ci:upgrade:sorted',0,-1,withscores=True)==[('one',1.0),('two',2.0)]
 assert r.get('ci:upgrade:expiring')=='alive' and 0<r.ttl('ci:upgrade:expiring')<=900
+assert r1.get('ci:upgrade:other-db')=='retained'
 print(json.dumps({'first_sha256':hashlib.sha256(lines[0]).hexdigest(),'lines':len(lines),'redis':'pass'}))
 '''.replace('ACTION',repr(redis_action))
     return json.loads(call(cmd, input=program.encode(), env=env))
@@ -273,6 +276,7 @@ finally:
                 assert call(['docker','exec',restored_name,'redis-cli','--raw',*redis_args]).strip()==expected
             ttl=int(call(['docker','exec',restored_name,'redis-cli','--raw','TTL','ci:upgrade:expiring']).strip())
             assert 0<ttl<=900, 'Redis snapshot did not retain expiry'
+            assert call(['docker','exec',restored_name,'redis-cli','--raw','-n','1','GET','ci:upgrade:other-db']).strip()==b'retained'
         finally:
             subprocess.run(['docker','rm','-f',restored_name],capture_output=True)
         if backend=='kubernetes':

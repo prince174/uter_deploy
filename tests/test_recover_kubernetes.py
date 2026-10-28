@@ -47,3 +47,11 @@ class KubernetesRecoveryTests(unittest.TestCase):
                 'policyConfigMap':'p','profileConfigMap':'m'}
         with self.assertRaisesRegex(ValueError,'duplicate'):
             recover_kubernetes.resource_mapping(values,'new-test')
+
+    def test_volume_recovery_refuses_namespace_without_ownership_marker(self):
+        with patch.object(recovery_kube_volumes,'run',return_value=b'{"metadata":{"labels":{}}}') as run:
+            with self.assertRaisesRegex(ValueError,'ownership'):
+                recovery_kube_volumes.populate(['kubectl','--context','ctx'],'new-test','new-test',
+                                              'a'*32,{},'/tmp',{'redis':'2Gi','audit':'10Gi'},'',[])
+            self.assertEqual(run.call_count,1)
+            self.assertEqual(run.call_args.args[0][3:6],['get','namespace','new-test'])
