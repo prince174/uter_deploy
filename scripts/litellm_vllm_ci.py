@@ -136,6 +136,57 @@ def completion(base, model, *, token=None, extra_headers=None):
     return True
 
 
+LOG_LIMIT = 128 * 1024
+# Fixed, non-interpolated categories. Never return any matching log text.
+LOG_PATTERNS = (
+    ('CPU_INSTRUCTION_UNSUPPORTED', r'illegal instruction|cpu (?:does not|doesn.t|must|should) support (?:avx|sse)|(?:avx2|avx512)[^\n]{0,80}(?:not supported|required|missing)'),
+    ('MEMORY_ALLOCATION_FAILED', r'outofmemoryerror|out of memory|cannot allocate memory|std::bad_alloc|memoryerror'),
+    ('DISK_FULL', r'no space left on device|errno[ :=\[]+28(?:\]|\b)|disk quota exceeded'),
+    ('CLI_ARGUMENT_INVALID', r'unrecognized arguments:|no such option:|unknown option:'),
+    ('MODEL_REVISION_NOT_FOUND', r'revisionnotfounderror|revision not found|invalid revision|revision [^\n]{0,100} not found'),
+    ('MODEL_REPOSITORY_NOT_FOUND', r'repositorynotfounderror|repository not found|model repository [^\n]{0,80} not found'),
+    ('MODEL_ARCHITECTURE_UNSUPPORTED', r'unsupported model architecture|model architectures? [^\n]{0,80} not supported|does not support model architecture'),
+    ('MODEL_CONFIG_INVALID', r'cannot load (?:model )?config|failed to load (?:model )?config|config\.json[^\n]{0,80}(?:not found|invalid)|model config[^\n]{0,80}(?:invalid|failed|error)'),
+    ('DTYPE_OR_PLATFORM_UNSUPPORTED', r'unsupported (?:dtype|data type|platform)|(?:dtype|float16|bfloat16)[^\n]{0,100}not supported|no supported device found|failed to infer device type'),
+    ('MODULE_OR_LIBRARY_IMPORT_FAILED', r'modulenotfounderror|importerror|undefined symbol|cannot open shared object file'),
+    ('KV_CACHE_INSUFFICIENT', r'kv cache[^\n]{0,120}(?:too small|insufficient|not enough|greater than)|no available memory for the cache blocks'),
+    ('DNS_RESOLUTION_FAILED', r'temporary failure in name resolution|name or service not known|failed to resolve|nodename nor servname provided'),
+    ('TLS_CERTIFICATE_FAILED', r'certificate_verify_failed|certificate verify failed|sslcertificateerror'),
+    ('NETWORK_TIMEOUT', r'connecttimeout|readtimeout|connection timed out|timed out while requesting|read timed out'),
+    ('NETWORK_CONNECTION_FAILED', r'connection refused|failed to establish a new connection|network is unreachable|connectionerror'),
+    ('ENGINE_INITIALIZATION_FAILED', r'engine core initialization failed|engine process failed to start'),
+)
+
+
+def classify_container_log(text):
+    # HTTP code alone is ambiguous: classify as Hugging Face only with Hub context.
+    if re.search(r'huggingface|hf\.co|hfhub', text, re.IGNORECASE):
+        for code in (401, 403, 429):
+            if re.search(r'(?:\b' + str(code) + r'\s+(?:client error|error|unauthorized|forbidden|too many)|'
+                         r'(?:http|status(?: code)?)[^\n0-9]{0,16}' + str(code) + r'\b)', text, re.IGNORECASE):
+                return 'HF_HTTP_' + str(code)
+    for category, pattern in LOG_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return category
+    return None
+
+
+def container_log_category(container):
+    # Docker emits container stdout and stderr separately; combine them in an
+    # unlinked temporary file, inspect a bounded tail, and never emit raw bytes.
+    try:
+        with tempfile.TemporaryFile() as output:
+            result = subprocess.run(['docker', 'logs', '--tail', '100', container],
+                                    stdout=output, stderr=subprocess.STDOUT, timeout=15)
+            if result.returncode:
+                return None
+            size = output.tell()
+            output.seek(max(0, size - LOG_LIMIT))
+            return classify_container_log(output.read(LOG_LIMIT).decode('utf-8', errors='replace'))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def container_state_category(container, component, *, timeout=False):
     """Inspect only fixed State fields; never fetch logs, Config or environment."""
     if component not in ('VLLM', 'LITELLM'):
@@ -154,7 +205,8 @@ def container_state_category(container, component, *, timeout=False):
     if oom == 'true':
         return component + '_OOM_KILLED_EXIT_' + code
     if state in ('exited', 'dead'):
-        return component + '_EXITED_' + code
+        cause = container_log_category(container)
+        return component + '_EXITED_' + code + ('_' + cause if cause else '')
     if timeout:
         return component + '_READINESS_TIMEOUT_' + state.upper()
     return None

@@ -53,10 +53,54 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
             with self.subTest(output=output), patch.object(ci.subprocess, 'run', return_value=SimpleNamespace(
                     returncode=0, stdout=output, stderr=b'secret-value')) as run:
                 self.assertEqual(ci.container_state_category('fixed-name', 'VLLM', timeout=timeout), expected)
-                args = run.call_args.args[0]
+                args = run.call_args_list[0].args[0]
                 self.assertIn('--format', args)
                 self.assertIn('{{.State.Status}} {{.State.OOMKilled}} {{.State.ExitCode}}', args)
                 self.assertNotIn('Config', ' '.join(args))
+
+    def test_known_log_errors_map_to_fixed_categories_only(self):
+        cases = [
+            ('Illegal instruction; token=secret-value', 'CPU_INSTRUCTION_UNSUPPORTED'),
+            ('RuntimeError: Cannot allocate memory', 'MEMORY_ALLOCATION_FAILED'),
+            ('OSError: [Errno 28] No space left on device', 'DISK_FULL'),
+            ('vllm serve: error: unrecognized arguments: --bad', 'CLI_ARGUMENT_INVALID'),
+            ('RevisionNotFoundError: private value', 'MODEL_REVISION_NOT_FOUND'),
+            ('RepositoryNotFoundError: private value', 'MODEL_REPOSITORY_NOT_FOUND'),
+            ('unsupported model architecture Something', 'MODEL_ARCHITECTURE_UNSUPPORTED'),
+            ('config.json was not found', 'MODEL_CONFIG_INVALID'),
+            ('float16 is not supported', 'DTYPE_OR_PLATFORM_UNSUPPORTED'),
+            ('KV cache size too small', 'KV_CACHE_INSUFFICIENT'),
+            ('Temporary failure in name resolution', 'DNS_RESOLUTION_FAILED'),
+            ('SSL CERTIFICATE_VERIFY_FAILED', 'TLS_CERTIFICATE_FAILED'),
+            ('httpx.ReadTimeout', 'NETWORK_TIMEOUT'),
+            ('Network is unreachable', 'NETWORK_CONNECTION_FAILED'),
+            ('ImportError: undefined symbol XYZ', 'MODULE_OR_LIBRARY_IMPORT_FAILED'),
+            ('Engine core initialization failed.', 'ENGINE_INITIALIZATION_FAILED'),
+            ('huggingface_hub error: 401 Client Error token=secret-value', 'HF_HTTP_401'),
+            ('https://huggingface.co/model: 403 Client Error', 'HF_HTTP_403'),
+            ('https://huggingface.co/model: HTTP status code 429', 'HF_HTTP_429'),
+        ]
+        for message, category in cases:
+            with self.subTest(category=category):
+                self.assertEqual(ci.classify_container_log(message), category)
+                self.assertNotIn('secret-value', ci.classify_container_log(message))
+        self.assertIsNone(ci.classify_container_log('some unknown secret-value'))
+        self.assertIsNone(ci.classify_container_log('unrelated service HTTP 401'))
+
+    def test_log_reader_inspects_only_bounded_tail_without_printing(self):
+        def docker_logs(args, **kwargs):
+            self.assertEqual(args, ['docker', 'logs', '--tail', '100', 'fixture'])
+            kwargs['stdout'].write(b'x' * ci.LOG_LIMIT + b'\nIllegal instruction token=secret-value')
+            return SimpleNamespace(returncode=0)
+        with patch.object(ci.subprocess, 'run', side_effect=docker_logs):
+            self.assertEqual(ci.container_log_category('fixture'), 'CPU_INSTRUCTION_UNSUPPORTED')
+
+    def test_exit_category_contains_only_safe_code_and_whitelisted_cause(self):
+        state = SimpleNamespace(returncode=0, stdout=b'exited false 1', stderr=b'secret-value')
+        with patch.object(ci.subprocess, 'run', return_value=state), \
+             patch.object(ci, 'container_log_category', return_value='MODEL_CONFIG_INVALID'):
+            self.assertEqual(ci.container_state_category('fixture', 'VLLM'),
+                             'VLLM_EXITED_1_MODEL_CONFIG_INVALID')
 
     def test_readiness_stops_immediately_when_container_exited(self):
         with patch.object(ci, 'json_request', side_effect=OSError('sensitive')) as request, \
