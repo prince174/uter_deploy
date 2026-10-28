@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       build_run_id:
-        description: Successful harden-image-artifacts run ID
+        description: Successful harden-image-artifacts or remediate-images run ID
         required: true
         type: string
 permissions:

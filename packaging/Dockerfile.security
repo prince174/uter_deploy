@@ -26,7 +26,8 @@ RUN python /runtime_rootfs.py && cp /dependency-versions.txt /runtime-rootfs/usr
 FROM scratch AS guardrail-runtime
 COPY --from=builder /runtime-rootfs /
 ENV PATH=/usr/local/bin LD_LIBRARY_PATH=/usr/local/lib HOME=/home/uter \
-    HF_HOME=/home/uter/.cache/huggingface PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UVICORN_PORT=8000
+    HF_HOME=/home/uter/.cache/huggingface PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UVICORN_PORT=8000 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 LABEL io.uter.security-overlay="2026-10-28.1"
 WORKDIR /app
 USER 10001:10001
