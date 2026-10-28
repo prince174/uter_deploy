@@ -25,6 +25,22 @@ def run(args, *, env=None):
     return p.stdout
 
 
+def stage_recovery_helpers(parent):
+    """Expose only non-secret helper code to the unprivileged volume container."""
+    directory = Path(parent) / 'recovery-code'
+    directory.mkdir(mode=0o700)
+    for name in ('recovery_volume.py', 'archive_safety.py'):
+        source = ROOT / 'scripts' / name
+        if source.is_symlink() or not source.is_file():
+            raise ValueError('Recovery helper must be a regular signed file')
+        target = directory / name
+        with source.open('rb') as src, target.open('xb') as dst:
+            shutil.copyfileobj(src, dst)
+        target.chmod(0o444)
+    directory.chmod(0o555)
+    return directory
+
+
 def restore(source_home,backup,backup_key,publisher_key,target,name,port):
     if os.name!='posix' or os.geteuid()!=0:
         raise ValueError('Compose recovery requires root on a Linux host')
@@ -50,6 +66,7 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,port):
     created_container=False
     with tempfile.TemporaryDirectory(prefix='.uter-recovery-',dir=parent) as temp:
         temp=Path(temp);stage=temp/'stage'
+        helper_code=stage_recovery_helpers(temp)
         result=recovery_preflight.preflight(source_home,backup,backup_key,publisher_key,stage)
         if result['backend']!='compose':raise ValueError('This command requires a Compose backup')
         source=stage/'runtime-staged';state=uterctl.read(source/'state.json');current=state['current']
@@ -109,7 +126,7 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,port):
                 run(['docker','--context','default','run','--rm','--network','none','--read-only',
                      '--cap-drop','ALL','--security-opt','no-new-privileges','--user',f'{uid}:{gid}','--mount',mount,
                      '--mount','type=bind,source='+str(transfer)+',target=/snapshot,readonly',
-                     '--mount','type=bind,source='+str(ROOT/'scripts')+',target=/tool/scripts,readonly',
+                     '--mount','type=bind,source='+str(helper_code)+',target=/tool/scripts,readonly',
                      '--entrypoint','python',image,'/tool/scripts/recovery_volume.py',kind,
                      '--snapshot','/snapshot','--destination','/data'])
             run(['docker','--context','default','run','-d','--name',temp_container,'--label','uter.recovery.id='+marker_id,
