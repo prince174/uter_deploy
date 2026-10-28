@@ -65,6 +65,7 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,port):
         journal=target/'recovery-operation.json'
         def record(phase):uterctl.write(journal,{'schema':1,'phase':phase,'id':marker_id,'source_backup':result['backup_id']})
         record('preparing')
+        uterctl.write(target/'install-state.json',{'status':'pending','operation':'recovery'})
         try:
             signed=target/'releases'/current['version']
             if uterctl.verify(signed,publisher_key)!=current:raise ValueError('Copied signed release changed')

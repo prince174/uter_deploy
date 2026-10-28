@@ -52,6 +52,15 @@ class ControllerTests(unittest.TestCase):
     def test_signed_bundle(self):
         self.assertEqual(u.verify(self.bundle(), self.pub)["version"], "1.0.0")
 
+    def test_incomplete_recovery_blocks_controller_mutations(self):
+        b=self.bundle()
+        u.write(self.home/'recovery-operation.json',{'phase':'starting'})
+        with patch.object(u,'deploy') as deploy:
+            with self.assertRaisesRegex(ValueError,'Recovery is incomplete'):
+                self.call('apply',b)
+            deploy.assert_not_called()
+        self.assertEqual(u.verify(b,self.pub)['version'],'1.0.0')
+
     def test_tampering(self):
         b = self.bundle()
         (b / "compose/compose.yaml").write_text("modified")

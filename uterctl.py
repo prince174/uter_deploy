@@ -84,7 +84,8 @@ def verify(folder, key_path):
         required += ['uterctl.py','requirements.txt','examples/redis.conf.example','scripts/install.py','scripts/adopt_installation.py',
                      'scripts/backup_crypto.py','scripts/backup_store.py','scripts/backup_snapshot.py',
                      'scripts/archive_safety.py','scripts/restore_backup.py','scripts/recovery_preflight.py',
-                     'scripts/recovery_volume.py','scripts/recovery_aof.py','scripts/recover_compose.py','scripts/smoke_http.py']
+                     'scripts/recovery_volume.py','scripts/recovery_aof.py','scripts/recover_compose.py',
+                     'scripts/recover_kubernetes.py','scripts/recovery_kube_volumes.py','scripts/smoke_http.py']
     for name in required:
         if not (folder / name).is_file():
             raise ValueError(f"Missing {name}")
@@ -200,6 +201,9 @@ def main(argv=None):
         print(json.dumps(state, indent=2))
         print("Recorded controller state; not a live health check.")
         return
+    recovery = home / "recovery-operation.json"
+    if args.command != "verify" and recovery.exists() and read(recovery).get("phase") != "complete":
+        raise ValueError("Recovery is incomplete; inspect its journal before controller operations")
     if not args.key:
         raise ValueError("--key required")
     if args.command == "rollback":
