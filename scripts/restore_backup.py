@@ -8,6 +8,7 @@ import posixpath
 import sys
 import tarfile
 
+sys.dont_write_bytecode = True  # Signed bundles must remain byte-for-byte immutable.
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from scripts import backup_crypto, backup_store
 from scripts.archive_safety import check_tar, check_tar_members

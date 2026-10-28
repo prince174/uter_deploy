@@ -9,6 +9,7 @@ from pathlib import Path
 import secrets
 import sys
 
+sys.dont_write_bytecode = True  # Signed bundles must remain byte-for-byte immutable.
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import uterctl
 from scripts import adopt_managed, backup_crypto

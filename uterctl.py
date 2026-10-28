@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 
+sys.dont_write_bytecode = True  # Do not alter a verified bundle during controller execution.
+
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
