@@ -44,11 +44,13 @@ def main():
     kube = ['kubectl', '--context', 'kind-' + cluster]
     registry = ROOT / 'work/registry'
     registry.mkdir(mode=0o700)
-    token = os.environ['REGISTRY_TOKEN']
-    registry_host = os.environ.get('REGISTRY_HOST', 'ghcr.io')
-    registry_user = os.environ.get('REGISTRY_USER', os.environ['GITHUB_ACTOR'])
-    auth = base64.b64encode(f'{registry_user}:{token}'.encode()).decode()
-    installer.save(registry / 'config.json', json.dumps({'auths': {('https://index.docker.io/v1/' if registry_host == 'docker.io' else registry_host): {'auth': auth}}}))
+    public = os.environ.get('PUBLIC_REGISTRY') == '1'
+    if not public:
+        token = os.environ['REGISTRY_TOKEN']
+        registry_host = os.environ.get('REGISTRY_HOST', 'ghcr.io')
+        registry_user = os.environ.get('REGISTRY_USER', os.environ['GITHUB_ACTOR'])
+        auth = base64.b64encode(f'{registry_user}:{token}'.encode()).decode()
+        installer.save(registry / 'config.json', json.dumps({'auths': {('https://index.docker.io/v1/' if registry_host == 'docker.io' else registry_host): {'auth': auth}}}))
     os.environ['DOCKER_CONFIG'] = str(registry)
     installer.save(ROOT / 'work/llm-key', '')
     try:
@@ -78,7 +80,8 @@ def main():
         if backend == 'compose':
             prepare += ['--guardrail-cpus', '2']
         else:
-            prepare += ['--context', 'kind-' + cluster, '--registry-config', registry / 'config.json']
+            prepare += ['--context', 'kind-' + cluster]
+            if not public: prepare += ['--registry-config', registry / 'config.json']
         run(prepare)
         cfg = json.loads((home / 'install.json').read_text())
         run([sys.executable, ROOT / 'scripts/install.py', 'check', '--home', home])
@@ -120,7 +123,7 @@ def main():
         assert second['audit_lines'] > first['audit_lines']
         (evidence / 'after-restart.json').write_text(json.dumps(second, indent=2))
         (evidence / 'result.json').write_text(json.dumps(dict(backend=backend, install='pass', restart='pass',
-            registry_pull='authenticated by digest', images=cfg['images'], configuration='installer generated; no runtime overrides',
+            registry_pull='anonymous by digest' if public else 'authenticated by digest', images=cfg['images'], configuration='installer generated; no runtime overrides',
             exposed_ready_endpoint='pass', restarted_services=['redis', 'agent', 'guardrail'],
             llm='deterministic HTTP fixture', judge='disabled; optional Ollama not exercised',
             kubernetes=NODE_IMAGE if backend == 'kubernetes' else None,

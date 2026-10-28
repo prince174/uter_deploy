@@ -19,8 +19,8 @@ HTML открывается локально в браузере без внеш
 
 ## Что уже проверено
 
-28.10.2026 обновлённые образы опубликованы в **приватный GHCR**. Анонимное скачивание
-запрещено; установка скачивает образы с авторизацией по неизменяемым digest.
+Образы опубликованы в **публичном GHCR** и доступны без авторизации; установка
+использует неизменяемые digest.
 В [изолированном CI](https://github.com/prince174/uter_deploy/actions/runs/40627054284)
 успешно выполнены обе установки с помощью `scripts/install.py`:
 
@@ -47,21 +47,21 @@ kind использует стандартный CNI без применения
 
 ## 1. Получить установочные файлы
 
-Нужен доступ к приватному репозиторию и registry. На Linux amd64 установите Python
-3.11+ (рекомендуется 3.12), Git и GitHub CLI. Для Compose нужны Docker и Compose >=2.30;
+На Linux amd64 установите Python 3.11+ (рекомендуется 3.12), Git и curl. Для Compose нужны Docker и Compose >=2.30;
 для Kubernetes — kubectl, kubeconfig и Helm 3.17.3. Узлы должны поддерживать linux/amd64,
 создание PVC и исходящие соединения к registry и LLM.
 
 ```bash
-gh auth login
-gh repo clone prince174/uter_deploy
+git clone https://github.com/prince174/uter_deploy.git
 cd uter_deploy
 git checkout deploy-2026.10.28-2
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p incoming
-gh release download deploy-2026.10.28-2 --repo prince174/uter_deploy \
-  --pattern 'installation-inputs.tar.gz*' --dir incoming
+curl -fL -o incoming/installation-inputs.tar.gz \
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-2/installation-inputs.tar.gz
+curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-2/installation-inputs.tar.gz.sha256
 (cd incoming && sha256sum -c installation-inputs.tar.gz.sha256)
 tar -xzf incoming/installation-inputs.tar.gz -C incoming
 ```
@@ -88,12 +88,9 @@ CPU, лимиты контейнеров суммарно 5 GiB RAM плюс з�
 Поддерживается локальный Docker context `default` с Unix socket; удалённый daemon
 для установки с bind-mount не поддерживается.
 
-Для скачивания из GHCR используйте GitHub PAT classic с `read:packages` и доступом
-к пакетам. Вход в `gh` не заменяет вход Docker. Пароль в приглашении — PAT, не пароль
-аккаунта. Ввод скрыт, токен не передавайте в аргументах процесса.
+Для публичных образов вход в GHCR и токен не требуются.
 
 ```bash
-sudo docker login ghcr.io --username YOUR_GITHUB_LOGIN
 sudo .venv/bin/python scripts/install.py prepare \
   --home /srv/uter-instance --backend compose --name uter-instance \
   --inputs "$PWD/incoming"
@@ -119,17 +116,12 @@ curl --fail http://127.0.0.1:18000/ready
 в kubeconfig установщик не меняет. Нужны права создавать namespace, Secret, ConfigMap,
 PVC, Deployment, Service и NetworkPolicy. Ingress и TLS настраиваются отдельно.
 
-Создайте отдельный файл доступа к registry:
+Публичные образы не требуют файла доступа к registry:
 
 ```bash
-REGISTRY_CONFIG_DIR="$HOME/.config/uter-registry"
-mkdir -p "$REGISTRY_CONFIG_DIR"
-chmod 700 "$REGISTRY_CONFIG_DIR"
-docker --config "$REGISTRY_CONFIG_DIR" login ghcr.io --username YOUR_GITHUB_LOGIN
 .venv/bin/python scripts/install.py prepare \
   --home "$HOME/uter-k8s" --backend kubernetes --name uter-instance \
-  --context MY_CONTEXT --inputs "$PWD/incoming" \
-  --registry-config "$REGISTRY_CONFIG_DIR/config.json"
+  --context MY_CONTEXT --inputs "$PWD/incoming"
 .venv/bin/python scripts/install.py check --home "$HOME/uter-k8s"
 .venv/bin/python scripts/install.py install --home "$HOME/uter-k8s"
 kubectl --context MY_CONTEXT -n uter-instance get pods,pvc
@@ -139,12 +131,12 @@ curl --fail http://127.0.0.1:18000/ready
 ```
 
 При отсутствии default StorageClass добавьте `prepare --storage-class YOUR_CLASS`.
-Создаются PVC Redis 2 GiB и аудита 10 GiB, Secret/ConfigMap и imagePullSecret.
+Создаются PVC Redis 2 GiB и аудита 10 GiB, Secret и ConfigMap.
 Проверенные образы содержат toxicity-модель; отдельный models PVC не нужен.
 Для дополнительных моделей — [расширенные настройки](docs/deployment.md).
 
-Файл registry должен содержать inline `auths`; credential helpers внутри Kubernetes
-не запускаются. Не передавайте общий конфиг с доступами ко всем registry.
+Если используется отдельный приватный registry, `--registry-config` принимает файл
+с inline `auths`; credential helpers внутри Kubernetes не запускаются.
 Для внешнего Ingress используется namespace `ingress-nginx`; если он другой,
 измените `ingressNamespace` в сгенерированном `values.yaml` **до** install.
 
@@ -218,11 +210,11 @@ Readiness не заменяет проверку поведения. До отк
 ## Registry и CI
 
 - `publish-images.yml`: проверка исходного CI run, SHA256 архивов и слоёв, публикация
-  трёх приватных образов GHCR, проверка запрета анонимного скачивания, обе установки.
+  трёх образов GHCR, проверка выбранной видимости, обе установки.
 - `verify-installation.yml`: проверяет установку из CI-артефакта.
 - `verify-released-installation.yml`: повторяет проверку из архива GitHub Release
   и checkout его тега; job не имеет токена доступа к исходному проекту.
-Основной и единственный используемый registry — приватный GHCR.
+Основной и единственный используемый registry — публичный GHCR.
 Docker Hub не используется. Результаты установки: [отчёт проверки](docs/registry-installation.md).
 
 CI использует только временные runner, namespace и volumes. Локальный Docker и
