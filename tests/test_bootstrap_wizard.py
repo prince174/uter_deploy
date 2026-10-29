@@ -106,6 +106,59 @@ class BootstrapTests(unittest.TestCase):
         finally:
             os.umask(previous)
 
+    def test_fresh_generated_activation_templates_are_restricted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); scripts=root/'scripts';scripts.mkdir(mode=0o700)
+            for file in (root/'requirements.txt',root/'uterctl.py',scripts/'uter_wizard.py',
+                         scripts/'install_wizard.py',scripts/'update_wizard.py'):
+                file.write_text('')
+            env=root/'.venv'; names=('activate','activate.csh','activate.fish','Activate.ps1')
+            def create(path):
+                bindir=Path(path)/'bin';bindir.mkdir(mode=0o700)
+                binary=bindir/'python3';binary.write_text('');binary.chmod(0o700)
+                for name in names:
+                    file=bindir/name;file.write_text('');file.chmod(0o777)
+            with patch.object(bootstrap.venv,'EnvBuilder',return_value=SimpleNamespace(create=create)), \
+                 patch.object(bootstrap.subprocess,'run',return_value=SimpleNamespace(returncode=0)):
+                bootstrap.bootstrap(root,env)
+            for name in names:self.assertEqual((env/'bin'/name).stat().st_mode & 0o777,0o755)
+
+    def test_generated_activator_symlink_is_rejected_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); env=root/'env';env.mkdir(mode=0o700)
+            bindir=env/'bin';bindir.mkdir(mode=0o700)
+            target=root/'target';target.write_text('');target.chmod(0o777)
+            (bindir/'activate').symlink_to(target)
+            with self.assertRaisesRegex(bootstrap.BootstrapError,'GENERATED_ENVIRONMENT_UNTRUSTED'):
+                bootstrap.protect_generated_activators(env)
+            self.assertEqual(target.stat().st_mode & 0o777,0o777)
+
+    def test_generated_activator_hardlink_is_rejected_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); env=root/'env';env.mkdir(mode=0o700)
+            bindir=env/'bin';bindir.mkdir(mode=0o700)
+            target=root/'target';target.write_text('');target.chmod(0o777)
+            os.link(target,bindir/'activate')
+            with self.assertRaisesRegex(bootstrap.BootstrapError,'GENERATED_ENVIRONMENT_UNTRUSTED'):
+                bootstrap.protect_generated_activators(env)
+            self.assertEqual(target.stat().st_mode & 0o777,0o777)
+
+    def test_existing_unsafe_env_is_rejected_without_normalizing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);scripts=root/'scripts';scripts.mkdir(mode=0o700)
+            for file in (root/'requirements.txt',root/'uterctl.py',scripts/'uter_wizard.py',
+                         scripts/'install_wizard.py',scripts/'update_wizard.py'):
+                file.write_text('')
+            env=root/'.venv';env.mkdir(mode=0o700);bindir=env/'bin';bindir.mkdir(mode=0o700)
+            binary=bindir/'python3';binary.write_text('');binary.chmod(0o700)
+            activate=bindir/'activate';activate.write_text('');activate.chmod(0o777)
+            with patch.object(bootstrap.venv,'EnvBuilder') as builder, \
+                 patch.object(bootstrap.subprocess,'run') as run:
+                with self.assertRaisesRegex(bootstrap.BootstrapError,'TREE_UNTRUSTED'):
+                    bootstrap.bootstrap(root,env)
+                builder.assert_not_called();run.assert_not_called()
+            self.assertEqual(activate.stat().st_mode & 0o777,0o777)
+
     def test_pip_failure_does_not_launch_assistant(self):
         with patch.object(bootstrap, 'bootstrap', side_effect=bootstrap.BootstrapError('DEPENDENCY_INSTALL_FAILED')), \
              patch.object(bootstrap.subprocess, 'call') as call:

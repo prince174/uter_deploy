@@ -83,6 +83,40 @@ def reject_signed_ancestor(path):
             raise BootstrapError('ENVIRONMENT_INSIDE_SIGNED_BUNDLE')
 
 
+def protect_generated_activators(environment):
+    """Remove unsafe write bits from venv's own freshly copied templates only.
+
+    CPython may explicitly restore mode 0777 on activation templates regardless
+    of umask. This runs only for a new private venv; never follow links, mutate
+    hardlinks, or relax the checks for an existing environment.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+    bin_fd = None
+    try:
+        bin_fd = os.open(Path(environment)/'bin', flags)
+        directory = os.fstat(bin_fd)
+        if directory.st_uid != os.geteuid() or directory.st_mode & 0o022:
+            raise BootstrapError('GENERATED_ENVIRONMENT_UNTRUSTED')
+        for name in ('activate', 'activate.csh', 'activate.fish', 'Activate.ps1'):
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=bin_fd)
+            except FileNotFoundError:
+                continue
+            try:
+                info = os.fstat(fd)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                        or info.st_nlink != 1):
+                    raise BootstrapError('GENERATED_ENVIRONMENT_UNTRUSTED')
+                os.fchmod(fd, stat.S_IMODE(info.st_mode) & ~0o022)
+            finally:
+                os.close(fd)
+    except OSError:
+        raise BootstrapError('GENERATED_ENVIRONMENT_UNTRUSTED') from None
+    finally:
+        if bin_fd is not None:
+            os.close(bin_fd)
+
+
 @contextmanager
 def private_umask():
     previous = os.umask(0o077)
@@ -115,6 +149,7 @@ def bootstrap(root, environment):
                 venv.EnvBuilder(with_pip=True, symlinks=False).create(environment)
             except Exception:
                 raise BootstrapError('ENVIRONMENT_CREATION_FAILED_INSPECT_DIRECTORY') from None
+            protect_generated_activators(environment)
         trusted_directory(environment, private=True)
         trusted_tree(environment, allow_internal_links=True)
         python = trusted_file(environment / 'bin/python3')
