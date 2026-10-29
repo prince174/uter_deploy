@@ -29,6 +29,63 @@ NODE = 'kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f
 OLD, NEW = 'deploy-2026.10.28', 'deploy-2026.10.28-2'
 
 
+def published_update_command(python, old_bundle, new_bundle, home, public, backup_root, backup_key):
+    """Invoke the target release's signed updater against the old installation."""
+    return [python, new_bundle/'scripts/update_installation.py', '--home', home,
+            '--bundle', new_bundle, '--publisher-key', public, '--backup-root', backup_root,
+            '--backup-key', backup_key, '--current-bundle', old_bundle, '--create-backup-key']
+
+
+def evidence_releases(published, environ):
+    if not published:
+        return OLD, NEW
+    return (environ.get('UTER_CI_OLD_TAG', 'deploy-2026.10.28-signed-3'),
+            environ.get('UTER_CI_NEW_TAG', 'deploy-2026.10.28-signed-4'))
+
+
+def image_digest_evidence(old_images, new_images):
+    """Same image digests cannot evidence a product-image migration."""
+    old = {name: reference.rsplit('@', 1)[-1] for name, reference in old_images.items()}
+    new = {name: reference.rsplit('@', 1)[-1] for name, reference in new_images.items()}
+    return {'product_image_digests_unchanged': old == new,
+            'arbitrary_data_migration': 'not_verified'}
+
+
+def runner_guard(environ, root, *, os_name=None, euid=None):
+    """Strict mode is required by the generic published-release workflow."""
+    os_name = os.name if os_name is None else os_name
+    if environ.get('GITHUB_ACTIONS') != 'true' or os_name != 'posix':
+        raise ValueError('Disposable GitHub-hosted runner required')
+    if environ.get('UTER_CI_STRICT_RUNNER') == 'true':
+        if euid is None:
+            euid = os.geteuid()
+        if (environ.get('RUNNER_ENVIRONMENT') != 'github-hosted' or environ.get('RUNNER_OS') != 'Linux'
+                or not environ.get('GITHUB_WORKSPACE') or Path(environ['GITHUB_WORKSPACE']).resolve() != Path(root).resolve()
+                or euid != 0):
+            raise ValueError('Disposable GitHub-hosted Linux runner with matching workspace required')
+
+
+def assert_compose_project_absent(name):
+    """Refuse an existing project before creating or cleaning test resources."""
+    if not re.fullmatch(r'[a-z][a-z0-9-]{0,38}[a-z0-9]', name):
+        raise ValueError('Invalid disposable Compose project name')
+    for kind in ('container', 'network', 'volume'):
+        command = ['docker', '--context', 'default', kind, 'ls']
+        if kind == 'container':
+            command.append('--all')
+        command += ['--quiet', '--filter', 'label=com.docker.compose.project=' + name]
+        if call(command).strip():
+            raise ValueError('Disposable Compose project already exists')
+
+
+def remove_created_container(container_id):
+    if container_id is None:
+        return
+    if not re.fullmatch(r'[0-9a-f]{64}', container_id):
+        raise ValueError('Invalid disposable container ID')
+    subprocess.run(['docker', 'rm', '-f', container_id], capture_output=True)
+
+
 # Never persist arbitrary Kubernetes messages, pod names, environment, or logs:
 # these may contain credentials even when the values are not known to this script.
 POD_PHASES = frozenset(('Pending', 'Running', 'Succeeded', 'Failed', 'Unknown'))
@@ -122,6 +179,9 @@ def finish_disposable_test(home, evidence, cfg, backend, kube, name, cluster, to
 def call(args, *, input=None, env=None):
     p = subprocess.run([str(a) for a in args], input=input, capture_output=True, env=env)
     if p.returncode:
+        if os.environ.get('UTER_CI_STRICT_RUNNER') == 'true':
+            # Do not trust even tool-prefixed errors: they can contain secrets.
+            raise RuntimeError(f'Command failed ({p.returncode}); details withheld')
         lines=p.stderr.decode(errors='replace').splitlines()
         safe=[line for line in lines if line.startswith(('uterctl:', 'adopt:', 'restore export:'))]
         suffix=('; '+safe[-1]) if safe else '; details withheld to avoid leaking runtime secrets'
@@ -201,8 +261,12 @@ def verify_active_images(backend, name, home, cfg, kube, images, publication):
 
 
 def main():
-    if os.environ.get('GITHUB_ACTIONS') != 'true' or os.name != 'posix':
-        raise SystemExit('Disposable GitHub-hosted runner required')
+    try:
+        runner_guard(os.environ, ROOT)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    # All resource checks and cleanup must address the same disposable daemon.
+    os.environ['DOCKER_CONTEXT'] = 'default'
     backend = os.environ['BACKEND']
     if backend not in ('compose','kubernetes'): raise ValueError('invalid backend')
     work=ROOT/'work'; evidence=work/'adopt-backup-evidence'; evidence.mkdir(parents=True,exist_ok=True)
@@ -213,7 +277,10 @@ def main():
     installer = selection['installer'] if published else ROOT/'scripts/install.py'
     old_inputs = work/'input'/('published-old' if published else OLD)
     new_inputs = work/'input'/('published-new' if published else NEW)
-    home=work/'managed'; registry=work/'registry'; registry.mkdir(mode=0o700)
+    home=work/'managed'; registry=work/'registry'
+    if home.exists() or home.is_symlink():
+        raise ValueError('Disposable installation home already exists')
+    registry.mkdir(mode=0o700)
     token=auth=''
     if not published:
         token=os.environ['REGISTRY_TOKEN']; user=os.environ['REGISTRY_USER']
@@ -226,6 +293,8 @@ def main():
     kube=['kubectl','--context','kind-'+cluster]
     cfg=None
     try:
+        if backend == 'compose':
+            assert_compose_project_absent(name)
         # Runner-only network: no local daemon, no external paid model or API token.
         print('Stage: start isolated Ollama',flush=True)
         call(['docker','run','-d','--name','uter-real-llm-ci','--network','host','-e','OLLAMA_HOST=0.0.0.0:11434','-e','OLLAMA_CONTEXT_LENGTH=2048',OLLAMA]);ollama=True
@@ -330,9 +399,7 @@ finally:
         backup_key=key_dir/'backup.key'
         print('Stage: automatic adoption, encrypted backup and upgrade',flush=True)
         if published:
-            output=call([sys.executable,bundles[0]/'scripts/update_installation.py','--home',home,
-                         '--bundle',bundles[1],'--publisher-key',public,'--backup-root',backup_root,
-                         '--backup-key',backup_key,'--current-bundle',bundles[0],'--create-backup-key'])
+            output=call(published_update_command(sys.executable,bundles[0],bundles[1],home,public,backup_root,backup_key))
             updated=parse_update_output(output)
         else:
             updated=update_installation.update(home,bundles[1],public,backup_root,backup_key,
@@ -372,11 +439,15 @@ finally:
         # Restore the RDB into a separate disposable Redis, never into the active workload.
         restored_name='uter-ci-restored-redis'
         os.chown(exported/'redis.rdb',999,1000);os.chmod(exported/'redis.rdb',0o400)
+        restored_id=None
         try:
-            call(['docker','run','-d','--name',restored_name,'--network','none','--user','999:1000',
+            created_id=call(['docker','run','-d','--name',restored_name,'--network','none','--user','999:1000',
                   '--mount','type=bind,source='+str(exported/'redis.rdb')+',target=/snapshot.rdb,readonly',
                   '--entrypoint','redis-server',redis_image,'--dir','/','--dbfilename','snapshot.rdb',
-                  '--save','','--appendonly','no','--bind','127.0.0.1'])
+                  '--save','','--appendonly','no','--bind','127.0.0.1']).decode('ascii').strip()
+            if not re.fullmatch(r'[0-9a-f]{64}', created_id):
+                raise ValueError('Invalid disposable container ID')
+            restored_id=created_id
             for attempt in range(30):
                 value=subprocess.run(['docker','exec',restored_name,'redis-cli','--raw','GET','ci:upgrade:sentinel'],capture_output=True)
                 if value.returncode==0 and value.stdout.strip()==b'uter-upgrade-check': break
@@ -392,7 +463,7 @@ finally:
             assert 0<ttl<=3600, 'Redis snapshot did not retain expiry'
             assert call(['docker','exec',restored_name,'redis-cli','--raw','-n','1','GET','ci:upgrade:other-db']).strip()==b'retained'
         finally:
-            subprocess.run(['docker','rm','-f',restored_name],capture_output=True)
+            remove_created_container(restored_id)
         if backend=='kubernetes':
             from scripts import recovery_kubernetes_api_ci
             recovery_kubernetes_api_ci.test(home,backup_dir,backup_key,public,audit_before,
@@ -413,7 +484,8 @@ finally:
         publication=json.loads((new_inputs/'publication.json').read_text())
         verify_active_images(backend,name,home,cfg,kube,state['current']['images'],publication)
         assert any(x['name']==MODEL for x in request('http://127.0.0.1:11434/api/ps')['models'])
-        result={'backend':backend,'old_release':('deploy-2026.10.28-signed-3' if published else OLD),'new_release':(os.environ.get('UTER_CI_NEW_TAG','deploy-2026.10.28-signed-4') if published else NEW),'model':MODEL,'model_digest':MODEL_DIGEST,
+        old_tag,new_tag=evidence_releases(published,os.environ)
+        result={'backend':backend,'old_release':old_tag,'new_release':new_tag,'old_version':old_version,'new_version':new_version,'model':MODEL,'model_digest':MODEL_DIGEST,
                 'real_inference':'pass','install_py':'pass','adoption':'pass','receipt_bypass_rejected':'synthetic-only' if published else 'pass',
                 'encrypted_backup':'pass','authenticated_recovery_preflight':'pass',
                 'backup_export':'pass','redis_rdb_validation':'pass','redis_restore':'pass','backup_audit_matches':'pass',
@@ -424,6 +496,7 @@ finally:
                 'audit_lines_after':audit_after['lines'],'test_signing_key':'publisher public key; no private key' if published else 'ephemeral CI only',
                 'full_restore_to_workloads':'production recovery command and isolated installation passed',
                 'data_epoch':'declared by signed releases; synthetic data only' if published else 'CI assumption, not a production compatibility declaration'}
+        result.update(image_digest_evidence(json.loads((old_inputs/'images.json').read_text()),state['current']['images']))
         (evidence/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
     finally:
         if forward: forward.terminate();forward.wait(timeout=10)
