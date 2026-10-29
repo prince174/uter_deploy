@@ -104,10 +104,14 @@ def socket_reachable(ip):
 
 class Firewall:
     """Use uniquely named chains, without flushing or changing unrelated rules."""
-    def __init__(self, name, env=None):
+    def __init__(self, name, env=None, registry_addresses=()):
         if not re.fullmatch(r'UDOFF[0-9A-F]{12}', name):
             raise ValueError('Invalid test chain')
         self.name, self.env = name, env
+        self.registry_addresses = tuple(registry_addresses)
+        if any(ipaddress.ip_address(address).version != 4 or not ipaddress.ip_address(address).is_global
+               for address in self.registry_addresses):
+            raise ValueError('Invalid registry address')
         self.created = []
         self.attached = []
 
@@ -122,7 +126,11 @@ class Firewall:
                 self.created.append(tool)
                 for destination in allowed:
                     self.command(tool, '-A', self.name, '-d', destination, '-j', 'RETURN')
-                self.command(tool, '-A', self.name, '-j', 'REJECT')
+                if tool == 'iptables':
+                    for destination in self.registry_addresses:
+                        self.command(tool, '-A', self.name, '-d', destination, '-p', 'tcp', '--dport', '443',
+                                     '-m', 'comment', '--comment', 'registry-ipv4', '-j', 'REJECT')
+                self.command(tool, '-A', self.name, '-m', 'comment', '--comment', 'other', '-j', 'REJECT')
                 self.command(tool, '-I', 'OUTPUT', '1', '-m', 'owner', '--uid-owner', '0', '-j', self.name)
                 self.attached.append(tool)
             return self
@@ -130,13 +138,20 @@ class Firewall:
             self.close()
             raise
 
-    def reject_count(self):
-        result = self.command('iptables', '-L', self.name, '-n', '-v', '-x').stdout.decode('ascii', 'replace')
-        matches = [int(match.group(1)) for line in result.splitlines()
-                   if (match := re.match(r'^\s*(\d+)\s+\d+\s+REJECT\b', line))]
-        if len(matches) != 1:
-            raise StageError('FIREWALL_COUNTER_UNAVAILABLE')
-        return matches[0]
+    def reject_counts(self):
+        counts = {}
+        for tool, expected in (('iptables', {'registry-ipv4': len(self.registry_addresses), 'other': 1}),
+                               ('ip6tables', {'other': 1})):
+            result = self.command(tool, '-L', self.name, '-n', '-v', '-x').stdout.decode('ascii', 'replace')
+            rows = [line for line in result.splitlines() if re.match(r'^\s*\d+\s+\d+\s+REJECT\b', line)]
+            for label, number in expected.items():
+                matches = [re.match(r'^\s*(\d+)', line) for line in rows if f'/* {label} */' in line]
+                if len(matches) != number:
+                    raise StageError('FIREWALL_COUNTER_UNAVAILABLE')
+                counts[('v4-' if tool == 'iptables' else 'v6-')+label] = sum(int(m.group(1)) for m in matches)
+            if len(rows) != sum(expected.values()):
+                raise StageError('FIREWALL_COUNTER_UNAVAILABLE')
+        return counts
 
     def close(self):
         failed = False
@@ -179,6 +194,23 @@ def check_trace(path):
     values = Path(path).read_text(encoding='ascii').splitlines()
     if 'PULL_COMMAND' in values or 'UP_OTHER' in values or 'UP_PULL_NEVER' not in values:
         raise StageError('UNEXPECTED_DOCKER_COMMAND')
+
+
+def report_firewall_delta(before, after):
+    if before.keys() != after.keys() or any(after[k] < before[k] for k in before):
+        raise StageError('FIREWALL_COUNTER_INVALID')
+    # These are host root-origin packet counts, never attributed to dockerd.
+    print('Blocked root-origin packets during install: ' + ', '.join(
+        f'{key}={after[key]-before[key]}' for key in sorted(before)), flush=True)
+
+
+def network_failure(result):
+    # Classify locally without displaying the daemon's output, which can contain URLs.
+    text = result.stderr.lower()
+    return result.returncode != 0 and any(marker in text for marker in (
+        b'connection refused', b'network is unreachable', b'no route to host',
+        b'i/o timeout', b'context deadline exceeded', b'connection reset by peer',
+        b'server misbehaving', b'temporary failure in name resolution'))
 
 
 def make_wrapper(directory, docker, trace):
@@ -415,21 +447,22 @@ def main():
 
             # The exact root/IPv4 path used by dockerd must be demonstrably blocked.
             cli_env['UTER_CI_FORBID_UP'] = '0'
-            with Firewall(chain, env) as firewall:
-                initial = firewall.reject_count()
-                if socket_reachable(reachable) or firewall.reject_count() <= initial:
+            with Firewall(chain, env, addresses) as firewall:
+                initial = firewall.reject_counts()
+                socket_blocked = not socket_reachable(reachable)
+                after_socket = firewall.reject_counts()
+                if not socket_blocked or after_socket['v4-registry-ipv4'] <= initial['v4-registry-ipv4']:
                     raise StageError('FIREWALL_NOT_EFFECTIVE')
-                before_pull = firewall.reject_count()
                 blocked = run([docker, '--context', 'default', 'pull',
-                               REGISTRY+'/prince174/uter-agent@sha256:'+'0'*64],
+                               images['agent']],
                               'BLOCKED_PULL_TEST_FAILED', env=env, timeout=90, allow_failure=True)
-                if blocked.returncode == 0 or firewall.reject_count() <= before_pull:
+                if not network_failure(blocked):
                     raise StageError('DOCKER_REGISTRY_BLOCK_NOT_PROVEN')
-                before_install = firewall.reject_count()
+                print('Registry IPv4 socket blocked and cached-image pull failed with a network error', flush=True)
+                before_install = firewall.reject_counts()
                 run([executable, installer, 'install', '--home', home, '--offline'],
                     'OFFLINE_INSTALL_FAILED', env=cli_env, timeout=600)
-                if firewall.reject_count() != before_install:
-                    raise StageError('UNEXPECTED_DAEMON_EGRESS_ATTEMPT')
+                report_firewall_delta(before_install, firewall.reject_counts())
                 check_trace(trace)
                 credentials = json.loads((home/'credentials.json').read_text())
                 result = smoke_http.check('http://127.0.0.1:18000', 'admin', credentials['admin'])

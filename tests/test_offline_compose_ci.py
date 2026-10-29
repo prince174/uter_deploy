@@ -76,13 +76,34 @@ class OfflineComposeCITests(unittest.TestCase):
         self.assertIn(['ip6tables','-w','-X',chain],calls)
 
     def test_reject_count_must_be_unambiguous(self):
-        fw=ci.Firewall('UDOFF'+'C'*12)
-        table=b'Chain UDOFF (1 references)\n pkts bytes target prot opt in out source destination\n 3 180 REJECT all -- * * 0.0.0.0/0 0.0.0.0/0\n'
-        with patch.object(fw, 'command', return_value=subprocess.CompletedProcess([],0,table,b'')):
-            self.assertEqual(fw.reject_count(),3)
+        fw=ci.Firewall('UDOFF'+'C'*12, registry_addresses=('8.8.8.8', '1.1.1.1'))
+        v4=b' 3 180 REJECT tcp -- * * 0.0.0.0/0 8.8.8.8 /* registry-ipv4 */\n 2 100 REJECT tcp -- * * 0.0.0.0/0 1.1.1.1 /* registry-ipv4 */\n 7 420 REJECT all -- * * 0.0.0.0/0 0.0.0.0/0 /* other */\n'
+        v6=b' 9 540 REJECT all * * ::/0 ::/0 /* other */\n'
+        def table(tool, *args):
+            return subprocess.CompletedProcess([],0,v4 if tool == 'iptables' else v6,b'')
+        with patch.object(fw, 'command', side_effect=table):
+            self.assertEqual(fw.reject_counts(),{'v4-registry-ipv4':5,'v4-other':7,'v6-other':9})
         with patch.object(fw, 'command', return_value=subprocess.CompletedProcess([],0,b'unknown',b'')):
             with self.assertRaisesRegex(ci.StageError,'COUNTER_UNAVAILABLE'):
-                fw.reject_count()
+                fw.reject_counts()
+
+    def test_counters_are_reported_without_attribution_or_addresses(self):
+        before={'v4-registry-ipv4':2,'v4-other':3,'v6-other':4}
+        with patch('builtins.print') as printer:
+            ci.report_firewall_delta(before, {'v4-registry-ipv4':3,'v4-other':5,'v6-other':4})
+        line=printer.call_args.args[0]
+        self.assertIn('root-origin',line)
+        self.assertNotIn('daemon',line)
+        self.assertIn('v4-other=2',line)
+        with self.assertRaisesRegex(ci.StageError,'COUNTER_INVALID'):
+            ci.report_firewall_delta(before, {'v4-registry-ipv4':0,'v4-other':5,'v6-other':4})
+
+    def test_blocked_pull_requires_a_network_error_without_echoing_stderr(self):
+        good=subprocess.CompletedProcess([],1,b'',b'connection refused secret.example')
+        bad=subprocess.CompletedProcess([],1,b'',b'manifest unknown')
+        self.assertTrue(ci.network_failure(good))
+        self.assertFalse(ci.network_failure(bad))
+        self.assertFalse(ci.network_failure(subprocess.CompletedProcess([],0,b'',b'connection refused')))
 
     def test_registry_private_or_mixed_addresses_fail_closed(self):
         public=[(2,1,6,'',('140.82.112.33',443))]
