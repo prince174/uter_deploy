@@ -22,7 +22,8 @@ class SignedToolImmutabilityTests(unittest.TestCase):
                           'scripts/extract_signed_bundle.py', 'scripts/update_installation.py',
                           'scripts/preflight.py', 'scripts/fetch_release.py', 'scripts/install_recovery.py',
                           'scripts/backup_installation.py', 'scripts/workload_preflight.py',
-                          'scripts/render_backup_systemd.py'):
+                          'scripts/render_backup_systemd.py', 'scripts/bootstrap_wizard.py', 'scripts/uter_wizard.py',
+                          'scripts/install_wizard.py', 'scripts/update_wizard.py'):
                 with self.subTest(entry=entry):
                     subprocess.run([sys.executable, str(root / entry), '--help'], check=True,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

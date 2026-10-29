@@ -34,7 +34,8 @@ def build(manifest, output, key, *, source_root=ROOT):
                      'recovery_kube_volumes.py','extract_signed_bundle.py','managed_smoke.py','adopt_managed.py',
                      'update_installation.py','smoke_http.py','extract_release_inputs.py','preflight.py',
                      'fetch_release.py','install_recovery.py','backup_installation.py',
-                     'workload_preflight.py','render_backup_systemd.py'):
+                     'workload_preflight.py','render_backup_systemd.py',
+                     'bootstrap_wizard.py','uter_wizard.py','install_wizard.py','update_wizard.py'):
             shutil.copy2(source_root/'scripts'/name,scripts/name)
     (output / "empty.env").write_text("# Deliberately empty; runtime env files are explicit.\n")
     raw = json.dumps(inventory(output), sort_keys=True, indent=2).encode()
