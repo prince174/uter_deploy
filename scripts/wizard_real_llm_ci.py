@@ -333,43 +333,70 @@ def completion(base, model, *, token=None, extra_headers=None):
         raise Failure('COMPLETION_INVALID')
 
 
+def diagnose_project_containers(name):
+    """Report only fixed container-state facts for the temporary test project."""
+    fmt = ('{{index .Config.Labels "com.docker.compose.project"}}|{{.State.Status}}|'
+           '{{.State.OOMKilled}}|{{.State.ExitCode}}|{{.RestartCount}}|'
+           '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')
+    for role in ('guardrail', 'agent', 'redis'):
+        try:
+            rc, raw = command(['docker', '--context', 'default', 'container', 'inspect', '--format', fmt,
+                               f'{name}-{role}-1'], 'INSPECT_FAILED', timeout=30, allowed_failure=True)
+            if rc: raise ValueError
+            project, state, oom, exit_code, restarts, health = raw.decode('ascii').strip().split('|')
+            if (project != name or state not in {'created','restarting','running','removing','paused','exited','dead'}
+                    or oom not in {'true','false'} or health not in {'none','starting','healthy','unhealthy'}
+                    or not exit_code.isdecimal() or not 0 <= int(exit_code) <= 255
+                    or not restarts.isdecimal() or not 0 <= int(restarts) <= 1000):
+                raise ValueError
+            print(f'CONTAINER_DIAGNOSTIC={role.upper()}_{state.upper()}_OOM_{oom.upper()}_'
+                  f'EXIT_{exit_code}_RESTARTS_{restarts}_HEALTH_{health.upper()}', file=sys.stderr)
+        except Exception:
+            print('CONTAINER_DIAGNOSTIC='+role.upper()+'_UNAVAILABLE', file=sys.stderr)
+
+
 def diagnose_compose_acceptance(home, port):
     """Probe only our own installation; never emit credentials or response bodies."""
-    stage = 'STATE'
+    def probe(stage, url, **kwargs):
+        try:
+            return local_json(url, timeout=60, **kwargs)
+        except urllib.error.HTTPError as exc:
+            status = exc.code; exc.close()
+            print('ACCEPTANCE_DIAGNOSTIC='+stage+'_HTTP_'+(str(status) if status in
+                  (400,401,403,404,408,409,422,429,500,502,503,504) else 'OTHER'), file=sys.stderr)
+        except (socket.timeout, TimeoutError):
+            print('ACCEPTANCE_DIAGNOSTIC='+stage+'_TIMEOUT', file=sys.stderr)
+        except Exception:
+            print('ACCEPTANCE_DIAGNOSTIC='+stage+'_FAILED', file=sys.stderr)
+        return None
+
     try:
         state = json.loads((home/'install-state.json').read_text(encoding='utf-8'))
         if state != {'status': 'ready', 'acceptance': 'not-run'}:
             print('ACCEPTANCE_DIAGNOSTIC=STATE_UNAVAILABLE', file=sys.stderr)
             return
         base = 'http://127.0.0.1:'+str(port)
-        stage = 'READY'
-        local_json(base+'/ready', timeout=60)
-        stage = 'CREDENTIALS'
+        probe('READY', base+'/ready')
         credentials = json.loads((home/'credentials.json').read_text(encoding='utf-8'))
-        stage = 'AUTH'
-        token = local_json(base+'/auth/token', {'username':'admin', 'password':credentials['admin']},
-                           form=True, timeout=60)['access_token']
-        stage = 'HEALTH'
-        health = local_json(base+'/health', token=token, timeout=60)
+        auth = probe('AUTH', base+'/auth/token', payload={'username':'admin', 'password':credentials['admin']},
+                     form=True)
+        if not isinstance(auth, dict) or not isinstance(auth.get('access_token'), str): return
+        token = auth['access_token']
+        health = probe('HEALTH', base+'/health', token=token)
+        if not isinstance(health, dict): return
         for code, value in (('UPSTREAM', health.get('upstream_available')),
                             ('AGENT', health.get('agent_runtime_available')),
                             ('TOXICITY', health.get('toxicity_guard', {}).get('available'))):
             if value is not True:
                 print('ACCEPTANCE_DIAGNOSTIC='+code+'_NOT_READY', file=sys.stderr)
                 return
-        stage = 'CHAT'
-        answer = local_json(base+'/chat', {'message':'Explain safe software deployment.',
-                            'user_id':'installation-smoke'}, token=token, timeout=60)
+        answer = probe('CHAT', base+'/chat', payload={'message':'Explain safe software deployment.',
+                       'user_id':'installation-smoke'}, token=token)
+        if not isinstance(answer, dict): return
         print('ACCEPTANCE_DIAGNOSTIC=CHAT_'+('PASS' if answer.get('blocked') is False else 'BLOCKED_OR_INVALID'),
               file=sys.stderr)
-    except urllib.error.HTTPError as exc:
-        status = exc.code; exc.close()
-        print('ACCEPTANCE_DIAGNOSTIC='+stage+'_HTTP_'+(str(status) if status in
-              (400,401,403,404,408,409,422,429,500,502,503,504) else 'OTHER'), file=sys.stderr)
-    except (socket.timeout, TimeoutError):
-        print('ACCEPTANCE_DIAGNOSTIC='+stage+'_TIMEOUT', file=sys.stderr)
     except Exception:
-        print('ACCEPTANCE_DIAGNOSTIC='+stage+'_FAILED', file=sys.stderr)
+        print('ACCEPTANCE_DIAGNOSTIC=INSPECTION_FAILED', file=sys.stderr)
 
 
 def forward_ready(context, name, port):
@@ -500,6 +527,7 @@ def main():
                 run_signed_wizard(common.bootstrap_command(sys.executable, checkout, environment, 'install', values))
             except WizardFailure as exc:
                 if backend == 'compose' and exc.wizard_code == 'ACCEPTANCE_FAILED':
+                    diagnose_project_containers(name)
                     diagnose_compose_acceptance(home, llm.UTER_PORT)
                 raise
             install_finished = True

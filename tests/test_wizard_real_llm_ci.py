@@ -22,6 +22,7 @@ OPERATION = 'b' * 32
 class IsolatedWizardLlmTests(unittest.TestCase):
     def test_completion_errors_are_sanitized(self):
         error = urllib.error.HTTPError('http://example/secret-canary', 503, 'secret-canary', {}, None)
+        self.addCleanup(error.close)
         with patch.object(driver, 'local_json', side_effect=error):
             with self.assertRaisesRegex(driver.Failure, '^COMPLETION_HTTP_503$'):
                 driver.completion('http://127.0.0.1:1234', 'test')
@@ -38,6 +39,33 @@ class IsolatedWizardLlmTests(unittest.TestCase):
                 driver.diagnose_compose_acceptance(home, 18000)
             self.assertEqual(output.getvalue(), 'ACCEPTANCE_DIAGNOSTIC=CHAT_PASS\n')
             self.assertNotIn('secret-canary', output.getvalue())
+
+    def test_ready_503_continues_to_check_health_without_body(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            (home/'install-state.json').write_text(json.dumps({'status':'ready','acceptance':'not-run'}))
+            (home/'credentials.json').write_text(json.dumps({'admin':'secret-canary'}))
+            error = urllib.error.HTTPError('http://127.0.0.1/secret-canary', 503, 'secret-canary', {}, None)
+            self.addCleanup(error.close)
+            responses = [error, {'access_token':'secret-canary'}, {'upstream_available':False}]
+            output = io.StringIO()
+            with contextlib.redirect_stderr(output), patch.object(driver, 'local_json', side_effect=responses):
+                driver.diagnose_compose_acceptance(home, 18000)
+            self.assertIn('ACCEPTANCE_DIAGNOSTIC=READY_HTTP_503', output.getvalue())
+            self.assertIn('ACCEPTANCE_DIAGNOSTIC=UPSTREAM_NOT_READY', output.getvalue())
+            self.assertNotIn('secret-canary', output.getvalue())
+
+    def test_container_diagnostic_uses_fixed_fields_and_rejects_other_project(self):
+        output = io.StringIO()
+        name = 'uter-wizard-test'
+        results = [(0, (name+'|running|false|0|0|healthy').encode()),
+                   (0, b'other|running|false|0|0|secret-canary'), (1,b'')]
+        with contextlib.redirect_stderr(output), patch.object(driver, 'command', side_effect=results):
+            driver.diagnose_project_containers(name)
+        self.assertIn('GUARDRAIL_RUNNING_OOM_FALSE_EXIT_0_RESTARTS_0_HEALTH_HEALTHY', output.getvalue())
+        self.assertIn('AGENT_UNAVAILABLE', output.getvalue())
+        self.assertIn('REDIS_UNAVAILABLE', output.getvalue())
+        self.assertNotIn('secret-canary', output.getvalue())
 
     def test_wizard_diagnostic_is_bounded_and_only_fixed_codes_are_reported(self):
         output = io.StringIO()

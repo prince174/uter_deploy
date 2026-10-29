@@ -311,8 +311,9 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
                         ci.completion('http://127.0.0.1:1', 'test', stage=stage)
                     self.assertEqual(caught.exception.category, stage + '_COMPLETION_TIMEOUT')
                     self.assertNotIn('private-value', str(caught.exception))
-        with patch.object(ci, 'json_request', side_effect=urllib.error.HTTPError(
-                'http://example', 503, 'private-value', {}, None)):
+        error = urllib.error.HTTPError('http://example', 503, 'private-value', {}, None)
+        self.addCleanup(error.close)
+        with patch.object(ci, 'json_request', side_effect=error):
             with self.assertRaises(ci.DiagnosticError) as caught:
                 ci.completion('http://127.0.0.1:1', 'test', stage='LITELLM')
             self.assertEqual(caught.exception.category, 'LITELLM_COMPLETION_HTTP_503')
@@ -330,10 +331,12 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
         for status, body, expected in cases:
             with self.subTest(status=status, expected=expected):
                 error = urllib.error.HTTPError('http://example', status, 'secret-value', {}, io.BytesIO(body))
+                self.addCleanup(error.close)
                 result = ci.http_failure_category('LITELLM', error)
                 self.assertIn(expected, result)
                 self.assertNotIn('secret-value', result)
         error = urllib.error.HTTPError('http://example', 404, 'secret-value', {}, io.BytesIO(b'not found'))
+        self.addCleanup(error.close)
         self.assertEqual(ci.http_failure_category('LITELLM', error, log_probe=lambda: 'DNS_RESOLUTION_FAILED'),
                          'LITELLM_COMPLETION_HTTP_404_NOT_FOUND_TEXT_LOG_DNS_RESOLUTION_FAILED')
 
@@ -344,6 +347,7 @@ class CPURealLLMWorkflowTests(unittest.TestCase):
                 return super().read(size)
         body = Bounded(b'x' * (ci.HTTP_BODY_LIMIT + 5))
         error = urllib.error.HTTPError('http://example', 500, 'ignored', {}, body)
+        self.addCleanup(error.close)
         self.assertEqual(ci.http_failure_category('UTER', error), 'UTER_COMPLETION_HTTP_500')
         self.assertEqual(body.requested_size, ci.HTTP_BODY_LIMIT)
 
