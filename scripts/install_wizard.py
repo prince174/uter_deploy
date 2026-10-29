@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 import uterctl
 from scripts import extract_release_inputs, fetch_release, preflight, workload_preflight
 
-DEFAULT_TAG = 'deploy-2026.10.29-signed-2'
+DEFAULT_TAG = 'deploy-2026.10.29-signed-3'
 DEFAULT_VERSION = '0.1.6'
 FINGERPRINT = re.compile(r'[0-9a-fA-F]{64}\Z')
 NAME = re.compile(r'[a-z][a-z0-9-]{0,38}[a-z0-9]\Z')
@@ -329,6 +329,14 @@ def stop_forward(proc):
 
 def smoke(bundle, home, port):
     """Run authenticated acceptance without putting passwords in arguments or logs."""
+    def diagnostic(stage, category):
+        stages = {'READY', 'AUTH', 'HEALTH', 'CHAT'}
+        categories = {'TIMEOUT', 'NETWORK_FAILED', 'INVALID_RESPONSE', 'NOT_READY',
+                      'BLOCKED_OR_INVALID', 'FAILED', 'HTTP_OTHER'} | {
+            'HTTP_' + str(code) for code in (400, 401, 403, 404, 408, 409, 422, 429, 500, 502, 503, 504)}
+        if stage in stages and category in categories:
+            print('ACCEPTANCE_DIAGNOSTIC=' + stage + '_' + category, file=sys.stderr, flush=True)
+
     try:
         raw = workload_preflight.read_trusted_file(home/'credentials.json', 65536,
                                                    secret=True, error='CREDENTIALS_INVALID')
@@ -345,7 +353,7 @@ def smoke(bundle, home, port):
         urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({}),
                                                                   preflight.NoRedirect()))
         try:
-            result = module.check(f'http://127.0.0.1:{port}', 'admin', password)
+            result = module.check(f'http://127.0.0.1:{port}', 'admin', password, diagnostic=diagnostic)
         finally:
             urllib.request._opener = original
         if not isinstance(result, dict) or result.get('chat') != 'pass':

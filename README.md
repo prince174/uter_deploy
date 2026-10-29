@@ -7,16 +7,17 @@ Kubernetes/Helm. Для запуска нужны готовые образы, �
 Если LiteLLM и vLLM уже работают в инфраструктуре, начните с
 [подробной инструкции подключения и развёртывания](docs/corporate-litellm-deployment.md).
 В ней описаны сетевые требования, входные данные, Compose, Kubernetes, проверки и
-ограничения автоматизации. Этот документ подготовлен для подписанного выпуска `0.1.6`;
-тег и ссылки для скачивания заработают после публикации его артефактов.
+ограничения автоматизации. Инструкция использует выпуск
+`deploy-2026.10.29-signed-3` / `0.1.6`. Перед установкой проверьте его подпись
+и отпечаток издателя по независимому каналу. Ранее опубликован [кандидат signed-2](https://github.com/prince174/uter_deploy/releases/tag/deploy-2026.10.29-signed-2).
 
 Для интерактивной установки или обновления используйте [мастер Uter](docs/wizard.md).
 Он подготавливает Python-окружение, спрашивает параметры и проверяет подписанный
-комплект. Для Compose на Linux, после публикации релиза и независимой проверки
-отпечатка издателя, пример запуска из нового root-owned checkout:
+комплект. Для Compose на Linux после независимой проверки отпечатка издателя
+пример запуска из нового root-owned checkout:
 
 ```bash
-sudo git clone --branch deploy-2026.10.29-signed-2 --single-branch \
+sudo git clone --branch deploy-2026.10.29-signed-3 --single-branch \
   https://github.com/prince174/uter_deploy.git /srv/uter-deploy-tooling
 cd /srv/uter-deploy-tooling
 sudo python3 -I scripts/bootstrap_wizard.py
@@ -44,9 +45,20 @@ HTML открывается локально в браузере без внеш
 
 ## Что уже проверено
 
-Приведённые ниже результаты относятся к ранее опубликованным выпускам. Результат
-проверки `0.1.6`, включая новые мастера, необходимо установить отдельно после его
-публикации; исторические прогоны не подтверждают новый комплект.
+В [изолированном CI](https://github.com/prince174/uter_deploy/actions/runs/40911282844)
+для Compose и Kubernetes проверены установка мастером кандидата `signed-2` / `0.1.6`, обновление
+`0.1.5 → 0.1.6`, зашифрованная резервная копия и восстановление. Также проверены
+отказ при неверном отпечатке издателя и запрет неподдерживаемого перехода. Для
+установки использовалась тестовая HTTP-заглушка LLM, а для обновления — отдельный
+Ollama с реальным выводом модели. Образы продукта в обеих версиях одинаковы;
+совместимость произвольных данных и миграция между разными сборками не проверены.
+
+Отдельно [проверена установка `signed-2` / `0.1.6` в Kubernetes](https://github.com/prince174/uter_deploy/actions/runs/40912395581/job/123583550008) с настоящими
+LiteLLM и CPU vLLM: прошли авторизованная проверка мастера и запрос через Uter.
+Ветка Compose в этом прогоне завершилась с ошибкой, поэтому данный прогон не
+подтверждает такую установку для Compose.
+
+Следующие результаты относятся к ранее опубликованным выпускам.
 Чистая установка `0.1.5` проверена в [Compose и Kubernetes](https://github.com/prince174/uter_deploy/actions/runs/40867520137).
 [Обновление `0.1.4 → 0.1.5` и восстановление](https://github.com/prince174/uter_deploy/actions/runs/40867520151)
 прошли с реальной LLM и тестовыми данными. В обеих версиях использованы одинаковые
@@ -107,22 +119,22 @@ kind использует стандартный CNI без применения
 ```bash
 git clone https://github.com/prince174/uter_deploy.git
 cd uter_deploy
-git checkout deploy-2026.10.29-signed-2
+git checkout deploy-2026.10.29-signed-3
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p incoming signed
 curl -fL -o signed/publisher-public.pem \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-2/publisher-public.pem
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-3/publisher-public.pem
 curl -fL -o signed/signed-bundle.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-2/signed-bundle.tar.gz
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-3/signed-bundle.tar.gz
 echo '65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2  signed/publisher-public.pem' | sha256sum -c -
 .venv/bin/python scripts/extract_signed_bundle.py \
   --archive signed/signed-bundle.tar.gz --key signed/publisher-public.pem \
   --output signed/0.1.6
 curl -fL -o incoming/installation-inputs.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-2/installation-inputs.tar.gz
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-3/installation-inputs.tar.gz
 curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-2/installation-inputs.tar.gz.sha256
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-3/installation-inputs.tar.gz.sha256
 .venv/bin/python signed/0.1.6/scripts/extract_release_inputs.py \
   incoming/installation-inputs.tar.gz incoming/installation-inputs.tar.gz.sha256 incoming/inputs \
   --bundle signed/0.1.6 --key signed/publisher-public.pem
@@ -131,16 +143,19 @@ curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
 Команда проверяет подпись комплекта и подписанный SHA-256 архива **до** его
 распаковки. Установочные данные содержат `images.json`, `policy.toml`,
 `model_profiles.toml` и метаданные публикации. Установщик и шаблоны ниже берутся
-из проверенного комплекта. Для выпуска `0.1.6` предполагается `data_epoch = 1` и
-переход только с `0.1.5`; переходы с остальных управляемых версий не заявлены.
-Образы продукта в `0.1.5` и `0.1.6` одинаковы, поэтому такой переход не проверяет
-миграцию между разными сборками. Сверьте подпись и декларацию совместимости в
+из проверенного комплекта. В подписанном манифесте выпуска `0.1.6` указаны
+`data_epoch = 1` и переход только с `0.1.5`; переходы с остальных управляемых
+версий не заявлены.
+Для `signed-2` и `signed-3` используется одна версия `0.1.6`: переход между
+ними не заявлен, не используйте описанный сценарий как обновление `0.1.6 → 0.1.6`.
+В проверенных `0.1.5` и `signed-2` образы продукта одинаковы, поэтому такой
+переход не проверяет миграцию между разными сборками. Сверьте подпись и декларацию совместимости в
 опубликованном комплекте до обновления.
 
 Из доверенного checkout с `scripts/fetch_release.py` выпуск можно также получить одной командой:
 
 ```bash
-.venv/bin/python scripts/fetch_release.py --release deploy-2026.10.29-signed-2 \
+.venv/bin/python scripts/fetch_release.py --release deploy-2026.10.29-signed-3 \
   --version 0.1.6 --fingerprint "$UTER_PUBLISHER_SHA256" --output ./verified-release
 ```
 

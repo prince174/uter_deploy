@@ -375,7 +375,7 @@ class InstallWizardTests(unittest.TestCase):
                 bundle=root/'bundle';(bundle/'scripts').mkdir(parents=True)
                 (bundle/'scripts/smoke_http.py').write_text(
                     'import urllib.request\n'
-                    'def check(base, user, password):\n'
+                    'def check(base, user, password, *, diagnostic=None):\n'
                     '    req=urllib.request.Request(base, headers={"Authorization":"Bearer "+password})\n'
                     '    urllib.request.urlopen(req, timeout=3)\n'
                     '    return {"chat":"pass"}\n')
