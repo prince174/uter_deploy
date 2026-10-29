@@ -1,8 +1,11 @@
 """Extract a signed bundle into a new private directory after full verification."""
 import argparse
+import contextlib
+import gzip
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import stat
 import sys
 import tarfile
 import tempfile
@@ -13,6 +16,64 @@ import uterctl
 
 MAX_FILES=10000
 MAX_EXPANDED=1024*1024*1024
+# Tar headers, padding and small metadata add overhead beyond the file contents.
+MAX_TAR_STREAM=MAX_EXPANDED+32*1024*1024
+MAX_TAR_READ=2*1024*1024
+
+
+class BoundedTarReader:
+    """Bound logical output and tarfile reads before compressed metadata is parsed."""
+    def __init__(self, stream):
+        self.stream=stream
+        self.work=0
+        self.work_limit=4*MAX_TAR_STREAM
+
+    def tell(self):
+        return self.stream.tell()
+
+    def charge(self, amount):
+        if amount < 0 or self.work + amount > self.work_limit:
+            raise ValueError('Decompressed tar processing exceeds limit')
+        self.work += amount
+
+    def read(self, size=-1):
+        if size < 0 or size > MAX_TAR_READ:
+            raise ValueError('Tar metadata or read request exceeds limit')
+        if self.tell()+size > MAX_TAR_STREAM:
+            raise ValueError('Decompressed tar stream exceeds limit')
+        self.charge(size)
+        return self.stream.read(size)
+
+    def seek(self, offset, whence=os.SEEK_SET):
+        current=self.tell()
+        if whence == os.SEEK_SET:
+            target=offset
+        elif whence == os.SEEK_CUR:
+            target=current+offset
+        else:
+            raise ValueError('Unsupported tar seek')
+        if target < 0 or target > MAX_TAR_STREAM:
+            raise ValueError('Decompressed tar stream exceeds limit')
+        # A backward gzip seek may rewind and decompress again from the start.
+        self.charge(target if target < current else target-current)
+        return self.stream.seek(target, os.SEEK_SET)
+
+
+@contextlib.contextmanager
+def bounded_tar(archive):
+    """Open gzip or raw tar without allowing special-file, link or metadata bombs."""
+    flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_NONBLOCK',0)
+    fd=os.open(archive,flags)
+    with contextlib.ExitStack() as stack:
+        source=stack.enter_context(os.fdopen(fd,'rb'))
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError('Archive must be a regular file')
+        magic=source.read(6);source.seek(0)
+        if magic.startswith(b'BZh') or magic.startswith(b'\xfd7zXZ\x00'):
+            raise ValueError('Only gzip or uncompressed tar bundles are supported')
+        stream=stack.enter_context(gzip.GzipFile(fileobj=source,mode='rb')) if magic.startswith(b'\x1f\x8b') else source
+        tar=stack.enter_context(tarfile.open(fileobj=BoundedTarReader(stream),mode='r:'))
+        yield tar
 
 
 def extract(archive,key,destination):
@@ -22,7 +83,7 @@ def extract(archive,key,destination):
     parent=destination.parent.resolve(strict=True);destination=parent/destination.name
     with tempfile.TemporaryDirectory(prefix='.uter-bundle-',dir=parent) as tmp:
         staged=Path(tmp)/'bundle';staged.mkdir(mode=0o700)
-        with tarfile.open(archive,'r:*') as tar:
+        with bounded_tar(archive) as tar:
             members=[];total=0
             for m in tar:
                 total+=m.size
