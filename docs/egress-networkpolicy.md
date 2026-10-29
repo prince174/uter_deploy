@@ -97,9 +97,23 @@ Chart формирует для него `/32`; CIDR, IPv6 и FQDN в `ipv4` н�
 в `<home>/values.yaml` и снова выполните `install.py check`.
 
 Для уже установленного Helm release отключение — изменение сетевой защиты.
-В отдельном согласованном окне выполните Helm upgrade с тем же проверенным chart
-текущей версии, указав текущий context и namespace, и отключив только параметр
-`networkPolicy.egress.enabled` через `--reuse-values --set`. Убедитесь, что
+В отдельном согласованном окне укажите точный Kubernetes context и имя установки
+(`NAME`, одновременно имя namespace), а также путь `CHART` к проверенному chart
+**текущей установленной версии**. До принятия установки в управление это
+`<home>/charts/uter`; после принятия — chart текущего подписанного выпуска в
+`<home>/releases/<текущая-версия>/charts/uter`. Не подставляйте chart другой
+версии и не продолжайте при незавершённом обновлении или восстановлении.
+
+```bash
+CONTEXT='укажите-context'
+NAME='укажите-имя-установки'
+CHART='/укажите/путь/к/проверенному/charts/uter'
+helm --kube-context "$CONTEXT" upgrade "$NAME" "$CHART" \
+  --namespace "$NAME" --reuse-values \
+  --set networkPolicy.egress.enabled=false --wait --timeout 5m
+```
+
+Убедитесь, что
 применены именно три ingress-политики без трёх egress-политик, и проверьте
 работоспособность. Сохраните `enabled: false` также в файле конфигурации,
 который будет использоваться при дальнейшем обновлении. Для новой установки это
