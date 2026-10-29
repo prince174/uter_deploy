@@ -157,6 +157,11 @@ class FirstInstallDiagnosticsTests(unittest.TestCase):
             m.run_readonly(command, timeout=0.2)
         self.assertLess(time.monotonic() - started, 5)
 
+    def test_readonly_command_accepts_explicit_environment_without_printing_it(self):
+        result = m.run_readonly([sys.executable, '-c', 'import os; print(os.environ["FIXTURE_NAME"])'],
+                                env={'FIXTURE_NAME': 'fixture-value'}, timeout=3)
+        self.assertEqual(result.strip(), 'fixture-value')
+
     @unittest.skipUnless(os.name == 'posix', 'POSIX process group isolation')
     def test_descendant_holding_pipe_is_terminated_and_reported(self):
         child = 'import subprocess,sys; subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"])'

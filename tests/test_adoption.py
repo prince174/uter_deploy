@@ -21,17 +21,25 @@ class AdoptionTests(unittest.TestCase):
         digest=ref.split('@')[1]
         manifest={'images':{'guardrail':ref},'image_config_ids':{'guardrail':'sha256:'+'b'*64}}
         cfg={'backend':'compose','context':'default','name':'uter-test'}
-        running={'State':{'Running':True},'Config':{'Image':ref,'Labels':{'com.docker.compose.project':'uter-test','com.docker.compose.service':'guardrail'}},'Image':digest}
+        running={'running':True,'config_image':ref,'project':'uter-test','service':'guardrail','image':digest}
         image={'Id':digest,'Descriptor':{'digest':digest}}
+        commands=[]
         def responses(command,env=None):
-            if 'context' in command and 'inspect' in command:return json.dumps([{'Endpoints':{'docker':{'Host':'unix:///var/run/docker.sock'}}}]).encode()
-            if 'ps' in command:return b'container-id'
-            return json.dumps([image if 'image' in command else running]).encode()
+            commands.append(command)
+            if 'context' in command and 'inspect' in command:return json.dumps('unix:///var/run/docker.sock').encode()
+            if 'ps' in command:return b'a'*64
+            if 'image' in command and '.Descriptor.Digest' in ' '.join(command):return json.dumps(image['Descriptor']['digest']).encode()
+            if 'image' in command:return json.dumps(image['Id']).encode()
+            return json.dumps(running).encode()
         with patch.dict('os.environ',{},clear=True),patch.object(adopt_installation.installer,'commands',return_value=(['compose'],{})),patch.object(adopt_installation,'output',side_effect=responses):
             adopt_installation.verify_live(Path('.'),cfg,manifest)
             image['Descriptor']['digest']='sha256:'+'c'*64
             with self.assertRaisesRegex(ValueError,'configuration ID mismatch'):
                 adopt_installation.verify_live(Path('.'),cfg,manifest)
+        for command in commands:
+            if 'inspect' in command:
+                self.assertIn('--format',command)
+                self.assertNotIn('Config.Env',' '.join(command))
 
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)

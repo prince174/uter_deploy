@@ -13,14 +13,14 @@ import tempfile
 sys.dont_write_bytecode = True  # Signed bundles must remain byte-for-byte immutable.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import uterctl
-from scripts import install as installer
+from scripts import install as installer, install_recovery
 
 
 def output(command, env=None):
-    p = subprocess.run([str(x) for x in command], env=env, capture_output=True)
-    if p.returncode:
-        raise ValueError(f'{command[0]} inspection failed; output withheld because it may contain secrets')
-    return p.stdout
+    try:
+        return install_recovery.run_readonly([str(x) for x in command], timeout=30, env=env).encode('utf-8')
+    except install_recovery.DiagnosticError:
+        raise ValueError('Runtime inspection failed; output withheld because it may contain secrets') from None
 
 
 def same_tree(left, right):
@@ -33,42 +33,59 @@ def verify_live(home, cfg, manifest):
     if cfg['backend'] == 'compose':
         if cfg['context'] != 'default' or os.environ.get('DOCKER_HOST'):
             raise ValueError('Only the local default Docker context is supported')
-        host = json.loads(output(['docker', '--context', 'default', 'context', 'inspect', 'default']))[0]['Endpoints']['docker']['Host']
-        if not host.startswith('unix://'):
+        host = json.loads(output(['docker', '--context', 'default', 'context', 'inspect', 'default',
+                                  '--format', '{{json .Endpoints.docker.Host}}']))
+        if not isinstance(host, str) or not host.startswith('unix://'):
             raise ValueError('A local Unix Docker socket is required')
         for service, ref in expected.items():
             ids = output(cmd + ['ps', '-q', service], env).decode().split()
-            if len(ids) != 1: raise ValueError(f'Expected exactly one running {service} container')
-            running = json.loads(output(['docker', '--context', 'default', 'inspect', ids[0]]))[0]
-            image = json.loads(output(['docker', '--context', 'default', 'image', 'inspect', ref]))[0]
-            labels = running['Config'].get('Labels') or {}
-            if (not running['State']['Running'] or labels.get('com.docker.compose.project') != cfg['name'] or
-                    labels.get('com.docker.compose.service') != service or running['Config']['Image'] != ref or
-                    running['Image'] != image['Id']):
+            if len(ids) != 1 or not re.fullmatch(r'[0-9a-f]{12,64}', ids[0]):
+                raise ValueError(f'Expected exactly one running {service} container')
+            # Never request Config.Env or full inspect data: env contains secrets.
+            fmt = ('{"running":{{json .State.Running}},'
+                   '"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
+                   '"service":{{json (index .Config.Labels "com.docker.compose.service")}},'
+                   '"config_image":{{json .Config.Image}},"image":{{json .Image}}}')
+            running = json.loads(output(['docker', '--context', 'default', 'inspect', '--format', fmt, ids[0]]))
+            image_id = json.loads(output(['docker', '--context', 'default', 'image', 'inspect', '--format', '{{json .Id}}', ref]))
+            if (not isinstance(running, dict) or not isinstance(image_id, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id)
+                    or running.get('running') is not True or running.get('project') != cfg['name']
+                    or running.get('service') != service or running.get('config_image') != ref
+                    or running.get('image') != image_id):
                 raise ValueError(f'Running {service} does not match the signed image')
-            if manifest.get('image_config_ids') and image['Id'] != manifest['image_config_ids'][service]:
+            if manifest.get('image_config_ids') and image_id != manifest['image_config_ids'][service]:
                 # Docker's containerd image store may expose the manifest digest as Id.
                 # Accept that representation only when the descriptor and signed ref agree.
                 digest = ref.rsplit('@', 1)[-1]
-                descriptor = image.get('Descriptor') or {}
-                if image['Id'] != digest or descriptor.get('digest') != digest:
+                if image_id != digest:
+                    raise ValueError(f'Image configuration ID mismatch for {service}')
+                descriptor = json.loads(output(['docker', '--context', 'default', 'image', 'inspect', '--format',
+                                                '{{json .Descriptor.Digest}}', ref]))
+                if descriptor != digest:
                     raise ValueError(f'Image configuration ID mismatch for {service}')
     else:
         kube = ['kubectl', '--context', cfg['context'], '-n', cfg['name']]
-        pods = json.loads(output(kube + ['get', 'pods', '-o', 'json']))['items']
         for service, ref in expected.items():
-            deployment = json.loads(output(kube + ['get', 'deployment', cfg['name']+'-'+service, '-o', 'json']))
-            if deployment['spec']['template']['spec']['containers'][0]['image'] != ref:
+            def field(kind, name, expression):
+                return output(kube + ['get', kind, name, '-o', 'jsonpath=' + expression]).decode().strip()
+            if field('deployment', cfg['name']+'-'+service, '{.spec.template.spec.containers[0].image}') != ref:
                 raise ValueError(f'Deployment {service} does not match the signed image')
-            podset = [p for p in pods if p['metadata'].get('labels', {}).get('app.kubernetes.io/instance') == cfg['name']
-                      and p['metadata'].get('labels', {}).get('app.kubernetes.io/name') == service
-                      and not p['metadata'].get('deletionTimestamp')]
+            selector = 'app.kubernetes.io/instance='+cfg['name']+',app.kubernetes.io/name='+service
+            names = output(kube + ['get', 'pods', '-l', selector, '-o',
+                                   'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}']).decode().splitlines()
+            if len(names) > 1000 or any(len(n) > 253 or not re.fullmatch(r'[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?', n) for n in names):
+                raise ValueError(f'Invalid {service} pod inventory')
+            podset = [n for n in names if not field('pod', n, '{.metadata.deletionTimestamp}')]
             expected_ids = {ref.split('@', 1)[1]}
             if manifest.get('image_config_ids'): expected_ids.add(manifest['image_config_ids'][service])
-            valid = [c for p in podset if p['spec']['containers'][0]['image'] == ref
-                     for c in p.get('status', {}).get('containerStatuses', []) if c.get('ready')
-                     and any(c.get('imageID', '').endswith(x) for x in expected_ids)]
-            if len(podset) != 1 or len(valid) != 1:
+            if len(podset) != 1:
+                raise ValueError(f'Expected one ready {service} pod with signed registry or configuration digest')
+            pod = podset[0]
+            image = field('pod', pod, '{.spec.containers[0].image}')
+            prefix = '{.status.containerStatuses[?(@.name=="' + service + '")]'
+            ready = field('pod', pod, prefix + '.ready}')
+            image_id = field('pod', pod, prefix + '.imageID}')
+            if image != ref or ready != 'true' or not any(image_id.endswith(x) for x in expected_ids):
                 raise ValueError(f'Expected one ready {service} pod with signed registry or configuration digest')
 
 

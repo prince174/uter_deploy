@@ -86,13 +86,13 @@ def inspect_local(home, expected_backend, expected_name, expected_context):
             'managed_state_exists': (path / 'state.json').exists()}
 
 
-def run_readonly(command, timeout=15):
+def run_readonly(command, timeout=15, env=None):
     """Read bounded output without logging stderr or allowing a hung child to persist."""
     if os.name != 'posix':
         raise DiagnosticError('POSIX_RUNTIME_INSPECTION_REQUIRED')
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                   bufsize=0, start_new_session=True)
+                                   bufsize=0, start_new_session=True, env=env)
     except OSError:
         raise DiagnosticError('RUNTIME_QUERY_UNAVAILABLE') from None
     data = bytearray()
