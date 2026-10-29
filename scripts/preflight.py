@@ -60,10 +60,12 @@ def same_origin(left, right):
 def read_key(path):
     """Reject links, non-files, oversized files and group/world-readable keys."""
     try:
-        if Path(path).is_symlink():
+        # Reject special files before opening. O_NONBLOCK also protects against
+        # a regular file being replaced by a FIFO between lstat and open.
+        if not stat.S_ISREG(Path(path).lstat().st_mode):
             raise CheckFailure('KEY_FILE_INVALID')
         # O_NOFOLLOW protects the final path component where supported.
-        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
         descriptor = os.open(path, flags)
         with os.fdopen(descriptor, 'rb') as source:
             info = os.fstat(source.fileno())

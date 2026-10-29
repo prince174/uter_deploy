@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 import ssl
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -163,6 +165,34 @@ class PreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(m.CheckFailure, '^KEY_FILE_INVALID$') as exc:
             m.read_key(self.key)
         self.assertNotIn('sensitive', str(exc.exception))
+
+    @unittest.skipUnless(os.name == 'posix' and hasattr(os, 'mkfifo') and hasattr(os, 'O_NONBLOCK'), 'POSIX FIFO')
+    def test_fifo_and_replacement_race_fail_without_blocking(self):
+        fifo = self.path / 'fifo'
+        os.mkfifo(fifo, 0o600)
+        program = r'''
+import importlib.util, sys
+from pathlib import Path
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('pf', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+for simulate_race in (False, True):
+    try:
+        if simulate_race:
+            info = Path(sys.argv[3]).lstat()
+            with patch.object(m.Path, 'lstat', return_value=info):
+                m.read_key(Path(sys.argv[2]))
+        else:
+            m.read_key(Path(sys.argv[2]))
+    except m.CheckFailure as error:
+        assert str(error) == 'KEY_FILE_INVALID'
+    else:
+        raise AssertionError('FIFO was accepted')
+'''
+        result = subprocess.run([sys.executable, '-c', program, str(Path(m.__file__)), str(fifo), str(self.key)],
+                                capture_output=True, text=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_context_cannot_be_an_option(self):
         with patch.object(m.shutil, 'which', return_value='/usr/bin/tool'), patch.object(m, 'run_command') as run:
