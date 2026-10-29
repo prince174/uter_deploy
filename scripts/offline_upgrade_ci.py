@@ -1,0 +1,173 @@
+"""Exercise a published Compose upgrade with registry egress blocked, only in hosted CI.
+
+The upstream is a deterministic HTTP fixture, not a real model. The selected
+images and both release bundles are authenticated by release_upgrade_preflight_ci.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import shutil
+import signal
+import sys
+import tempfile
+import threading
+from http.server import ThreadingHTTPServer
+
+sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import uterctl
+from scripts import offline_compose_ci as ci, backup_crypto, backup_store, restore_backup, smoke_http
+from scripts.published_pair_ci import parse_update_output
+
+
+def digest_tree(path):
+    """Fingerprint installation contents without printing configuration or secrets."""
+    digest = hashlib.sha256()
+    for item in sorted(Path(path).rglob('*')):
+        if item.is_symlink():
+            raise ci.StageError('UNEXPECTED_INSTALLATION_SYMLINK')
+        digest.update(str(item.relative_to(path)).encode() + b'\0')
+        if item.is_file():
+            digest.update(hashlib.sha256(item.read_bytes()).digest())
+    return digest.digest()
+
+
+def update_command(python, old, new, key, home, backup_root, backup_key):
+    return [python, new/'scripts/update_installation.py', '--home', home, '--bundle', new,
+            '--publisher-key', key, '--backup-root', backup_root, '--backup-key', backup_key,
+            '--current-bundle', old, '--create-backup-key', '--offline']
+
+
+def workload_identity(docker, resources, env):
+    records = []
+    for container in sorted(resources['container']):
+        raw = ci.run([docker, '--context', 'default', 'inspect', '--format',
+                      '{{.Id}} {{.Image}} {{.State.Running}} {{.State.StartedAt}} {{.RestartCount}}', container],
+                     'WORKLOAD_INSPECTION_FAILED', env=env).stdout
+        records.append(raw)
+    return tuple(records)
+
+
+def main():
+    ci.ci_only()
+    workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+    if workspace != ROOT or os.environ.get('RUNNER_OS') != 'Linux':
+        raise ci.StageError('DISPOSABLE_GITHUB_HOSTED_RUNNER_REQUIRED')
+    work = workspace/'work'
+    old, new = work/'pair/old/bundle', work/'pair/new/bundle'
+    public = work/'pair/old/publisher-public.pem'
+    manifests = [uterctl.verify(bundle, public) for bundle in (old, new)]
+    if [m['version'] for m in manifests] != ['0.1.4', '0.1.5']:
+        raise ci.StageError('UNEXPECTED_RELEASE_PAIR')
+    docker = shutil.which('docker')
+    if not docker or not shutil.which('iptables') or not shutil.which('ip6tables'):
+        raise ci.StageError('REQUIRED_TOOL_MISSING')
+    project = 'uter-offline-ci-' + secrets.token_hex(6)
+    chain = 'UDOFF' + secrets.token_hex(6).upper()
+    with tempfile.TemporaryDirectory(prefix='offline-upgrade-', dir=work) as tmp:
+        stage = Path(tmp); registry = stage/'registry'; registry.mkdir(mode=0o700)
+        env = os.environ.copy()
+        for name in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_AUTH_CONFIG'):
+            env.pop(name, None)
+        env['DOCKER_CONFIG'] = str(registry)
+        ci.daemon_is_local_root(docker, env)
+        if any(ci.owned_resources(docker, project, env).values()):
+            raise ci.StageError('TEST_PROJECT_ALREADY_EXISTS')
+        addresses = ci.public_registry_ipv4()
+        reachable = next((ip for ip in addresses if ci.socket_reachable(ip)), None)
+        if not reachable:
+            raise ci.StageError('REGISTRY_BASELINE_UNREACHABLE')
+        gateway = ci.bridge_gateway(docker, env)
+        fixture = ThreadingHTTPServer((gateway, 0), ci.Fixture)
+        thread = threading.Thread(target=fixture.serve_forever, daemon=True); thread.start()
+        home = stage/'installation'; key = stage/'empty-key'; key.write_text(''); key.chmod(0o600)
+        backup_root = stage/'backups'; backup_root.mkdir(mode=0o700)
+        backup_key = stage/'backup.key'
+        wrapper_dir = stage/'bin'; wrapper_dir.mkdir()
+        trace = stage/'docker-operations'; trace.write_text(''); trace.chmod(0o600)
+        ci.make_wrapper(wrapper_dir, docker, trace)
+        cli_env = env.copy(); cli_env['PATH'] = str(wrapper_dir)+os.pathsep+env.get('PATH', '')
+        installer = old/'scripts/install.py'
+        updater = update_command(sys.executable, old, new, public, home, backup_root, backup_key)
+        try:
+            for ref in sorted({r for m in manifests for r in m['images'].values()}):
+                ci.run([docker, '--context', 'default', 'pull', ref], 'ANONYMOUS_IMAGE_PULL_FAILED', env=env)
+            ci.run([sys.executable, installer, 'prepare', '--home', home, '--backend', 'compose', '--name', project,
+                    '--inputs', work/'input/published-old', '--llm-url', f'http://{gateway}:{fixture.server_port}/v1',
+                    '--llm-model', 'fixture-model', '--llm-key-file', key, '--allow-http-llm', '--guardrail-cpus', '2'],
+                   'PREPARE_FAILED', env=cli_env)
+            ci.run([sys.executable, installer, 'check', '--home', home], 'CHECK_FAILED', env=cli_env)
+            # The old published installer predates --offline; the network block
+            # applies to the subsequent update, after the initial installation.
+            ci.run([sys.executable, installer, 'install', '--home', home], 'INSTALL_FAILED', env=cli_env, timeout=600)
+            credentials = json.loads((home/'credentials.json').read_text())
+            if smoke_http.check('http://127.0.0.1:18000', 'admin', credentials['admin']).get('chat') != 'pass':
+                raise ci.StageError('INITIAL_SMOKE_FAILED')
+
+            # Remove one reference only on the disposable runner. If a running
+            # container keeps it resolvable, fail rather than fake the condition.
+            missing = manifests[1]['images']['agent']
+            ci.run([docker, '--context', 'default', 'image', 'rm', '-f', missing], 'IMAGE_REMOVE_FAILED', env=env)
+            if ci.run([docker, '--context', 'default', 'image', 'inspect', missing], 'IMAGE_INSPECT_FAILED',
+                      env=env, allow_failure=True).returncode == 0:
+                raise ci.StageError('IMAGE_STILL_RESOLVABLE')
+            before = digest_tree(home); resources = ci.owned_resources(docker, project, env)
+            identity = workload_identity(docker, resources, env)
+            attempt = ci.run(updater, 'MISSING_IMAGE_CHECK_FAILED', env=cli_env, allow_failure=True, timeout=180)
+            if (attempt.returncode == 0 or b'Offline image preflight failed' not in attempt.stderr
+                    or digest_tree(home) != before or ci.owned_resources(docker, project, env) != resources
+                    or workload_identity(docker, resources, env) != identity
+                    or backup_key.exists() or any(backup_root.iterdir())):
+                raise ci.StageError('MISSING_IMAGE_NOT_REJECTED_SAFELY')
+            ci.run([docker, '--context', 'default', 'pull', missing], 'ANONYMOUS_IMAGE_PULL_FAILED', env=env)
+            print('Missing local image rejected before installation changes', flush=True)
+
+            # The fixture is on one exact bridge address, never an RFC1918 wildcard.
+            ci.PRIVATE_V4 = ('127.0.0.0/8', gateway+'/32')
+            with ci.Firewall(chain, env, addresses) as firewall:
+                before = firewall.reject_counts()
+                if ci.socket_reachable(reachable) or firewall.reject_counts()['v4-registry-ipv4'] <= before['v4-registry-ipv4']:
+                    raise ci.StageError('FIREWALL_NOT_EFFECTIVE')
+                blocked = ci.run([docker, '--context', 'default', 'pull', missing], 'BLOCKED_PULL_TEST_FAILED',
+                                 env=env, timeout=90, allow_failure=True)
+                if not ci.network_failure(blocked):
+                    raise ci.StageError('DOCKER_REGISTRY_BLOCK_NOT_PROVEN')
+                trace.write_text('')
+                result = ci.run(updater, 'OFFLINE_UPGRADE_FAILED', env=cli_env, timeout=900)
+                updated = parse_update_output(result.stdout)
+                if updated.get('version') != '0.1.5':
+                    raise ci.StageError('UPGRADE_VERSION_MISMATCH')
+                ci.check_trace(trace)
+                state = uterctl.read(home/'state.json')
+                if state.get('current') != manifests[1] or state.get('pending') is not None:
+                    raise ci.StageError('UPGRADE_STATE_MISMATCH')
+                backup = Path(updated['backup'])
+                metadata = backup_store.verify_set(backup, backup_crypto.read_key(backup_key), home=home,
+                                                   site=uterctl.site_config(home), version='0.1.4')
+                if metadata['id'] != updated['backup_id']:
+                    raise ci.StageError('BACKUP_ID_MISMATCH')
+                restore_backup.export(backup, backup_key, stage/'export')
+                ci.run([docker, '--context', 'default', 'run', '--rm', '--pull', 'never', '--network', 'none',
+                        '--user', '0:0', '--mount', 'type=bind,source='+str(stage/'export/redis.rdb')+',target=/snapshot.rdb,readonly',
+                        '--entrypoint', 'redis-check-rdb', manifests[0]['images']['redis'], '/snapshot.rdb'],
+                       'BACKUP_REDIS_INVALID', env=env)
+                if smoke_http.check('http://127.0.0.1:18000', 'admin', credentials['admin']).get('chat') != 'pass':
+                    raise ci.StageError('UPGRADE_SMOKE_FAILED')
+                print('Signed offline upgrade, authenticated backup export and fixture smoke passed', flush=True)
+        finally:
+            try:
+                ci.cleanup(docker, project, env)
+            finally:
+                fixture.shutdown(); fixture.server_close(); thread.join(timeout=10)
+
+
+if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    try:
+        main()
+    except (Exception, KeyboardInterrupt) as exc:
+        print('Offline upgrade CI failed:', str(exc) if isinstance(exc, ci.StageError) else type(exc).__name__, file=sys.stderr)
+        sys.exit(1)

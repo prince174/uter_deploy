@@ -1,0 +1,56 @@
+name: Verify published offline Compose upgrade
+on:
+  workflow_dispatch:
+    inputs:
+      old_tag:
+        description: Signed published 0.1.4 release tag
+        type: string
+        required: true
+        default: deploy-2026.10.28-signed-5
+      new_tag:
+        description: Signed published 0.1.5 release tag
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  offline-compose-upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      OLD_TAG: ${{ inputs.old_tag }}
+      NEW_TAG: ${{ inputs.new_tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download signed public releases
+        shell: bash
+        run: |
+          for tag in "$OLD_TAG" "$NEW_TAG"; do
+            [[ "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || exit 1
+          done
+          [[ "$OLD_TAG" != "$NEW_TAG" ]]
+          for side in old new; do
+            mkdir -p "work/pair/$side"
+            if [[ "$side" == old ]]; then tag="$OLD_TAG"; else tag="$NEW_TAG"; fi
+            for file in signed-bundle.tar.gz publisher-public.pem installation-inputs.tar.gz installation-inputs.tar.gz.sha256; do
+              curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+                --connect-timeout 20 --max-time 180 --max-filesize 134217728 \
+                -o "work/pair/$side/$file" "https://github.com/prince174/uter_deploy/releases/download/$tag/$file"
+            done
+          done
+      - name: Verify signatures, fingerprints, hashes and release tags
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/python scripts/release_upgrade_preflight_ci.py \
+            --old-tag "$OLD_TAG" --new-tag "$NEW_TAG" --old-version 0.1.4 --new-version 0.1.5
+      - name: Test missing image and update with registry egress blocked
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = Linux
+          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_RUN_ID,GITHUB_EVENT_NAME,GITHUB_REPOSITORY,GITHUB_WORKSPACE,RUNNER_ENVIRONMENT,RUNNER_OS \
+            "$PWD/.venv/bin/python" scripts/offline_upgrade_ci.py
