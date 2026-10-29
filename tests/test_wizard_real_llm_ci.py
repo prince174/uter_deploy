@@ -20,6 +20,19 @@ OPERATION = 'b' * 32
 
 
 class IsolatedWizardLlmTests(unittest.TestCase):
+    def test_acceptance_diagnostics_reveal_only_safe_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            (home/'install-state.json').write_text(json.dumps({'status':'ready','acceptance':'not-run'}))
+            (home/'credentials.json').write_text(json.dumps({'admin':'secret-canary'}))
+            output = io.StringIO()
+            responses = [{}, {'access_token':'secret-canary'}, {'upstream_available':True,
+                         'agent_runtime_available':True, 'toxicity_guard':{'available':True}}, {'blocked':False}]
+            with contextlib.redirect_stderr(output), patch.object(driver, 'local_json', side_effect=responses):
+                driver.diagnose_compose_acceptance(home, 18000)
+            self.assertEqual(output.getvalue(), 'ACCEPTANCE_DIAGNOSTIC=CHAT_PASS\n')
+            self.assertNotIn('secret-canary', output.getvalue())
+
     def test_wizard_diagnostic_is_bounded_and_only_fixed_codes_are_reported(self):
         output = io.StringIO()
         program = ("import sys\nprint('secret-canary' * 200000)\n"

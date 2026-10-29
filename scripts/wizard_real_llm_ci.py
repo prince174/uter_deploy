@@ -20,6 +20,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,12 @@ ID = re.compile(r'[0-9a-f]{64}\Z')
 
 class Failure(Exception):
     """Fixed error category; external output is never displayed."""
+
+
+class WizardFailure(Failure):
+    def __init__(self, wizard_code):
+        super().__init__('SIGNED_WIZARD_FAILED')
+        self.wizard_code = wizard_code
 
 
 def command(argv, category, *, timeout=900, env=None, capture=True, allowed_failure=False):
@@ -103,15 +110,17 @@ def run_signed_wizard(argv, timeout=1800):
         raise Failure('SIGNED_WIZARD_TIMEOUT')
     if status:
         text = data.decode('utf-8', 'replace')
+        wizard_code = None
         for prefix, allowed, label in (('Мастер установки остановлен: ', wizard_codes, 'WIZARD'),
                                        ('Bootstrap stopped: ', bootstrap_codes, 'BOOTSTRAP')):
             matches = re.findall(re.escape(prefix) + r'([A-Z_0-9]+)', text)
             if matches and matches[-1] in allowed:
                 print(label + '_CODE=' + matches[-1], file=sys.stderr)
+                if label == 'WIZARD': wizard_code = matches[-1]
         for code in re.findall(r': fail \(([A-Z_0-9]+)\)', text):
             if code in preflight_codes:
                 print('PREFLIGHT_CODE=' + code, file=sys.stderr)
-        raise Failure('SIGNED_WIZARD_FAILED')
+        raise WizardFailure(wizard_code)
 
 
 def checked_id(raw):
@@ -308,6 +317,45 @@ def completion(base, model, *, token=None, extra_headers=None):
         raise Failure('COMPLETION_INVALID')
 
 
+def diagnose_compose_acceptance(home, port):
+    """Probe only our own installation; never emit credentials or response bodies."""
+    stage = 'STATE'
+    try:
+        state = json.loads((home/'install-state.json').read_text(encoding='utf-8'))
+        if state != {'status': 'ready', 'acceptance': 'not-run'}:
+            print('ACCEPTANCE_DIAGNOSTIC=STATE_UNAVAILABLE', file=sys.stderr)
+            return
+        base = 'http://127.0.0.1:'+str(port)
+        stage = 'READY'
+        local_json(base+'/ready', timeout=60)
+        stage = 'CREDENTIALS'
+        credentials = json.loads((home/'credentials.json').read_text(encoding='utf-8'))
+        stage = 'AUTH'
+        token = local_json(base+'/auth/token', {'username':'admin', 'password':credentials['admin']},
+                           form=True, timeout=60)['access_token']
+        stage = 'HEALTH'
+        health = local_json(base+'/health', token=token, timeout=60)
+        for code, value in (('UPSTREAM', health.get('upstream_available')),
+                            ('AGENT', health.get('agent_runtime_available')),
+                            ('TOXICITY', health.get('toxicity_guard', {}).get('available'))):
+            if value is not True:
+                print('ACCEPTANCE_DIAGNOSTIC='+code+'_NOT_READY', file=sys.stderr)
+                return
+        stage = 'CHAT'
+        answer = local_json(base+'/chat', {'message':'Explain safe software deployment.',
+                            'user_id':'installation-smoke'}, token=token, timeout=60)
+        print('ACCEPTANCE_DIAGNOSTIC=CHAT_'+('PASS' if answer.get('blocked') is False else 'BLOCKED_OR_INVALID'),
+              file=sys.stderr)
+    except urllib.error.HTTPError as exc:
+        status = exc.code; exc.close()
+        print('ACCEPTANCE_DIAGNOSTIC='+stage+'_HTTP_'+(str(status) if status in
+              (400,401,403,404,408,409,422,429,500,502,503,504) else 'OTHER'), file=sys.stderr)
+    except (socket.timeout, TimeoutError):
+        print('ACCEPTANCE_DIAGNOSTIC='+stage+'_TIMEOUT', file=sys.stderr)
+    except Exception:
+        print('ACCEPTANCE_DIAGNOSTIC='+stage+'_FAILED', file=sys.stderr)
+
+
 def forward_ready(context, name, port):
     proc = subprocess.Popen(['kubectl', '--context', context, '-n', name, 'port-forward', '--address',
                              '127.0.0.1', 'svc/'+name+'-guardrail', f'{port}:8000'],
@@ -429,7 +477,12 @@ def main():
             if backend == 'kubernetes': values += ['--context', 'kind-'+cluster]
             before = metric(vllm_url)
             attempted = True
-            run_signed_wizard(common.bootstrap_command(sys.executable, checkout, environment, 'install', values))
+            try:
+                run_signed_wizard(common.bootstrap_command(sys.executable, checkout, environment, 'install', values))
+            except WizardFailure as exc:
+                if backend == 'compose' and exc.wizard_code == 'ACCEPTANCE_FAILED':
+                    diagnose_compose_acceptance(home, llm.UTER_PORT)
+                raise
             install_finished = True
             state = json.loads((home/'install-state.json').read_text())
             if state != {'status': 'ready', 'acceptance': 'passed'}:
