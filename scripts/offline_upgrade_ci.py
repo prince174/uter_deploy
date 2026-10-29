@@ -122,6 +122,68 @@ def allow_fixture_responses(firewall, gateway, subnet, port):
                      '--ctstate', 'ESTABLISHED', '-j', 'RETURN')
 
 
+def guardrail_addresses(docker, project, env):
+    """Read project bridge metadata for diagnostic counters; do not inspect env."""
+    if not re.fullmatch(r'uter-offline-ci-[0-9a-f]{12}', project):
+        raise ci.StageError('TEST_NETWORK_IDENTITY_INVALID')
+    addresses = {}
+    try:
+        for network in ('backend', 'outbound'):
+            raw = ci.run([docker, '--context', 'default', 'network', 'inspect', '--format',
+                          '{{json .}}', project+'_'+network], 'TEST_NETWORK_INSPECTION_FAILED', env=env).stdout
+            if len(raw) > 1024*1024:
+                raise ValueError
+            data = json.loads(raw)
+            if (data['Name'] != project+'_'+network or data['Driver'] != 'bridge'
+                    or data['Labels'].get('com.docker.compose.project') != project
+                    or data['Labels'].get('com.docker.compose.network') != network):
+                raise ValueError
+            matches = [(key, value) for key, value in data['Containers'].items()
+                       if value.get('Name') == project+'-guardrail-1']
+            if len(matches) != 1 or not re.fullmatch(r'[0-9a-f]{64}', matches[0][0]):
+                raise ValueError
+            identity, member = matches[0]
+            labels = json.loads(ci.run([docker, '--context', 'default', 'inspect', '--format',
+                '{{json .Config.Labels}}', identity], 'TEST_CONTAINER_INSPECTION_FAILED', env=env).stdout)
+            if labels.get('com.docker.compose.project') != project or labels.get('com.docker.compose.service') != 'guardrail':
+                raise ValueError
+            configs = data['IPAM']['Config']
+            if len(configs) != 1:
+                raise ValueError
+            subnet = ipaddress.ip_network(configs[0]['Subnet'], strict=True)
+            private = tuple(ipaddress.ip_network(v) for v in ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16'))
+            address = ipaddress.ip_interface(member['IPv4Address'])
+            if (subnet.version != 4 or not 16 <= subnet.prefixlen <= 30
+                    or not any(subnet.subnet_of(block) for block in private) or address.network != subnet):
+                raise ValueError
+            addresses[network] = str(address.ip)
+        return addresses
+    except (ValueError, KeyError, TypeError, UnicodeError, AttributeError):
+        raise ci.StageError('TEST_NETWORK_IDENTITY_INVALID') from None
+
+
+def add_smoke_counters(firewall, addresses):
+    # A rule with no target counts packets and continues to the existing reject.
+    for network in ('backend', 'outbound'):
+        firewall.command('iptables', '-I', firewall.name, '1', '-d', addresses[network]+'/32',
+                         '-p', 'tcp', '--dport', '8000', '-m', 'comment', '--comment',
+                         'uter-smoke-'+network)
+
+
+def smoke_counter_values(firewall):
+    text = firewall.command('iptables', '-L', firewall.name, '-n', '-v', '-x').stdout.decode('ascii', 'replace')
+    values = {}
+    for network in ('backend', 'outbound'):
+        rows = [line for line in text.splitlines() if '/* uter-smoke-'+network+' */' in line]
+        if len(rows) != 1:
+            raise ci.StageError('SMOKE_COUNTER_UNAVAILABLE')
+        match = re.match(r'^\s*(\d+)\s+\d+\s', rows[0])
+        if not match:
+            raise ci.StageError('SMOKE_COUNTER_UNAVAILABLE')
+        values[network] = int(match.group(1))
+    return values
+
+
 def failure_categories(stderr, home, trace):
     """Fixed diagnostics only: never emit command output, paths or secrets."""
     markers = {
@@ -239,10 +301,12 @@ def main():
             print('Missing local image rejected before installation changes', flush=True)
 
             outbound_subnet, outbound_id = verified_outbound_subnet(docker, project, env)
+            guard_addresses = guardrail_addresses(docker, project, env)
             # The fixture is on one exact bridge address, never an RFC1918 wildcard.
             ci.PRIVATE_V4 = ('127.0.0.0/8', gateway+'/32')
             with ci.Firewall(chain, env, addresses) as firewall:
                 allow_fixture_responses(firewall, gateway, outbound_subnet, fixture.server_port)
+                add_smoke_counters(firewall, guard_addresses)
                 before = firewall.reject_counts()
                 if ci.socket_reachable(reachable) or firewall.reject_counts()['v4-registry-ipv4'] <= before['v4-registry-ipv4']:
                     raise ci.StageError('FIREWALL_NOT_EFFECTIVE')
@@ -252,10 +316,14 @@ def main():
                     raise ci.StageError('DOCKER_REGISTRY_BLOCK_NOT_PROVEN')
                 trace.write_text('')
                 counts_before_upgrade = firewall.reject_counts()
+                smoke_before_upgrade = smoke_counter_values(firewall)
                 result = ci.run(updater, 'OFFLINE_UPGRADE_FAILED', env=cli_env, timeout=900, allow_failure=True)
                 if result.returncode:
                     print('Offline upgrade diagnostic: '+json.dumps(failure_categories(result.stderr, home, trace), sort_keys=True), flush=True)
                     ci.report_firewall_delta(counts_before_upgrade, firewall.reject_counts())
+                    smoke_after_upgrade = smoke_counter_values(firewall)
+                    print('Pre-reject Guardrail TCP:8000 packets: '+json.dumps(
+                        {name: smoke_after_upgrade[name]-smoke_before_upgrade[name] for name in smoke_before_upgrade}, sort_keys=True), flush=True)
                     raise ci.StageError('OFFLINE_UPGRADE_FAILED')
                 updated = parse_update_output(result.stdout)
                 if updated.get('version') != '0.1.5':

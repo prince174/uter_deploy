@@ -9,6 +9,45 @@ from scripts import offline_upgrade_ci as ci
 
 
 class OfflineUpgradeCITests(unittest.TestCase):
+    def test_smoke_counters_only_count_without_allowing_packets(self):
+        with patch.object(ci.ci.Firewall,'command') as command:
+            firewall=ci.ci.Firewall('UDOFF123456ABCDEF')
+            ci.add_smoke_counters(firewall,{'backend':'172.18.0.2','outbound':'172.19.0.2'})
+            self.assertEqual(command.call_count,2)
+            for invocation in command.call_args_list:
+                self.assertNotIn('-j',invocation.args)
+                self.assertIn('--dport',invocation.args)
+                self.assertIn('8000',invocation.args)
+            command.reset_mock()
+            command.return_value=SimpleNamespace(stdout=b' 17 1020    all -- * * 0.0.0.0/0 172.18.0.2 /* uter-smoke-backend */\n 0 0 all -- * * 0.0.0.0/0 172.19.0.2 /* uter-smoke-outbound */\n')
+            self.assertEqual(ci.smoke_counter_values(firewall),{'backend':17,'outbound':0})
+            command.return_value=SimpleNamespace(stdout=b'')
+            with self.assertRaises(ci.ci.StageError):
+                ci.smoke_counter_values(firewall)
+
+    def test_guardrail_addresses_require_matching_project_labels(self):
+        project='uter-offline-ci-123456abcdef'
+        identity='a'*64
+        network={'Name':project+'_backend','Driver':'bridge',
+                 'Labels':{'com.docker.compose.project':project,'com.docker.compose.network':'backend'},
+                 'IPAM':{'Config':[{'Subnet':'172.18.0.0/16'}]},
+                 'Containers':{identity:{'Name':project+'-guardrail-1','IPv4Address':'172.18.0.2/16'}}}
+        def execute(args, category, **kwargs):
+            if 'network' in args:
+                side=args[-1].split('_')[-1]
+                selected=json.loads(json.dumps(network))
+                selected['Name']=project+'_'+side
+                selected['Labels']['com.docker.compose.network']=side
+                return SimpleNamespace(stdout=json.dumps(selected).encode())
+            return SimpleNamespace(stdout=json.dumps({'com.docker.compose.project':project,
+                'com.docker.compose.service':'guardrail'}).encode())
+        with patch.object(ci.ci,'run',side_effect=execute):
+            self.assertEqual(ci.guardrail_addresses('/docker',project,{}),
+                             {'backend':'172.18.0.2','outbound':'172.18.0.2'})
+            network['Labels']['com.docker.compose.project']='foreign'
+            with self.assertRaises(ci.ci.StageError):
+                ci.guardrail_addresses('/docker',project,{})
+
     def test_failure_diagnostics_report_only_safe_categories(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); trace=root/'trace'
