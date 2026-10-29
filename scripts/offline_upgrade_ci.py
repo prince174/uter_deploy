@@ -180,6 +180,15 @@ def allow_guardrail_smoke(firewall, outbound_address):
                      '-p', 'tcp', '--dport', '8000', '-j', 'RETURN')
 
 
+def require_guardrail_address(docker, project, env, expected):
+    try:
+        actual = guardrail_addresses(docker, project, env)['outbound']
+    except ci.StageError:
+        raise ci.StageError('TEST_GUARDRAIL_IDENTITY_UNAVAILABLE') from None
+    if actual != expected:
+        raise ci.StageError('TEST_GUARDRAIL_IP_CHANGED')
+
+
 def smoke_counter_values(firewall):
     text = firewall.command('iptables', '-L', firewall.name, '-n', '-v', '-x').stdout.decode('ascii', 'replace')
     values = {}
@@ -327,6 +336,7 @@ def main():
                     raise ci.StageError('DOCKER_REGISTRY_BLOCK_NOT_PROVEN')
                 if smoke_http.check('http://127.0.0.1:18000', 'admin', credentials['admin']).get('chat') != 'pass':
                     raise ci.StageError('FIREWALL_SMOKE_FAILED')
+                require_guardrail_address(docker, project, env, guard_addresses['outbound'])
                 trace.write_text('')
                 counts_before_upgrade = firewall.reject_counts()
                 smoke_before_upgrade = smoke_counter_values(firewall)
@@ -337,7 +347,9 @@ def main():
                     smoke_after_upgrade = smoke_counter_values(firewall)
                     print('Pre-reject Guardrail TCP:8000 packets: '+json.dumps(
                         {name: smoke_after_upgrade[name]-smoke_before_upgrade[name] for name in smoke_before_upgrade}, sort_keys=True), flush=True)
+                    require_guardrail_address(docker, project, env, guard_addresses['outbound'])
                     raise ci.StageError('OFFLINE_UPGRADE_FAILED')
+                require_guardrail_address(docker, project, env, guard_addresses['outbound'])
                 updated = parse_update_output(result.stdout)
                 if updated.get('version') != '0.1.5':
                     raise ci.StageError('UPGRADE_VERSION_MISMATCH')

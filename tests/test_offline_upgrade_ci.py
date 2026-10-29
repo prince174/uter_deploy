@@ -21,6 +21,15 @@ class OfflineUpgradeCITests(unittest.TestCase):
                     ci.allow_guardrail_smoke(firewall,invalid)
                 command.assert_not_called()
 
+    def test_guardrail_ip_drift_and_missing_identity_fail_closed(self):
+        with patch.object(ci,'guardrail_addresses',return_value={'outbound':'172.19.0.2'}):
+            ci.require_guardrail_address('/docker','project',{},'172.19.0.2')
+            with self.assertRaisesRegex(ci.ci.StageError,'TEST_GUARDRAIL_IP_CHANGED'):
+                ci.require_guardrail_address('/docker','project',{},'172.19.0.3')
+        with patch.object(ci,'guardrail_addresses',side_effect=ci.ci.StageError('private')):
+            with self.assertRaisesRegex(ci.ci.StageError,'TEST_GUARDRAIL_IDENTITY_UNAVAILABLE'):
+                ci.require_guardrail_address('/docker','project',{},'172.19.0.2')
+
     def test_smoke_counters_only_count_without_allowing_packets(self):
         with patch.object(ci.ci.Firewall,'command') as command:
             firewall=ci.ci.Firewall('UDOFF123456ABCDEF')
