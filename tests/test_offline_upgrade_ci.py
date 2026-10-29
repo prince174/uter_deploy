@@ -9,6 +9,18 @@ from scripts import offline_upgrade_ci as ci
 
 
 class OfflineUpgradeCITests(unittest.TestCase):
+    def test_guardrail_smoke_exception_targets_one_private_address_and_port(self):
+        with patch.object(ci.ci.Firewall,'command') as command:
+            firewall=ci.ci.Firewall('UDOFF123456ABCDEF')
+            ci.allow_guardrail_smoke(firewall,'172.19.0.2')
+            command.assert_called_once_with('iptables','-I','UDOFF123456ABCDEF','1',
+                '-d','172.19.0.2/32','-p','tcp','--dport','8000','-j','RETURN')
+            for invalid in ('8.8.8.8','172.19.0.0/16','::1'):
+                command.reset_mock()
+                with self.subTest(invalid=invalid),self.assertRaises((ValueError,ci.ci.StageError)):
+                    ci.allow_guardrail_smoke(firewall,invalid)
+                command.assert_not_called()
+
     def test_smoke_counters_only_count_without_allowing_packets(self):
         with patch.object(ci.ci.Firewall,'command') as command:
             firewall=ci.ci.Firewall('UDOFF123456ABCDEF')

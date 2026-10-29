@@ -170,6 +170,16 @@ def add_smoke_counters(firewall, addresses):
                          'uter-smoke-'+network)
 
 
+def allow_guardrail_smoke(firewall, outbound_address):
+    """Permit the host's published-port DNAT only to the observed Guardrail IP."""
+    address = ipaddress.ip_address(outbound_address)
+    if address.version != 4 or not any(address in ipaddress.ip_network(network)
+            for network in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')):
+        raise ci.StageError('TEST_NETWORK_IDENTITY_INVALID')
+    firewall.command('iptables', '-I', firewall.name, '1', '-d', str(address)+'/32',
+                     '-p', 'tcp', '--dport', '8000', '-j', 'RETURN')
+
+
 def smoke_counter_values(firewall):
     text = firewall.command('iptables', '-L', firewall.name, '-n', '-v', '-x').stdout.decode('ascii', 'replace')
     values = {}
@@ -307,6 +317,7 @@ def main():
             with ci.Firewall(chain, env, addresses) as firewall:
                 allow_fixture_responses(firewall, gateway, outbound_subnet, fixture.server_port)
                 add_smoke_counters(firewall, guard_addresses)
+                allow_guardrail_smoke(firewall, guard_addresses['outbound'])
                 before = firewall.reject_counts()
                 if ci.socket_reachable(reachable) or firewall.reject_counts()['v4-registry-ipv4'] <= before['v4-registry-ipv4']:
                     raise ci.StageError('FIREWALL_NOT_EFFECTIVE')
@@ -314,6 +325,8 @@ def main():
                                  env=env, timeout=90, allow_failure=True)
                 if not ci.network_failure(blocked):
                     raise ci.StageError('DOCKER_REGISTRY_BLOCK_NOT_PROVEN')
+                if smoke_http.check('http://127.0.0.1:18000', 'admin', credentials['admin']).get('chat') != 'pass':
+                    raise ci.StageError('FIREWALL_SMOKE_FAILED')
                 trace.write_text('')
                 counts_before_upgrade = firewall.reject_counts()
                 smoke_before_upgrade = smoke_counter_values(firewall)
