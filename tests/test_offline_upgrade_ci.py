@@ -9,6 +9,25 @@ from scripts import offline_upgrade_ci as ci
 
 
 class OfflineUpgradeCITests(unittest.TestCase):
+    def test_failure_diagnostics_report_only_safe_categories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); trace=root/'trace'
+            trace.write_text('OTHER\nUP_PULL_NEVER\nsecret-canary\n')
+            (root/'state.json').write_text(json.dumps({'pending':{'credential':'secret-canary'}}))
+            (root/'backup-operation.json').write_text(json.dumps({'phase':'quiesced','credential':'secret-canary'}))
+            result=ci.failure_categories(b'Update incomplete. State retained; uter_managed_smoke.py secret-canary',root,trace)
+            self.assertTrue(result['apply_or_smoke_failed'])
+            self.assertTrue(result['managed_smoke_error'])
+            self.assertTrue(result['compose_up_observed'])
+            self.assertEqual(result['state'],'pending')
+            self.assertEqual(result['backup_journal'],'quiesced')
+            self.assertNotIn('secret-canary',json.dumps(result))
+            (root/'state.json').unlink()
+            (root/'backup-operation.json').write_text('{bad')
+            result=ci.failure_categories(b'Pre-adoption smoke failed',root,trace)
+            self.assertEqual(result['state'],'not_adopted')
+            self.assertEqual(result['backup_journal'],'unreadable')
+            self.assertTrue(result['adoption_smoke_failed'])
     def test_fixture_allowlist_requires_owned_network_and_containers(self):
         project='uter-offline-ci-123456abcdef'
         ids={'guardrail':'a'*64,'agent':'b'*64}

@@ -122,6 +122,48 @@ def allow_fixture_responses(firewall, gateway, subnet, port):
                      '--ctstate', 'ESTABLISHED', '-j', 'RETURN')
 
 
+def failure_categories(stderr, home, trace):
+    """Fixed diagnostics only: never emit command output, paths or secrets."""
+    markers = {
+        'adoption_smoke_failed': b'Pre-adoption smoke failed',
+        'adoption_assets_mismatch': b'Installation deployment assets do not match signed bundle',
+        'signed_image_mismatch': b'does not match the signed image',
+        'offline_preflight_failed': b'Offline image preflight failed',
+        'backup_command_failed': b'backup operation failed; details withheld',
+        'backup_redis_invalid': b'Redis snapshot failed structural validation',
+        'backup_recovery_failed': b'Backup recovery failed',
+        'apply_or_smoke_failed': b'Update incomplete. State retained',
+        'managed_smoke_error': b'uter_managed_smoke.py',
+        'network_error': any(value in stderr.lower() for value in
+            (b'connection refused', b'network is unreachable', b'no route to host',
+             b'i/o timeout', b'context deadline exceeded', b'connection reset by peer',
+             b'server misbehaving', b'temporary failure in name resolution')),
+    }
+    result = {key: (value if isinstance(value, bool) else value in stderr) for key, value in markers.items()}
+    try:
+        state = json.loads((home/'state.json').read_bytes())
+        result['state'] = ('pending' if state.get('pending') is not None else 'adopted')
+    except FileNotFoundError:
+        result['state'] = 'not_adopted'
+    except (OSError, ValueError, TypeError, AttributeError):
+        result['state'] = 'unreadable'
+    try:
+        journal = json.loads((home/'backup-operation.json').read_bytes())
+        phase = journal.get('phase')
+        result['backup_journal'] = phase if phase in ('quiescing', 'quiesced') else 'other'
+    except FileNotFoundError:
+        result['backup_journal'] = 'absent'
+    except (OSError, ValueError, TypeError, AttributeError):
+        result['backup_journal'] = 'unreadable'
+    try:
+        operations = set(trace.read_text(encoding='ascii').splitlines())
+        result['compose_up_observed'] = 'UP_PULL_NEVER' in operations or 'UP_OTHER' in operations
+        result['pull_observed'] = 'PULL_COMMAND' in operations
+    except (OSError, UnicodeError):
+        result['compose_up_observed'] = result['pull_observed'] = None
+    return result
+
+
 def main():
     ci.ci_only()
     workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
@@ -209,7 +251,12 @@ def main():
                 if not ci.network_failure(blocked):
                     raise ci.StageError('DOCKER_REGISTRY_BLOCK_NOT_PROVEN')
                 trace.write_text('')
-                result = ci.run(updater, 'OFFLINE_UPGRADE_FAILED', env=cli_env, timeout=900)
+                counts_before_upgrade = firewall.reject_counts()
+                result = ci.run(updater, 'OFFLINE_UPGRADE_FAILED', env=cli_env, timeout=900, allow_failure=True)
+                if result.returncode:
+                    print('Offline upgrade diagnostic: '+json.dumps(failure_categories(result.stderr, home, trace), sort_keys=True), flush=True)
+                    ci.report_firewall_delta(counts_before_upgrade, firewall.reject_counts())
+                    raise ci.StageError('OFFLINE_UPGRADE_FAILED')
                 updated = parse_update_output(result.stdout)
                 if updated.get('version') != '0.1.5':
                     raise ci.StageError('UPGRADE_VERSION_MISMATCH')
