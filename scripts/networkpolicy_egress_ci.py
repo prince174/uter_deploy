@@ -62,9 +62,54 @@ def dns_probe_source(protocol):
     return '''import socket,struct\nserver=next(x.split()[1] for x in open('/etc/resolv.conf') if x.startswith('nameserver '))\nq=b'\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00'\nfor label in 'kubernetes.default.svc.cluster.local'.split('.'):\n q+=bytes([len(label)])+label.encode()\nq+=b'\\x00\\x00\\x01\\x00\\x01'\ns=socket.socket(socket.AF_INET, TYPE);s.settimeout(5)\nif TYPE==socket.SOCK_STREAM:\n s.connect((server,53));s.sendall(struct.pack('!H',len(q))+q)\n hdr=s.recv(2)\n assert len(hdr)==2\n length=struct.unpack('!H',hdr)[0];response=b''\n while len(response)<length:\n  chunk=s.recv(length-len(response));assert chunk;response+=chunk\nelse:\n s.sendto(q,(server,53));response=s.recv(4096)\nassert len(response)>=12 and response[:2]==b'\\x12\\x34' and response[3]&15==0 and int.from_bytes(response[6:8],'big')>0\nprint('DNS_OK')\n'''.replace('TYPE', 'socket.SOCK_DGRAM' if protocol == 'udp' else 'socket.SOCK_STREAM')
 
 
-def completion_probe_source(base, password):
+def fixture_source(marker):
+    """Generate a per-run fixture that counts successful completion requests."""
+    if not re.fullmatch(r'Uter fixture response [0-9a-f]{24}', marker):
+        raise ValueError('invalid fixture marker')
+    return '''import argparse,json,threading
+from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+MARKER=MARKER_VALUE
+class Handler(BaseHTTPRequestHandler):
+ count=0
+ lock=threading.Lock()
+ def reply(self,status,value):
+  body=json.dumps(value).encode();self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+ def do_GET(self):
+  if self.path=='/stats':
+   with Handler.lock: count=Handler.count
+   self.reply(200,{'completions':count})
+  elif self.path=='/health': self.reply(200,{'status':'ok'})
+  elif self.path=='/v1/models': self.reply(200,{'data':[{'id':'test-model'}]})
+  else: self.reply(404,{'error':'not found'})
+ def do_POST(self):
+  if self.path!='/v1/chat/completions': self.reply(404,{'error':'not found'});return
+  try:
+   size=int(self.headers.get('Content-Length','-1'))
+   if not 0<=size<=1048576: raise ValueError()
+   data=json.loads(self.rfile.read(size))
+   if data.get('model')!='test-model': raise ValueError()
+  except (TypeError,ValueError): self.reply(400,{'error':'invalid request'});return
+  with Handler.lock: Handler.count+=1
+  self.reply(200,{'id':'fixture','object':'chat.completion','model':'test-model','choices':[{'index':0,'message':{'role':'assistant','content':MARKER},'finish_reason':'stop'}]})
+ def log_message(self,*args): pass
+if __name__=='__main__':
+ p=argparse.ArgumentParser();p.add_argument('--host',required=True);p.add_argument('--port',required=True,type=int);a=p.parse_args()
+ ThreadingHTTPServer((a.host,a.port),Handler).serve_forever()
+'''.replace('MARKER_VALUE',repr(marker))
+
+
+def completion_probe_source(base, password, marker):
     """Sent only over kubectl stdin; credentials and responses are never logged."""
-    return '''import json,urllib.request,urllib.parse\nbase=BASE\nopener=urllib.request.build_opener(urllib.request.ProxyHandler({}))\nauth=urllib.parse.urlencode({'username':'admin','password':PASSWORD}).encode()\nwith opener.open(urllib.request.Request(base+'/auth/token',data=auth,headers={'Content-Type':'application/x-www-form-urlencoded'}),timeout=30) as r:\n token=json.load(r)['access_token']\nbody=json.dumps({'message':'Explain safe software deployment.','user_id':'egress-ci'}).encode()\nreq=urllib.request.Request(base+'/chat',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+token})\nwith opener.open(req,timeout=60) as r:\n assert json.load(r).get('blocked') is False\nprint('EGRESS_OK')\n'''.replace('BASE',repr(base)).replace('PASSWORD',repr(password))
+    return '''import json,urllib.request,urllib.parse\nbase=BASE\nopener=urllib.request.build_opener(urllib.request.ProxyHandler({}))\nauth=urllib.parse.urlencode({'username':'admin','password':PASSWORD}).encode()\nwith opener.open(urllib.request.Request(base+'/auth/token',data=auth,headers={'Content-Type':'application/x-www-form-urlencoded'}),timeout=30) as r:\n token=json.load(r)['access_token']\nbody=json.dumps({'message':'Explain safe software deployment.','user_id':'egress-ci'}).encode()\nreq=urllib.request.Request(base+'/chat',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+token})\nwith opener.open(req,timeout=60) as r:\n result=json.load(r)\n if result.get('blocked') is not False or MARKER not in json.dumps(result,ensure_ascii=False): raise SystemExit('Completion mismatch')\nprint('EGRESS_OK')\n'''.replace('MARKER',repr(marker)).replace('BASE',repr(base)).replace('PASSWORD',repr(password))
+
+
+def fixture_count(kube, namespace, env):
+    source = "import json,urllib.request\nwith urllib.request.urlopen('http://127.0.0.1:8080/stats',timeout=5) as r:\n print(json.load(r)['completions'])\n"
+    output = call(kube+['-n',namespace,'exec','-i','pod/llm-allowed','-c','http-8080','--','python','-'],
+                  'FIXTURE_COUNTER_FAILED',env=env,input_data=source.encode(),timeout=15)
+    if not re.fullmatch(rb'[0-9]{1,12}\n?', output):
+        raise StageError('FIXTURE_COUNTER_INVALID')
+    return int(output)
 
 
 def pod_ip(kube, namespace, name, env):
@@ -147,7 +192,9 @@ def run():
                  'NODES_NOT_READY', env=env, timeout=330)
             for namespace in (fixture_ns, ingress_ns):
                 call(kube + ['create','namespace',namespace], 'NAMESPACE_CREATE_FAILED', env=env)
-            fixture = ROOT/'tests/fixtures/scheduled_backup_upstream.py'
+            marker = 'Uter fixture response '+secrets.token_hex(12)
+            fixture = temp/'fixture.py'
+            fixture.write_text(fixture_source(marker), encoding='utf-8')
             call(kube + ['-n',fixture_ns,'create','configmap','llm-fixture','--from-file=fixture.py='+str(fixture)],
                  'FIXTURE_CONFIG_FAILED', env=env)
             for pod, label in (('llm-allowed','upstream-allowed'),('llm-denied','upstream-denied')):
@@ -204,11 +251,14 @@ def run():
             require_probe(run_probe(kube,ingress_ns,'pod/network-client',ready,env),'READY','GUARDRAIL_NOT_READY')
             credentials = json.loads((home/'credentials.json').read_text())
             # Timeout accommodates the full guardrail pipeline and protocol fixture.
-            source = completion_probe_source('http://'+host+':8000',credentials['admin'])
+            before = fixture_count(kube,fixture_ns,env)
+            source = completion_probe_source('http://'+host+':8000',credentials['admin'],marker)
             output = call(kube+['-n',ingress_ns,'exec','-i','pod/network-client','--','python','-'],
                           'COMPLETION_FAILED',env=env,input_data=source.encode(),timeout=90)
             if output.strip() != b'EGRESS_OK':
                 raise StageError('COMPLETION_FAILED')
+            if fixture_count(kube,fixture_ns,env) <= before:
+                raise StageError('FIXTURE_COMPLETION_NOT_OBSERVED')
             print(json.dumps({'egress_policy':'enabled','calico':'v3.33.0','dns_tcp_udp':'pass',
                 'internal_connections':'pass','llm_pod_and_port':'pass','denied_pod_port_and_agent':'pass',
                 'readiness':'pass','redis_outbound':'pass via ephemeral debug container',

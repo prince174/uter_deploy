@@ -1,6 +1,11 @@
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib import request, error
 import unittest
 from unittest.mock import patch
 
@@ -45,10 +50,65 @@ class EgressCITests(unittest.TestCase):
             ci.dns_probe_source('other')
 
     def test_completion_probe_compiles_with_special_password_and_only_prints_marker(self):
-        source=ci.completion_probe_source('http://guardrail:8000',"quote'\n\\marker")
+        source=ci.completion_probe_source('http://guardrail:8000',"quote'\n\\marker",'unique marker')
         compile(source,'completion-probe','exec')
         self.assertIn("print('EGRESS_OK')",source)
         self.assertNotIn('print(token)',source)
+
+    def test_fixture_counts_only_successful_completion_requests(self):
+        marker='Uter fixture response '+'a'*24
+        module={'__name__':'fixture_test'}
+        exec(ci.fixture_source(marker),module)
+        server=ThreadingHTTPServer(('127.0.0.1',0),module['Handler'])
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        base='http://127.0.0.1:'+str(server.server_port)
+        def stats():
+            with request.urlopen(base+'/stats',timeout=5) as response:
+                return json.load(response)['completions']
+        try:
+            self.assertEqual(stats(),0)
+            with self.assertRaises(error.HTTPError) as rejected:
+                request.urlopen(request.Request(base+'/v1/chat/completions',data=b'{"model":"wrong"}'),timeout=5)
+            rejected.exception.close()
+            self.assertEqual(stats(),0)
+            with request.urlopen(request.Request(base+'/v1/chat/completions',data=b'{"model":"test-model"}'),timeout=5) as response:
+                result=json.load(response)
+            self.assertEqual(result['choices'][0]['message']['content'],marker)
+            self.assertEqual(stats(),1)
+        finally:
+            server.shutdown();server.server_close();thread.join(timeout=5)
+
+    def test_completion_requires_unique_response_and_never_prints_secret(self):
+        class Handler(BaseHTTPRequestHandler):
+            reply={'blocked':False,'response':'Uter fixture response '+'b'*24}
+            def do_POST(self):
+                body=json.dumps({'access_token':'sensitive-token'} if self.path=='/auth/token' else self.reply).encode()
+                self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+            def log_message(self,*args): pass
+        server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        base='http://127.0.0.1:'+str(server.server_port);marker='Uter fixture response '+'b'*24
+        try:
+            for answer,success in [({'blocked':False,'response':marker},True),
+                                   ({'blocked':False,'response':'fallback'},False),
+                                   ({'blocked':True,'response':marker},False)]:
+                Handler.reply=answer
+                output=subprocess.run([sys.executable,'-c',ci.completion_probe_source(base,'sensitive-password',marker)],
+                                      capture_output=True,timeout=10)
+                self.assertEqual(output.returncode==0,success)
+                self.assertNotIn(b'sensitive-token',output.stdout+output.stderr)
+                self.assertNotIn(b'sensitive-password',output.stdout+output.stderr)
+                self.assertNotIn(marker.encode(),output.stdout+output.stderr)
+        finally:
+            server.shutdown();server.server_close();thread.join(timeout=5)
+
+    def test_fixture_counter_rejects_invalid_results(self):
+        with patch.object(ci,'call',return_value=b'17\n'):
+            self.assertEqual(ci.fixture_count(['kubectl'],'fixtures',{}),17)
+        for invalid in (b'-1\n',b'anything',b'1\n2\n',b''):
+            with patch.object(ci,'call',return_value=invalid):
+                with self.assertRaises(ci.StageError):
+                    ci.fixture_count(['kubectl'],'fixtures',{})
 
     def test_redis_probe_uses_ephemeral_container_and_only_timeout_passes(self):
         responses=[b'redis-abc',b'',b'TIMEOUT\n']
