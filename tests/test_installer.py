@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import importlib.util
 import json
 import os
@@ -9,6 +10,10 @@ from unittest.mock import patch
 
 import bcrypt
 import yaml
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 spec = importlib.util.spec_from_file_location('installer', Path(__file__).resolve().parents[1] / 'scripts/install.py')
 m = importlib.util.module_from_spec(spec)
@@ -31,6 +36,18 @@ class InstallerTests(unittest.TestCase):
     def env(self, name):
         return dict(line.split('=', 1) for line in (self.args.home / 'runtime' / name).read_text().splitlines())
 
+    def ca_certificate(self):
+        key = ec.generate_private_key(ec.SECP256R1())
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'Test Root CA')])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+                .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(now - datetime.timedelta(days=1))
+                .not_valid_after(now + datetime.timedelta(days=1))
+                .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+                .sign(key, hashes.SHA256()))
+        return cert.public_bytes(serialization.Encoding.PEM)
+
     def test_credentials_and_permissions(self):
         m.prepare(self.args, 'key$literal')
         g, a = self.env('guardrail.env'), self.env('agent.env')
@@ -40,6 +57,9 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(g['UPSTREAM_API_KEY'], 'key$literal')
         self.assertEqual(g['AGENT_INTERNAL_SHARED_SECRET'], a['AGENT_INTERNAL_SHARED_SECRET'])
         self.assertEqual(credentials['service'], a['GUARDRAIL_SERVICE_PASSWORD'])
+        self.assertNotIn('SSL_CERT_FILE', g)
+        self.assertNotIn('SSL_CERT_DIR', g)
+        self.assertNotIn('REQUESTS_CA_BUNDLE', g)
         self.assertIn((self.args.home / 'runtime/redis-password').read_text(), (self.args.home / 'runtime/redis.conf').read_text())
         if os.name == 'posix':
             self.assertEqual((self.args.home / 'credentials.json').stat().st_mode & 0o777, 0o600)
@@ -138,3 +158,120 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(g['JUDGE_FAIL_CLOSED'], 'true')
         cfg = json.loads((self.args.home / 'install.json').read_text())
         self.assertEqual(cfg['guardrail_cpus'], 2)
+
+    def test_compose_ca_is_private_and_mounted_through_existing_policies(self):
+        pem = self.ca_certificate()
+        source = self.root / 'corporate-ca.pem'
+        source.write_bytes(pem)
+        self.args.llm_ca_bundle = source
+        m.prepare(self.args, 'fixture-key')
+        env = self.env('guardrail.env')
+        self.assertEqual(env['SSL_CERT_FILE'], '/app/policies/upstream-ca.pem')
+        self.assertEqual(env['SSL_CERT_DIR'], '/app/policies')
+        self.assertEqual(env['REQUESTS_CA_BUNDLE'], env['SSL_CERT_FILE'])
+        ca = self.args.home / 'runtime/policies/upstream-ca.pem'
+        self.assertEqual(ca.read_bytes(), pem)
+        if os.name == 'posix':
+            self.assertEqual(ca.stat().st_mode & 0o777, 0o600)
+        compose = yaml.safe_load((self.args.home / 'compose/compose.yaml').read_text())
+        self.assertIn('${RUNTIME_DIR:?}/policies:/app/policies:ro',
+                      compose['services']['guardrail']['volumes'])
+
+    def test_cli_accepts_optional_ca_bundle(self):
+        self.args.images.rename(self.root / 'images.json')
+        self.args.policy.rename(self.root / 'policy.toml')
+        self.args.profiles.rename(self.root / 'model_profiles.toml')
+        source = self.root / 'corporate-ca.pem'
+        source.write_bytes(self.ca_certificate())
+        keyfile = self.root / 'llm-key'
+        keyfile.write_text('fixture-key')
+        argv = ['install.py', 'prepare', '--home', str(self.args.home), '--inputs', str(self.root),
+                '--llm-url', self.args.llm_url, '--llm-model', self.args.llm_model,
+                '--llm-key-file', str(keyfile), '--llm-ca-bundle', str(source)]
+        with patch.object(m.sys, 'argv', argv):
+            self.assertEqual(m.main(), 0)
+        self.assertEqual(self.env('guardrail.env')['SSL_CERT_FILE'], '/app/policies/upstream-ca.pem')
+
+    def test_kubernetes_ca_uses_existing_backed_up_policy_configmap(self):
+        pem = self.ca_certificate()
+        source = self.root / 'corporate-ca.pem'
+        source.write_bytes(pem)
+        self.args.backend, self.args.context, self.args.llm_ca_bundle = 'kubernetes', 'test', source
+        m.prepare(self.args, 'fixture-key')
+        resources = list(yaml.safe_load_all((self.args.home / 'resources.yaml').read_text()))
+        policy = next(x for x in resources if x['kind'] == 'ConfigMap'
+                      and x['metadata']['name'] == 'uter-test-policies')
+        guard = next(x for x in resources if x['kind'] == 'Secret'
+                     and x['metadata']['name'] == 'uter-test-guardrail-env')
+        self.assertEqual(policy['data']['upstream-ca.pem'].encode(), pem)
+        self.assertEqual(guard['stringData']['SSL_CERT_FILE'], '/app/policies/upstream-ca.pem')
+        self.assertEqual(guard['stringData']['SSL_CERT_DIR'], '/app/policies')
+        self.assertEqual(guard['stringData']['REQUESTS_CA_BUNDLE'], '/app/policies/upstream-ca.pem')
+        self.assertEqual({x['metadata']['name'] for x in resources},
+                         {'uter-test-guardrail-env', 'uter-test-agent-env', 'uter-test-redis-secret',
+                          'uter-test-policies', 'uter-test-profiles'})
+
+    def test_ca_rejects_private_keys_invalid_data_and_http_before_creating_home(self):
+        source = self.root / 'corporate-ca.pem'
+        self.args.llm_ca_bundle = source
+        for bad in (b'', b'not a certificate', self.ca_certificate() + b'\n-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n',
+                    b'-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n', b'x' * (m.CA_LIMIT + 1)):
+            with self.subTest(size=len(bad)):
+                source.write_bytes(bad)
+                with self.assertRaises(ValueError):
+                    m.prepare(self.args, 'fixture-key')
+                self.assertFalse(self.args.home.exists())
+        source.write_bytes(self.ca_certificate())
+        self.args.llm_url = 'http://llm.example/v1'
+        self.args.allow_http_llm = True
+        with self.assertRaisesRegex(ValueError, 'requires an HTTPS'):
+            m.prepare(self.args, 'fixture-key')
+        self.assertFalse(self.args.home.exists())
+
+    def test_kubernetes_rejects_oversized_combined_policy_and_ca(self):
+        pem = self.ca_certificate()
+        source = self.root / 'corporate-ca.pem'
+        source.write_bytes(pem * (m.CA_LIMIT // len(pem)))
+        self.args.backend, self.args.context, self.args.llm_ca_bundle = 'kubernetes', 'test', source
+        self.args.policy.write_text('[test]\nvalue = "' + 'x' * 20000 + '"\n')
+        with self.assertRaisesRegex(ValueError, 'ConfigMap size limit'):
+            m.prepare(self.args, 'fixture-key')
+        self.assertFalse(self.args.home.exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX FIFO and symlink semantics')
+    def test_ca_input_rejects_fifo_and_symlink_without_blocking(self):
+        source = self.root / 'ca-input'
+        os.mkfifo(source)
+        self.args.llm_ca_bundle = source
+        with self.assertRaisesRegex(ValueError, 'regular file'):
+            m.prepare(self.args, 'fixture-key')
+        self.assertFalse(self.args.home.exists())
+        source.unlink()
+        real = self.root / 'real-ca.pem'
+        real.write_bytes(self.ca_certificate())
+        source.symlink_to(real)
+        with self.assertRaises(OSError):
+            m.prepare(self.args, 'fixture-key')
+        self.assertFalse(self.args.home.exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX file descriptor permissions')
+    def test_ca_permissions_apply_only_to_regular_optional_file(self):
+        m.prepare_ca_permissions(self.root)  # Legacy installations have no CA file.
+        ca = self.root / 'policies' / m.CA_FILE
+        ca.parent.mkdir()
+        ca.write_bytes(self.ca_certificate())
+        with patch.object(m.os, 'fchown') as chown, patch.object(m.os, 'fchmod') as chmod:
+            m.prepare_ca_permissions(self.root)
+        self.assertEqual(chown.call_args.args[1:], (10001, 10001))
+        self.assertEqual(chmod.call_args.args[1:], (0o400,))
+        ca.unlink()
+        ca.symlink_to(self.root / 'missing-target')
+        with self.assertRaises(OSError):
+            m.prepare_ca_permissions(self.root)
+        ca.unlink()
+        other = self.root / 'other-ca'
+        other.write_bytes(self.ca_certificate())
+        os.link(other, ca)
+        with patch.object(m.os, 'fchown') as chown, self.assertRaisesRegex(ValueError, 'hard links'):
+            m.prepare_ca_permissions(self.root)
+        chown.assert_not_called()

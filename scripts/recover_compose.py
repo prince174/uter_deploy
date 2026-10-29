@@ -41,6 +41,17 @@ def stage_recovery_helpers(parent):
     return directory
 
 
+def prepare_runtime_permissions(runtime):
+    """Restore only the file access required by the non-root containers."""
+    runtime = Path(runtime)
+    for folder in ('policies','profiles','models'):os.chmod(runtime/folder,0o755)
+    for path in (runtime/'policies/runtime.toml',runtime/'profiles/model_profiles.toml',runtime/'audit-hmac-key'):
+        os.chown(path,10001,10001);os.chmod(path,0o400)
+    install.prepare_ca_permissions(runtime)
+    for filename in ('redis.conf','redis-password'):
+        os.chown(runtime/filename,999,10001);os.chmod(runtime/filename,0o440)
+
+
 def restore(source_home,backup,backup_key,publisher_key,target,name,port):
     if os.name!='posix' or os.geteuid()!=0:
         raise ValueError('Compose recovery requires root on a Linux host')
@@ -98,11 +109,7 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,port):
             site.update(name=name,namespace=name,port=port,smoke_command=[sys.executable,str(runtime/'recovery_smoke.py')])
             uterctl.write(runtime/'site.json',site);uterctl.site_config(target)
             state.pop('last_backup',None);uterctl.write(target/'state.json',state)
-            for folder in ('policies','profiles','models'):os.chmod(runtime/folder,0o755)
-            for path in (runtime/'policies/runtime.toml',runtime/'profiles/model_profiles.toml',runtime/'audit-hmac-key'):
-                os.chown(path,10001,10001);os.chmod(path,0o400)
-            for filename in ('redis.conf','redis-password'):
-                os.chown(runtime/filename,999,10001);os.chmod(runtime/filename,0o440)
+            prepare_runtime_permissions(runtime)
             env=os.environ.copy()
             for k in list(env):
                 if k.startswith('COMPOSE_'):del env[k]

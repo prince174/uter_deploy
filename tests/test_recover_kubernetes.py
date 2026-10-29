@@ -19,7 +19,10 @@ class KubernetesRecoveryTests(unittest.TestCase):
         items=[]
         for name in mapping:
             kind='ConfigMap' if name in ('old-p','old-m') else 'Secret'
-            items.append({'kind':kind,'metadata':{'name':name,'resourceVersion':'sensitive-metadata'},'data':{'key':'value'}})
+            data={'key':'value'}
+            if name=='old-p': data['upstream-ca.pem']='public-ca-content'
+            if name=='old-g': data['SSL_CERT_FILE']='/app/policies/upstream-ca.pem'
+            items.append({'kind':kind,'metadata':{'name':name,'resourceVersion':'sensitive-metadata'},'data':data})
         for suffix,size in (('redis','2Gi'),('guardrail','10Gi')):
             items.append({'kind':'PersistentVolumeClaim','metadata':{'name':'old-'+suffix},
                           'spec':{'resources':{'requests':{'storage':size}}}})
@@ -30,6 +33,10 @@ class KubernetesRecoveryTests(unittest.TestCase):
         self.assertTrue(all('resourceVersion' not in x['metadata'] for x in objects))
         self.assertEqual(values['guardrailSecret'],'new-test-guardrail-env')
         self.assertEqual(values['imagePullSecrets'],[{'name':'new-test-registry-0'}])
+        restored_policy=next(x for x in objects if x['metadata']['name']=='new-test-policies')
+        restored_guard=next(x for x in objects if x['metadata']['name']=='new-test-guardrail-env')
+        self.assertEqual(restored_policy['data']['upstream-ca.pem'],'public-ca-content')
+        self.assertEqual(restored_guard['data']['SSL_CERT_FILE'],'/app/policies/upstream-ca.pem')
 
     def test_missing_secret_refuses_recovery(self):
         with self.assertRaisesRegex(ValueError,'Incomplete Kubernetes recovery resources'):

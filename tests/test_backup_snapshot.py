@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 import yaml
 
-from scripts import backup_snapshot, backup_store
+from scripts import backup_crypto, backup_snapshot, backup_store
 import uterctl
 
 
@@ -51,6 +51,20 @@ class SnapshotTests(unittest.TestCase):
         self.assertFalse((self.home/'backup-operation.json').exists())
         self.assertTrue(any('stop' in c.args[0] for c in cmd.call_args_list))
         self.assertTrue(any('up' in c.args[0] for c in cmd.call_args_list))
+
+    def test_optional_ca_bundle_is_preserved_in_encrypted_runtime(self):
+        ca = b'example CA bundle content'
+        (self.home/'runtime/policies/upstream-ca.pem').write_bytes(ca)
+        with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=self.fake_checked), patch.object(backup_snapshot,'process_component',side_effect=self.fake_component), patch.object(backup_snapshot,'verify_redis_snapshot'):
+            result=backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key)
+        encrypted=self.root/'backup/runtime.enc'
+        self.assertNotIn(ca,encrypted.read_bytes())
+        plain=io.BytesIO()
+        backup_crypto.decrypt_verify(encrypted,self.key,backup_store.aad(result['id'],'runtime'),
+                                     result['files']['runtime'],plain)
+        plain.seek(0)
+        with tarfile.open(fileobj=plain,mode='r:') as archive:
+            self.assertEqual(archive.extractfile('runtime/policies/upstream-ca.pem').read(),ca)
 
     def test_failure_restarts_and_never_writes_complete_manifest(self):
         with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as cmd, patch.object(backup_snapshot,'process_component',side_effect=RuntimeError('failed')):

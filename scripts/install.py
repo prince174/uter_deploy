@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tomllib
@@ -15,10 +16,15 @@ from urllib.parse import urlsplit
 
 import bcrypt
 import yaml
+from cryptography import x509
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = re.compile(r'[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}\Z')
 NAME = re.compile(r'[a-z][a-z0-9-]{0,38}[a-z0-9]\Z')
+CA_FILE = 'upstream-ca.pem'
+CA_PATH = '/app/policies/' + CA_FILE
+CA_LIMIT = 1024 * 1024
+PEM_CERT = re.compile(rb'-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----')
 
 
 def save(path, value):
@@ -32,6 +38,42 @@ def scalar(value):
     if not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
         raise ValueError('Empty values and control characters are not allowed')
     return value
+
+
+def read_ca_bundle(path):
+    """Accept only a bounded PEM certificate bundle, never private keys or extra data."""
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, 'rb') as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError('LLM CA bundle must be a regular file')
+        data = source.read(CA_LIMIT + 1)
+    if not data or len(data) > CA_LIMIT or PEM_CERT.sub(b'', data).strip():
+        raise ValueError('LLM CA bundle must contain only PEM certificates and be at most 1 MiB')
+    try:
+        certs = x509.load_pem_x509_certificates(data)
+    except ValueError as exc:
+        raise ValueError('Invalid PEM certificate in LLM CA bundle') from exc
+    if not certs:
+        raise ValueError('LLM CA bundle must contain at least one PEM certificate')
+    return data.decode('ascii')
+
+
+def prepare_ca_permissions(runtime):
+    """Allow only the Guardrail uid to read an optional restored or prepared CA file."""
+    path = Path(runtime) / 'policies' / CA_FILE
+    if not path.exists() and not path.is_symlink():
+        return
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError('LLM CA bundle must be a regular file without hard links')
+        os.fchown(fd, 10001, 10001)
+        os.fchmod(fd, 0o400)
+    finally:
+        os.close(fd)
 
 
 def prepare(args, api_key):
@@ -48,6 +90,10 @@ def prepare(args, api_key):
         raise ValueError('LLM URL must be HTTP(S), without credentials, query or fragment')
     if url.scheme != 'https' and not args.allow_http_llm:
         raise ValueError('HTTP LLM requires --allow-http-llm for a trusted private network')
+    ca_path = getattr(args, 'llm_ca_bundle', None)
+    if ca_path and url.scheme != 'https':
+        raise ValueError('LLM CA bundle requires an HTTPS LLM URL')
+    ca_bundle = read_ca_bundle(ca_path) if ca_path else None
     scalar(args.llm_model)
     if api_key:
         scalar(api_key)
@@ -60,6 +106,9 @@ def prepare(args, api_key):
     profiles = args.profiles.read_text(encoding='utf-8')
     tomllib.loads(policy)
     tomllib.loads(profiles)
+    if (args.backend == 'kubernetes' and ca_bundle and
+            len(policy.encode('utf-8')) + len(ca_bundle.encode('ascii')) + len('runtime.toml') + len(CA_FILE) > CA_LIMIT):
+        raise ValueError('Combined policy and LLM CA bundle exceed the Kubernetes ConfigMap size limit')
     if args.backend == 'kubernetes' and not args.context:
         raise ValueError('An explicit --context is required for Kubernetes')
     dockerconfig = None
@@ -75,6 +124,10 @@ def prepare(args, api_key):
                  OPENAI_INGRESS_SHARED_SECRET=secrets.token_hex(32), UPSTREAM_MODE='litellm_openai',
                  UPSTREAM_URL=args.llm_url.rstrip('/'), UPSTREAM_OPENAI_MODEL=args.llm_model,
                  UPSTREAM_API_KEY=api_key, AUDIT_LOG_HMAC_KEY=secrets.token_hex(32), TOXICITY_FAIL_CLOSED='true')
+    if ca_bundle:
+        # Pin OpenSSL's CA file AND directory: leaving the default CA directory
+        # would silently retain the platform trust store for some clients.
+        guard.update(SSL_CERT_FILE=CA_PATH, SSL_CERT_DIR='/app/policies', REQUESTS_CA_BUNDLE=CA_PATH)
     judge_url = getattr(args, 'judge_url', None)
     guard['JUDGE_ENABLED'] = 'true' if judge_url else 'false'
     if judge_url:
@@ -95,6 +148,8 @@ def prepare(args, api_key):
     save(runtime / 'audit-hmac-key', guard['AUDIT_LOG_HMAC_KEY'])
     save(runtime / 'redis.conf', (ROOT / 'examples/redis.conf.example').read_text().replace('REPLACE', redis))
     save(runtime / 'policies/runtime.toml', policy)
+    if ca_bundle:
+        save(runtime / 'policies' / CA_FILE, ca_bundle)
     save(runtime / 'profiles/model_profiles.toml', profiles)
     (runtime / 'models').mkdir(mode=0o755)
     save(home / 'credentials.json', json.dumps({**passwords, 'openai_ingress_key': guard['OPENAI_INGRESS_SHARED_SECRET']}, indent=2))
@@ -111,7 +166,10 @@ def prepare(args, api_key):
         resource('Secret', args.name + '-guardrail-env', type='Opaque', stringData=guard)
         resource('Secret', args.name + '-agent-env', type='Opaque', stringData=agent)
         resource('Secret', args.name + '-redis-secret', type='Opaque', stringData={'password': redis})
-        resource('ConfigMap', args.name + '-policies', data={'runtime.toml': policy})
+        policies = {'runtime.toml': policy}
+        if ca_bundle:
+            policies[CA_FILE] = ca_bundle
+        resource('ConfigMap', args.name + '-policies', data=policies)
         resource('ConfigMap', args.name + '-profiles', data={'model_profiles.toml': profiles})
         if dockerconfig:
             resource('Secret', args.name + '-registry', type='kubernetes.io/dockerconfigjson',
@@ -185,6 +243,7 @@ def install(home, cfg):
         for path in (runtime / 'policies/runtime.toml', runtime / 'profiles/model_profiles.toml', runtime / 'audit-hmac-key'):
             os.chown(path, 10001, 10001)
             os.chmod(path, 0o400)
+        prepare_ca_permissions(runtime)
         for filename in ('redis.conf', 'redis-password'):
             os.chown(runtime / filename, 999, 10001)
             os.chmod(runtime / filename, 0o440)
@@ -218,6 +277,8 @@ def main():
     p.add_argument('--llm-url')
     p.add_argument('--llm-model')
     p.add_argument('--llm-key-file', type=Path)
+    p.add_argument('--llm-ca-bundle', type=Path,
+                   help='Complete PEM trust bundle for HTTPS LLM; replaces default trust roots')
     p.add_argument('--allow-http-llm', action='store_true')
     p.add_argument('--port', type=int, default=18000)
     p.add_argument('--guardrail-cpus', type=float, default=4, help='Compose CPU limit; use 2 for a small isolated test host')

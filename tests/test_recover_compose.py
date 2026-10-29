@@ -8,6 +8,14 @@ from scripts import recover_compose
 
 
 class ComposeRecoveryGuardTests(unittest.TestCase):
+    @unittest.skipUnless(os.name=='posix','POSIX permission semantics required')
+    def test_recovery_restores_optional_ca_file_access(self):
+        runtime=Path('/fixture/runtime')
+        with patch.object(recover_compose.os,'chown'), patch.object(recover_compose.os,'chmod'), \
+             patch.object(recover_compose.install,'prepare_ca_permissions') as ca:
+            recover_compose.prepare_runtime_permissions(runtime)
+        ca.assert_called_once_with(runtime)
+
     @unittest.skipUnless(os.name=='posix','root check uses POSIX geteuid')
     def test_nonroot_refused_before_docker(self):
         with patch('os.geteuid',return_value=1000),patch.object(recover_compose,'run') as run:
