@@ -218,14 +218,68 @@ def check(home, cfg):
         run(cmd + ['template', cfg['name']] + args)
 
 
-def install(home, cfg):
+def require_local_images(cfg):
+    """Reject an offline install unless every exact image reference resolves locally."""
+    if not isinstance(cfg.get('images'), dict) or set(cfg['images']) != {'guardrail', 'agent', 'redis'}:
+        raise ValueError('Offline install requires exactly guardrail, agent and redis image references')
+    for service, ref in cfg['images'].items():
+        if not isinstance(ref, str) or not IMAGE.fullmatch(ref):
+            raise ValueError('Offline install requires immutable image references')
+        raw = run(['docker', '--context', 'default', 'image', 'inspect', ref])
+        try:
+            images = json.loads(raw)
+            if not isinstance(images, list) or len(images) != 1:
+                raise ValueError
+            image = images[0]
+            if not isinstance(image, dict):
+                raise ValueError
+            digest = ref.rsplit('@', 1)[-1]
+            descriptor = image.get('Descriptor') or {}
+            repos = image.get('RepoDigests') or []
+            if not isinstance(repos, list) or not isinstance(descriptor, dict):
+                raise ValueError
+            if ref not in repos and not (
+                    image.get('Id') == digest and descriptor.get('digest') == digest):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError(f'Offline image reference not verified locally: {service}') from None
+
+
+def reject_reserved_compose_names(name):
+    """Reject pre-existing names even when they have no Compose project label.
+
+    Docker Compose can reuse a named volume without the expected labels. This
+    preflight cannot exclude concurrent administrators racing the installation;
+    use a dedicated daemon or coordinate other writers during installation.
+    """
+    reserved = {
+        'container': {f'{name}-{service}-1' for service in ('guardrail', 'agent', 'redis')},
+        'network': {name + '_backend', name + '_outbound'},
+        'volume': {name + '_redis-data', name + '_audit-data'},
+    }
+    for kind, names in reserved.items():
+        command = ['docker', '--context', 'default', kind, 'ls']
+        if kind == 'container':
+            command.append('--all')
+        output = run(command + ['--format', '{{.Names}}' if kind == 'container' else '{{.Name}}'])
+        if names.intersection(output.splitlines()):
+            raise ValueError(f'Compose {kind} name already exists; refusing to reuse an existing resource')
+
+
+def install(home, cfg, *, offline=False):
     if os.name != 'posix':
         raise ValueError('Install is supported on Linux; prepare/check can run elsewhere')
     if (home / 'install-state.json').exists():
         raise ValueError('Install already attempted; preserve secrets/data and diagnose. Use uterctl for managed updates.')
+    if offline and cfg['backend'] != 'compose':
+        raise ValueError('Offline first install is supported for Compose only; Kubernetes nodes may pull images')
+    if offline and (not isinstance(cfg.get('images'), dict) or set(cfg['images']) != {'guardrail', 'agent', 'redis'}):
+        raise ValueError('Offline install requires exactly guardrail, agent and redis image references')
     check(home, cfg)
     cmd, env = commands(home, cfg)
     name = cfg['name']
+    if not isinstance(name, str) or not NAME.fullmatch(name):
+        raise ValueError('Invalid installation name')
     if cfg['backend'] == 'compose':
         if os.geteuid() != 0:
             raise ValueError('Compose install requires root for container-readable bind mount ownership')
@@ -234,9 +288,12 @@ def install(home, cfg):
         endpoint = json.loads(run(['docker', 'context', 'inspect', 'default']))[0]['Endpoints']['docker']['Host']
         if not endpoint.startswith('unix://') or os.environ.get('DOCKER_HOST'):
             raise ValueError('A local Unix Docker socket without DOCKER_HOST is required')
+        if offline:
+            require_local_images(cfg)
         for kind in ('container', 'volume', 'network'):
             if run(['docker', '--context', 'default', kind, 'ls', '-q', '--filter', f'label=com.docker.compose.project={name}']).strip():
                 raise ValueError('Compose project already exists; select a new name, do not overwrite an existing stand')
+        reject_reserved_compose_names(name)
         runtime = home / 'runtime'
         for folder in ('policies', 'profiles', 'models'):
             os.chmod(runtime / folder, 0o755)
@@ -248,7 +305,8 @@ def install(home, cfg):
             os.chown(runtime / filename, 999, 10001)
             os.chmod(runtime / filename, 0o440)
         save(home / 'install-state.json', '{"status":"pending"}\n')
-        run(cmd + ['pull'], env)
+        if not offline:
+            run(cmd + ['pull'], env)
         run(cmd + ['up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '300'], env)
     else:
         kube = ['kubectl', '--context', cfg['context']]
@@ -286,8 +344,11 @@ def main():
     p.add_argument('--judge-model', default='qwen2.5:7b')
     p.add_argument('--storage-class', default='')
     p.add_argument('--registry-config', type=Path, help='Dedicated Docker auth config.json for Kubernetes image pulls')
+    p.add_argument('--offline', action='store_true', help='Compose install only: require local digest images and never pull')
     args = p.parse_args()
     try:
+        if args.offline and args.command != 'install':
+            raise ValueError('--offline is supported only for the install command')
         if args.command == 'prepare':
             if args.inputs:
                 args.images = args.images or args.inputs / 'images.json'
@@ -306,7 +367,10 @@ def main():
         else:
             home = args.home.resolve()
             cfg = json.loads((home / 'install.json').read_text())
-            (check if args.command == 'check' else install)(home, cfg)
+            if args.command == 'check':
+                check(home, cfg)
+            else:
+                install(home, cfg, offline=args.offline)
             print('Configuration checked (no workloads started).' if args.command == 'check' else 'Services ready. Run runtime acceptance before opening access.')
     except (ValueError, RuntimeError, OSError) as exc:
         print(str(exc), file=sys.stderr)
