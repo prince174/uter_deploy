@@ -5,6 +5,7 @@ Only disposable GitHub-hosted Linux workflow_dispatch runners are supported. No
 product source, operator credentials, existing local workloads or raw logs are used.
 """
 import hashlib
+import base64
 import ipaddress
 import json
 import os
@@ -35,6 +36,53 @@ ID = re.compile(r'[0-9a-f]{64}\Z')
 
 class Failure(Exception):
     """Fixed error category; external output is never displayed."""
+
+
+def max_tokens_scenario(value):
+    """Only explicit, reviewable CI settings reach the signed wizard."""
+    if value == 'model_default':
+        return [], None
+    if value == '64':
+        return ['--llm-max-tokens', '64'], 64
+    raise Failure('LLM_MAX_TOKENS_SCENARIO_INVALID')
+
+
+def successful_evidence(backend, version, configured_max_tokens):
+    return {'backend': backend, 'public_signed_wizard': 'pass', 'vllm_direct': 'pass',
+            'litellm_direct': 'pass', 'wizard_acceptance': 'pass', 'uter_completion': 'pass',
+            'vllm_tokens_increased': 'pass', 'model_revision': llm.MODEL_REVISION,
+            'environment': 'disposable GitHub-hosted runner', 'release_version': version,
+            'configured_llm_max_tokens': configured_max_tokens,
+            'llm_max_tokens_setting_verified': 'pass'}
+
+
+def verify_max_tokens_setting(home, backend, name, context, configured_max_tokens):
+    """Verify only the selected setting; never print unrelated environment or Secret data."""
+    expected = None if configured_max_tokens is None else str(configured_max_tokens)
+    try:
+        if backend == 'compose':
+            content = (home / 'runtime' / 'guardrail.env').read_bytes()
+            if len(content) > 65536:
+                raise ValueError
+            matches = [line.partition('=')[2] for line in content.decode('utf-8').splitlines()
+                       if line.startswith('UPSTREAM_OPENAI_MAX_TOKENS=')]
+            if len(matches) > 1:
+                raise ValueError
+            actual = matches[0] if matches else None
+        elif backend == 'kubernetes':
+            _, raw = command(['kubectl', '--context', context, '-n', name, 'get', 'secret',
+                              name + '-guardrail-env', '-o',
+                              'jsonpath={.data.UPSTREAM_OPENAI_MAX_TOKENS}'],
+                             'MAX_TOKENS_SETTING_UNAVAILABLE', timeout=30)
+            if len(raw) > 32:
+                raise ValueError
+            actual = base64.b64decode(raw, validate=True).decode('ascii') if raw else None
+        else:
+            raise ValueError
+        if actual != expected:
+            raise ValueError
+    except (OSError, UnicodeError, ValueError):
+        raise Failure('MAX_TOKENS_SETTING_MISMATCH') from None
 
 
 class WizardFailure(Failure):
@@ -464,6 +512,8 @@ def stop_forward(proc):
 
 def main():
     common.runner_guard(os.environ, ROOT)
+    max_tokens_args, configured_max_tokens = max_tokens_scenario(
+        os.environ.get('LLM_MAX_TOKENS_SCENARIO', 'model_default'))
     if os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT') not in (None, '', 'default'):
         raise Failure('LOCAL_DOCKER_REQUIRED')
     require_local_docker()
@@ -557,6 +607,7 @@ def main():
                       '--backend', backend, '--home', home, '--name', name, '--llm-url', proxy_url+'/v1',
                       '--llm-model', llm.MODEL_ALIAS, '--llm-key-file', keyfile, '--allow-http-llm',
                       '--health-url', proxy_url+'/v1/models', '--port', str(llm.UTER_PORT), '--guardrail-cpus', '2']
+            values += max_tokens_args
             if backend == 'kubernetes': values += ['--context', 'kind-'+cluster]
             before = metric(vllm_url)
             report_capacity_and_vllm_metrics(vllm_url, 'BEFORE_ACCEPTANCE')
@@ -575,6 +626,7 @@ def main():
             state = json.loads((home/'install-state.json').read_text())
             if state != {'status': 'ready', 'acceptance': 'passed'}:
                 raise Failure('WIZARD_ACCEPTANCE_NOT_PASSED')
+            verify_max_tokens_setting(home, backend, name, 'kind-'+cluster, configured_max_tokens)
             if metric(vllm_url) <= before:
                 raise Failure('WIZARD_LLM_TOKENS_UNCHANGED')
             if backend == 'kubernetes':
@@ -621,10 +673,7 @@ def main():
                     print('CLEANUP_CODE=' + code, file=sys.stderr)
                 print('Cleanup inconclusive; resources or daemon operations may remain on the disposable runner.', file=sys.stderr)
                 raise Failure('ISOLATED_CLEANUP_INCONCLUSIVE')
-    evidence = {'backend': backend, 'public_signed_wizard': 'pass', 'vllm_direct': 'pass',
-                'litellm_direct': 'pass', 'wizard_acceptance': 'pass', 'uter_completion': 'pass',
-                'vllm_tokens_increased': 'pass', 'model_revision': llm.MODEL_REVISION,
-                'environment': 'disposable GitHub-hosted runner', 'release_version': version}
+    evidence = successful_evidence(backend, version, configured_max_tokens)
     path = ROOT/'work/wizard-real-llm-evidence.json'
     # This evidence contains only the fixed public statuses, backend, model
     # revision and release version. upload-artifact runs as the runner user.

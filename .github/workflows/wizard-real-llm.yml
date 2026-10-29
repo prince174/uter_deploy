@@ -13,6 +13,14 @@ on:
         type: string
         required: true
         default: '0.1.6'
+      llm_max_tokens_scenario:
+        description: Explicit Uter max-tokens configuration for this test (model_default does not configure one)
+        type: choice
+        required: true
+        default: model_default
+        options:
+          - model_default
+          - '64'
 permissions:
   contents: read
 jobs:
@@ -26,6 +34,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
       RELEASE_VERSION: ${{ inputs.version }}
+      LLM_MAX_TOKENS_SCENARIO: ${{ inputs.llm_max_tokens_scenario }}
     steps:
       - name: Fetch the public deployment repository anonymously
         shell: bash
@@ -75,7 +84,7 @@ jobs:
           test "$GITHUB_ACTIONS" = true
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test "$RUNNER_OS" = Linux
-          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_EVENT_NAME,GITHUB_REPOSITORY,GITHUB_WORKSPACE,RUNNER_ENVIRONMENT,RUNNER_OS,BACKEND,RELEASE_TAG,RELEASE_VERSION \
+          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_EVENT_NAME,GITHUB_REPOSITORY,GITHUB_WORKSPACE,RUNNER_ENVIRONMENT,RUNNER_OS,BACKEND,RELEASE_TAG,RELEASE_VERSION,LLM_MAX_TOKENS_SCENARIO \
             "$PWD/.venv/bin/python" scripts/wizard_real_llm_ci.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()

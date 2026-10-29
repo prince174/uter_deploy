@@ -20,6 +20,53 @@ OPERATION = 'b' * 32
 
 
 class IsolatedWizardLlmTests(unittest.TestCase):
+    def test_explicit_max_tokens_scenarios(self):
+        self.assertEqual(driver.max_tokens_scenario('model_default'), ([], None))
+        self.assertEqual(driver.max_tokens_scenario('64'), (['--llm-max-tokens', '64'], 64))
+        for invalid in ('', '0', '65', '64 --help', 'unbounded'):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                    driver.Failure, '^LLM_MAX_TOKENS_SCENARIO_INVALID$'):
+                driver.max_tokens_scenario(invalid)
+
+    def test_evidence_identifies_actual_selected_setting(self):
+        for mode, expected in (('model_default', None), ('64', 64)):
+            _, value = driver.max_tokens_scenario(mode)
+            evidence = driver.successful_evidence('compose', '0.1.6', value)
+            self.assertEqual(evidence['configured_llm_max_tokens'], expected)
+            self.assertEqual(evidence['wizard_acceptance'], 'pass')
+
+    def test_invalid_scenario_is_rejected_before_docker_interaction(self):
+        with patch.dict(os.environ, {'LLM_MAX_TOKENS_SCENARIO': '64 --help'}, clear=True), \
+                patch.object(driver.common, 'runner_guard'), patch.object(driver, 'require_local_docker') as docker:
+            with self.assertRaisesRegex(driver.Failure, '^LLM_MAX_TOKENS_SCENARIO_INVALID$'):
+                driver.main()
+        docker.assert_not_called()
+
+    def test_compose_setting_verified_without_printing_other_secrets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder); (home/'runtime').mkdir()
+            env = home/'runtime/guardrail.env'
+            env.write_text('PASSWORD=secret-canary\nUPSTREAM_OPENAI_MAX_TOKENS=64\n')
+            with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                driver.verify_max_tokens_setting(home, 'compose', 'test', '', 64)
+                with self.assertRaisesRegex(driver.Failure, '^MAX_TOKENS_SETTING_MISMATCH$'):
+                    driver.verify_max_tokens_setting(home, 'compose', 'test', '', None)
+            self.assertNotIn('secret-canary', out.getvalue() + err.getvalue())
+            env.write_text('UPSTREAM_OPENAI_MAX_TOKENS=64\nUPSTREAM_OPENAI_MAX_TOKENS=64\n')
+            with self.assertRaisesRegex(driver.Failure, '^MAX_TOKENS_SETTING_MISMATCH$'):
+                driver.verify_max_tokens_setting(home, 'compose', 'test', '', 64)
+            env.write_text('PASSWORD=secret-canary\n')
+            driver.verify_max_tokens_setting(home, 'compose', 'test', '', None)
+
+    def test_kubernetes_checks_only_selected_secret_field(self):
+        with patch.object(driver, 'command', return_value=(0, b'NjQ=')) as command:
+            driver.verify_max_tokens_setting(Path('/unused'), 'kubernetes', 'uter-test', 'kind-test', 64)
+        self.assertEqual(command.call_args.args[0][-1], 'jsonpath={.data.UPSTREAM_OPENAI_MAX_TOKENS}')
+        with patch.object(driver, 'command', return_value=(0, b'')):
+            driver.verify_max_tokens_setting(Path('/unused'), 'kubernetes', 'uter-test', 'kind-test', None)
+            with self.assertRaisesRegex(driver.Failure, '^MAX_TOKENS_SETTING_MISMATCH$'):
+                driver.verify_max_tokens_setting(Path('/unused'), 'kubernetes', 'uter-test', 'kind-test', 64)
+
     def test_capacity_metrics_never_emit_labels(self):
         class Response:
             def __enter__(self): return self
@@ -220,6 +267,8 @@ class IsolatedWizardLlmTests(unittest.TestCase):
         self.assertIn('RUNNER_ENVIRONMENT', workflow)
         self.assertIn('GIT_TERMINAL_PROMPT', workflow)
         self.assertIn("--proto '=https'", workflow)
+        self.assertIn('LLM_MAX_TOKENS_SCENARIO', workflow)
+        self.assertIn('default: model_default', workflow)
         source = (ROOT/'scripts/wizard_real_llm_ci.py').read_text(encoding='utf-8')
         self.assertIn("'--llm-key-file', keyfile", source)
         self.assertNotIn("'--llm-key', key", source)
