@@ -1,9 +1,12 @@
 import json
+import contextlib
+import io
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import tempfile
 import threading
+import sys
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -17,6 +20,25 @@ OPERATION = 'b' * 32
 
 
 class IsolatedWizardLlmTests(unittest.TestCase):
+    def test_wizard_diagnostic_is_bounded_and_only_fixed_codes_are_reported(self):
+        output = io.StringIO()
+        program = ("import sys\nprint('secret-canary' * 200000)\n"
+                   "print('litellm_completion: fail (NETWORK_TIMEOUT)')\n"
+                   "print('Мастер установки остановлен: HOST_PREFLIGHT_FAILED. secret-canary')\n"
+                   "sys.exit(1)\n")
+        with contextlib.redirect_stderr(output), self.assertRaisesRegex(driver.Failure, 'SIGNED_WIZARD_FAILED'):
+            driver.run_signed_wizard([sys.executable, '-c', program], timeout=10)
+        self.assertIn('WIZARD_CODE=HOST_PREFLIGHT_FAILED', output.getvalue())
+        self.assertIn('PREFLIGHT_CODE=NETWORK_TIMEOUT', output.getvalue())
+        self.assertNotIn('secret-canary', output.getvalue())
+
+    def test_unrecognized_wizard_code_is_not_reported(self):
+        output = io.StringIO()
+        program = "import sys; print('Bootstrap stopped: SECRET_CANARY'); sys.exit(1)"
+        with contextlib.redirect_stderr(output), self.assertRaisesRegex(driver.Failure, 'SIGNED_WIZARD_FAILED'):
+            driver.run_signed_wizard([sys.executable, '-c', program], timeout=10)
+        self.assertEqual(output.getvalue(), '')
+
     def test_remote_default_daemon_rejected_before_any_mutation(self):
         remote = [{'Name': 'default', 'Endpoints': {'docker': {'Host': 'tcp://192.0.2.1:2375'}}}]
         with patch.dict(os.environ, {}, clear=True), patch.object(driver.common, 'runner_guard'), \

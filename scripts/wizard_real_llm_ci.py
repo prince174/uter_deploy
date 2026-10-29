@@ -51,6 +51,69 @@ def command(argv, category, *, timeout=900, env=None, capture=True, allowed_fail
     return result.returncode, output
 
 
+def run_signed_wizard(argv, timeout=1800):
+    """Keep bounded output in memory and emit only an allowlist of fixed codes."""
+    wizard_codes = {
+        'HOST_PREFLIGHT_FAILED', 'RELEASE_VERIFICATION_FAILED', 'SIGNED_INPUTS_INVALID',
+        'RELEASE_TREE_UNTRUSTED', 'INPUT_OR_PATH_INVALID', 'INSTALLATION_EXISTS',
+        'LOCAL_PORT_UNAVAILABLE', 'LLM_KEY_UNAVAILABLE', 'ACCEPTANCE_FAILED',
+        'ACCEPTANCE_STATE_WRITE_FAILED', 'ACCEPTANCE_LOCK_OR_STATE_FAILED',
+        'INSTALLATION_STATE_CHANGED', 'INSTALLATION_OPERATION_LOCKED', 'KUBERNETES_FORWARD_FAILED',
+        'PREPARE_FAILED', 'CHECK_FAILED', 'INSTALL_FAILED', 'PREPARE_FAILED_OR_TIMED_OUT',
+        'CHECK_FAILED_OR_TIMED_OUT', 'INSTALL_FAILED_OR_TIMED_OUT',
+    }
+    bootstrap_codes = {
+        'DIRECTORY_INVALID', 'DIRECTORY_UNTRUSTED', 'PRIVATE_ENVIRONMENT_REQUIRED',
+        'FILE_UNTRUSTED', 'TREE_TOO_LARGE', 'TREE_UNTRUSTED', 'TREE_LINK_UNTRUSTED',
+        'ENVIRONMENT_INSIDE_SIGNED_BUNDLE', 'GENERATED_ENVIRONMENT_UNTRUSTED',
+        'LINUX_REQUIRED', 'PYTHON_3_11_REQUIRED', 'RUN_FROM_TRUSTED_CHECKOUT_NOT_SIGNED_BUNDLE',
+        'ENVIRONMENT_CREATION_FAILED_INSPECT_DIRECTORY', 'ENVIRONMENT_PYTHON_NOT_EXECUTABLE',
+        'DEPENDENCY_INSTALL_FAILED',
+    }
+    preflight_codes = {'DOCKER_NOT_FOUND', 'COMPOSE_VERSION_UNAVAILABLE', 'COMPOSE_VERSION_UNSUPPORTED',
+        'DOCKER_HOST_UNSUPPORTED', 'LOCAL_DEFAULT_UNIX_CONTEXT_REQUIRED', 'DOCKER_UNAVAILABLE',
+        'KUBECTL_NOT_FOUND', 'HELM_NOT_FOUND', 'EXPLICIT_CONTEXT_REQUIRED', 'CONTEXT_NOT_FOUND',
+        'API_UNAVAILABLE', 'NO_HEALTHY_BACKENDS', 'NETWORK_TIMEOUT', 'NETWORK_FAILED', 'TLS_FAILED',
+        'REDIRECT_BLOCKED', 'RESPONSE_TOO_LARGE', 'RESPONSE_INVALID', 'COMPLETION_INVALID',
+        'DNS_FAILED', 'HTTP_OTHER', 'HTTP_UNEXPECTED_STATUS'} | {'HTTP_'+str(x) for x in
+        (400, 401, 403, 404, 408, 409, 422, 429, 500, 502, 503, 504)}
+    try:
+        proc = subprocess.Popen([str(item) for item in argv], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+    except OSError:
+        raise Failure('SIGNED_WIZARD_START_FAILED') from None
+    data = bytearray(); deadline = time.monotonic() + timeout; timed_out = False
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                proc.kill(); proc.wait()
+                break
+            ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 1))
+            if ready:
+                chunk = os.read(proc.stdout.fileno(), 8192)
+                if not chunk: break
+                data.extend(chunk)
+                if len(data) > 1024 * 1024: del data[:-1024 * 1024]
+        status = proc.wait()
+    finally:
+        proc.stdout.close()
+    if timed_out:
+        raise Failure('SIGNED_WIZARD_TIMEOUT')
+    if status:
+        text = data.decode('utf-8', 'replace')
+        for prefix, allowed, label in (('Мастер установки остановлен: ', wizard_codes, 'WIZARD'),
+                                       ('Bootstrap stopped: ', bootstrap_codes, 'BOOTSTRAP')):
+            matches = re.findall(re.escape(prefix) + r'([A-Z_0-9]+)', text)
+            if matches and matches[-1] in allowed:
+                print(label + '_CODE=' + matches[-1], file=sys.stderr)
+        for code in re.findall(r': fail \(([A-Z_0-9]+)\)', text):
+            if code in preflight_codes:
+                print('PREFLIGHT_CODE=' + code, file=sys.stderr)
+        raise Failure('SIGNED_WIZARD_FAILED')
+
+
 def checked_id(raw):
     try:
         value = raw.decode('ascii').strip()
@@ -366,8 +429,7 @@ def main():
             if backend == 'kubernetes': values += ['--context', 'kind-'+cluster]
             before = metric(vllm_url)
             attempted = True
-            command(common.bootstrap_command(sys.executable, checkout, environment, 'install', values),
-                    'SIGNED_WIZARD_FAILED', timeout=1800, capture=False)
+            run_signed_wizard(common.bootstrap_command(sys.executable, checkout, environment, 'install', values))
             install_finished = True
             state = json.loads((home/'install-state.json').read_text())
             if state != {'status': 'ready', 'acceptance': 'passed'}:
@@ -411,6 +473,11 @@ def main():
                 try: remove_owned(kind, ident, resource, operation)
                 except Exception: cleanup_errors.append('RESOURCE')
             if cleanup_errors:
+                primary = sys.exc_info()[1]
+                if isinstance(primary, Failure):
+                    print('PRIMARY_CODE=' + str(primary), file=sys.stderr)
+                for code in sorted(set(cleanup_errors)):
+                    print('CLEANUP_CODE=' + code, file=sys.stderr)
                 print('Cleanup inconclusive; resources or daemon operations may remain on the disposable runner.', file=sys.stderr)
                 raise Failure('ISOLATED_CLEANUP_INCONCLUSIVE')
     evidence = {'backend': backend, 'public_signed_wizard': 'pass', 'vllm_direct': 'pass',
@@ -418,7 +485,10 @@ def main():
                 'vllm_tokens_increased': 'pass', 'model_revision': llm.MODEL_REVISION,
                 'environment': 'disposable GitHub-hosted runner', 'release_version': version}
     path = ROOT/'work/wizard-real-llm-evidence.json'
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    # This evidence contains only the fixed public statuses, backend, model
+    # revision and release version. upload-artifact runs as the runner user.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    os.fchmod(fd, 0o644)
     with os.fdopen(fd, 'w', encoding='utf-8') as stream: json.dump(evidence, stream, indent=2)
     print(json.dumps(evidence))
 
