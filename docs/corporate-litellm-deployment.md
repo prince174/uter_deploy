@@ -5,6 +5,11 @@
 сборка Uter на целевой машине не нужны. Выберите **один** вариант установки —
 Compose или Kubernetes — и выполните проверку до открытия доступа.
 
+Для интерактивной установки и обновления можно использовать [мастер Uter](wizard.md).
+Ниже сохранён подробный ручной порядок для проверки отдельных этапов. Руководство
+подготовлено для `0.1.6`: тег и ссылки на комплект заработают после публикации;
+прохождение CI для этого выпуска не следует предполагать заранее.
+
 ```text
 приложение → TLS reverse proxy / Ingress → Uter → LiteLLM → vLLM → модель
 ```
@@ -31,7 +36,7 @@ Compose или Kubernetes — и выполните проверку до отк
 маршрут, DNS и доверенные CA **внутри** контейнера или Pod. При обращении к HTTPS
 не отключайте проверку сертификата и имени сервера.
 
-Установщик `0.1.5` поддерживает параметр `prepare --llm-ca-bundle PATH`:
+Установщик `0.1.6` поддерживает параметр `prepare --llm-ca-bundle PATH`:
 он предназначен для полного PEM-набора доверенных корней, а не только добавочного
 сертификата. Набор применяется ко всем HTTPS-соединениям процесса Guardrail;
 включите корни, необходимые другим его HTTPS-интеграциям. На опубликованных образах
@@ -63,14 +68,15 @@ Redis 2 GiB и аудит 10 GiB по умолчанию. Для действи�
 
 ## 2. Получить и проверить выпуск
 
-Это руководство подготовлено для `deploy-2026.10.29-signed-1`. Ранее опубликованный `0.1.4`
+Это руководство подготовлено для `deploy-2026.10.29-signed-2`; публикация тега и
+артефактов должна состояться до использования команд. Ранее опубликованный `0.1.4`
 не содержит описанные здесь дополнительные команды.
 
 Сначала выполните раздел **«1. Получить установочные файлы»** в [README](../README.md).
-Он создаёт `.venv`, загружает `deploy-2026.10.29-signed-1`, проверяет подпись
-комплекта `0.1.5` и подписанный хеш входных данных до распаковки. Дальнейшие команды
+Он создаёт `.venv`, загружает `deploy-2026.10.29-signed-2`, проверяет подпись
+комплекта `0.1.6` и подписанный хеш входных данных до распаковки. Дальнейшие команды
 предполагают, что текущий каталог — полученный `uter_deploy`, а результаты находятся в
-`signed/0.1.5`, `signed/publisher-public.pem` и `incoming/inputs`.
+`signed/0.1.6`, `signed/publisher-public.pem` и `incoming/inputs`.
 
 **Отпечаток ключа издателя необходимо получить и сверить по независимому доверенному
 каналу.** Отпечаток из того же репозитория, что архив, не устанавливает доверие к
@@ -94,7 +100,7 @@ Redis 2 GiB и аудит 10 GiB по умолчанию. Для действи�
 подписанный manifest. Учитывайте доступ kubelet к registry на всех узлах.
 
 После обычных `prepare`/`check` команда для Compose выглядит так
-(`/path/to/verified-bundle` обозначает путь к проверенному комплекту `0.1.5`):
+(`/path/to/verified-bundle` обозначает путь к проверенному комплекту `0.1.6`):
 
 ```bash
 sudo /path/to/venv/bin/python /path/to/verified-bundle/scripts/install.py install \
@@ -177,7 +183,7 @@ PY
 успех не подтверждает доверие CA в образе Guardrail. Не отключайте TLS-проверку
 ради прохождения теста.
 
-В комплекте `0.1.5` есть дополнительная Compose-проверка из временного контейнера
+В комплекте `0.1.6` предусмотрена дополнительная Compose-проверка из временного контейнера
 подписанного образа Guardrail. Сначала убедитесь, что точный digest образа уже
 присутствует в локальном daemon: команда не выполняет pull. Подготовьте приватный
 каталог журналов, а затем укажите проверенный комплект, отдельно доверенный ключ и
@@ -187,8 +193,8 @@ README; сама проверка отсутствует в `0.1.4`. Перед 
 
 ```bash
 install -d -m 700 "$HOME/.local/state/uter-preflight"
-.venv/bin/python signed/0.1.5/scripts/workload_preflight.py probe \
-  --bundle ./signed/0.1.5 \
+.venv/bin/python signed/0.1.6/scripts/workload_preflight.py probe \
+  --bundle ./signed/0.1.6 \
   --publisher-key ./signed/publisher-public.pem \
   --fingerprint "$UTER_PUBLISHER_SHA256" \
   --state-dir "$HOME/.local/state/uter-preflight" \
@@ -201,7 +207,7 @@ Uter; будущая Compose-сеть, Kubernetes/CNI и корпоративн�
 Она проверяет TLS, HTTP health и реальный короткий запрос, передавая ключ через stdin;
 текст ответа и ключ не выводятся. Само приложение всё равно проверяется после установки.
 После прерывания может остаться журнал без секрета: сохраните показанный путь и
-используйте `.venv/bin/python signed/0.1.5/scripts/workload_preflight.py cleanup --operation-dir PATH`.
+используйте `.venv/bin/python signed/0.1.6/scripts/workload_preflight.py cleanup --operation-dir PATH`.
 Удаляются только ресурсы с совпадающими identity и метками. При SIGKILL или потере
 питания автоматическая очистка не гарантируется; при несовпадении daemon или identity
 команда откажется удалять ресурсы. В уже опубликованном `0.1.4` этой команды нет.
@@ -217,7 +223,7 @@ Desktop/WSL используют group-writable путь CLI: проверка �
 
 Выберите **новые** каталог установки и имя проекта: повторный `prepare` не
 перезаписывает существующие секреты, а `install` не принимает существующий проект.
-В `0.1.5` дополнительно проверяются зарезервированные имена контейнеров,
+В `0.1.6` дополнительно проверяются зарезервированные имена контейнеров,
 сетей и томов даже при отсутствии меток Compose. Проверка не атомарна относительно
 других администраторов Docker: используйте отдельный daemon или согласованное окно
 без параллельного создания ресурсов. В опубликованном `0.1.4` этой дополнительной
@@ -225,12 +231,12 @@ Desktop/WSL используют group-writable путь CLI: проверка �
 Из каталога `uter_deploy`:
 
 ```bash
-sudo .venv/bin/python signed/0.1.5/scripts/install.py prepare \
+sudo .venv/bin/python signed/0.1.6/scripts/install.py prepare \
   --home /srv/uter-instance --backend compose --name uter-instance \
   --inputs "$PWD/incoming/inputs" \
   --llm-url "$LLM_URL" --llm-model "$LLM_MODEL" --llm-key-file "$LLM_KEY_FILE"
-sudo .venv/bin/python signed/0.1.5/scripts/install.py check --home /srv/uter-instance
-sudo .venv/bin/python signed/0.1.5/scripts/install.py install --home /srv/uter-instance
+sudo .venv/bin/python signed/0.1.6/scripts/install.py check --home /srv/uter-instance
+sudo .venv/bin/python signed/0.1.6/scripts/install.py install --home /srv/uter-instance
 curl --fail http://127.0.0.1:18000/ready
 ```
 
@@ -254,7 +260,7 @@ NetworkPolicy, включая Secret, используемый Helm для со�
 `--storage-class YOUR_CLASS`.
 
 ```bash
-.venv/bin/python signed/0.1.5/scripts/install.py prepare \
+.venv/bin/python signed/0.1.6/scripts/install.py prepare \
   --home "$HOME/uter-k8s" --backend kubernetes --name uter-instance \
   --context MY_CONTEXT --inputs "$PWD/incoming/inputs" \
   --llm-url "$LLM_URL" --llm-model "$LLM_MODEL" --llm-key-file "$LLM_KEY_FILE"
@@ -268,8 +274,8 @@ NetworkPolicy, включая Secret, используемый Helm для со�
 namespace, укажите его точное имя в этом файле. Затем выполните:
 
 ```bash
-.venv/bin/python signed/0.1.5/scripts/install.py check --home "$HOME/uter-k8s"
-.venv/bin/python signed/0.1.5/scripts/install.py install --home "$HOME/uter-k8s"
+.venv/bin/python signed/0.1.6/scripts/install.py check --home "$HOME/uter-k8s"
+.venv/bin/python signed/0.1.6/scripts/install.py install --home "$HOME/uter-k8s"
 kubectl --context MY_CONTEXT -n uter-instance get pods,pvc
 kubectl --context MY_CONTEXT -n uter-instance port-forward svc/uter-instance-guardrail 18000:8000
 ```
@@ -294,7 +300,7 @@ egress. По умолчанию вход к Guardrail разрешается и�
 пересылайте его и не записывайте значения в журнал. Из каталога `uter_deploy`:
 
 ```bash
-.venv/bin/python signed/0.1.5/scripts/smoke_http.py --url http://127.0.0.1:18000
+.venv/bin/python signed/0.1.6/scripts/smoke_http.py --url http://127.0.0.1:18000
 ```
 
 Для Kubernetes предварительно оставьте `port-forward` работающим в другом терминале;
@@ -369,9 +375,10 @@ daemon точные подписанные образы **обоих** выпу�
 создания ключа копии и остановки компонентов. Приложению по-прежнему нужен доступ к
 LLM, а резервной копии — защищённое место и отдельно сохранённый ключ. Этот режим
 обновления [проверен в изолированном Docker CI](https://github.com/prince174/uter_deploy/actions/runs/40868904632)
-с тестовой LLM-заглушкой: проверены отсутствие образа, отказ загрузки из registry,
-обновление, проверка сервиса и экспорт резервной копии. Полное восстановление в этом
-offline-сценарии отдельно не проверялось. Kubernetes в режиме offline отклоняется.
+для `0.1.4 → 0.1.5` с тестовой LLM-заглушкой: проверены отсутствие образа, отказ
+загрузки из registry, обновление, проверка сервиса и экспорт резервной копии. Полное
+восстановление в этом offline-сценарии и переход на `0.1.6` этим прогоном не
+проверялись. Kubernetes в режиме offline отклоняется.
 
 Ключ копии храните отдельно и сохраните его защищённую копию вне сервера установки:
 без ключа восстановление невозможно. Восстановление создаёт новый проект или namespace
@@ -385,6 +392,10 @@ LiteLLM/vLLM, их модели, базы и RAG, ingress, DNS, сертифик
 переход только с `0.1.4`, на тестовых данных и с реальной LLM. Digest образов продукта
 в `0.1.4` и `0.1.5` одинаковы, поэтому переход не проверяет миграцию между разными
 сборками или совместимость произвольных данных.
+
+Для `0.1.6` заявляется `data_epoch = 1` и переход только с `0.1.5`. Образы продукта
+в этих выпусках одинаковы. Проверку `0.1.5 → 0.1.6` следует выполнять после
+публикации и сверки подписи; результаты прежнего CI не подтверждают новый переход.
 
 ## Если что-то не работает
 
