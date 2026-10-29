@@ -7,8 +7,8 @@ Kubernetes/Helm. Для запуска нужны готовые образы, �
 Если LiteLLM и vLLM уже работают в инфраструктуре, начните с
 [подробной инструкции подключения и развёртывания](docs/corporate-litellm-deployment.md).
 В ней описаны сетевые требования, входные данные, Compose, Kubernetes, проверки и
-ограничения автоматизации. Инструкция находится в текущей ветке `main`: ранее
-опубликованный тег и подписанный комплект `0.1.4` она не изменяет.
+ограничения автоматизации. Этот документ подготовлен для выпуска `0.1.5`;
+команды получения выпуска заработают после публикации указанного тега и артефактов.
 
 ## Схемы
 
@@ -25,6 +25,8 @@ HTML открывается локально в браузере без внеш
 
 ## Что уже проверено
 
+Исторические результаты ниже относятся к проверенным ранее комплектам и образам;
+они не означают, что выпуск `0.1.5` или переход на него уже проверены.
 Образы опубликованы в **публичном GHCR** и доступны без авторизации; установка
 использует неизменяемые digest. [Анонимная установка Compose и Kubernetes](https://github.com/prince174/uter_deploy/actions/runs/40642468640) проверена в изолированном CI.
 Старые версии образов также публичны и содержат известные Critical/High; используйте
@@ -47,6 +49,10 @@ HTML открывается локально в браузере без внеш
 Для цепочки Uter → LiteLLM → CPU vLLM проведена отдельная [проверка в CI](docs/ci-litellm-vllm.md): оба backend прошли с небольшой моделью, а более крупная Qwen — по одному разу в отдельных заданиях. Это проверка интеграции, не производительности.
 kind использует стандартный CNI без применения NetworkPolicy:
 правила рендерятся, но их сетевое действие этим тестом не проверено.
+Отдельно [проверены ingress-политики с Calico](https://github.com/prince174/uter_deploy/actions/runs/40865200958):
+доступ разрешённому namespace и запрет другим, а также изоляция Agent и Redis.
+Проверка использует тестовый Pod вместо ingress-контроллера и не подтверждает
+действие правил в других CNI или настройку TLS.
 
 Проверка всех трёх образов от 28.10.2026: **0 Critical / 0 High**, без исключений CVE.
 Остаются Medium/Low: Guardrail — 24/11, Agent — 22/10, Redis — 0/0.
@@ -72,38 +78,39 @@ kind использует стандартный CNI без применения
 ```bash
 git clone https://github.com/prince174/uter_deploy.git
 cd uter_deploy
-git checkout deploy-2026.10.28-signed-5
+git checkout deploy-2026.10.29-signed-1
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p incoming signed
 curl -fL -o signed/publisher-public.pem \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-signed-5/publisher-public.pem
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-1/publisher-public.pem
 curl -fL -o signed/signed-bundle.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-signed-5/signed-bundle.tar.gz
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-1/signed-bundle.tar.gz
 echo '65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2  signed/publisher-public.pem' | sha256sum -c -
 .venv/bin/python scripts/extract_signed_bundle.py \
   --archive signed/signed-bundle.tar.gz --key signed/publisher-public.pem \
-  --output signed/0.1.4
+  --output signed/0.1.5
 curl -fL -o incoming/installation-inputs.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-signed-5/installation-inputs.tar.gz
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-1/installation-inputs.tar.gz
 curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.28-signed-5/installation-inputs.tar.gz.sha256
-.venv/bin/python signed/0.1.4/scripts/extract_release_inputs.py \
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-1/installation-inputs.tar.gz.sha256
+.venv/bin/python signed/0.1.5/scripts/extract_release_inputs.py \
   incoming/installation-inputs.tar.gz incoming/installation-inputs.tar.gz.sha256 incoming/inputs \
-  --bundle signed/0.1.4 --key signed/publisher-public.pem
+  --bundle signed/0.1.5 --key signed/publisher-public.pem
 ```
 
 Команда проверяет подпись комплекта и подписанный SHA-256 архива **до** его
 распаковки. Установочные данные содержат `images.json`, `policy.toml`,
 `model_profiles.toml` и метаданные публикации. Установщик и шаблоны ниже берутся
-из проверенного комплекта. Подписанный выпуск `0.1.4` допускает переход с `0.1.2`;
-переходы с остальных управляемых версий не заявлены.
+из проверенного комплекта. Для выпуска `0.1.5` предусмотрен переход только с `0.1.4`;
+переходы с остальных управляемых версий не заявлены. Образы продукта в `0.1.4` и
+`0.1.5` одинаковы: такой переход не проверяет миграцию между разными сборками.
 
-Из доверенной копии текущего `main` выпуск можно также получить одной командой:
+Из доверенного checkout с `scripts/fetch_release.py` выпуск можно также получить одной командой:
 
 ```bash
-.venv/bin/python scripts/fetch_release.py --release deploy-2026.10.28-signed-5 \
-  --version 0.1.4 --fingerprint "$UTER_PUBLISHER_SHA256" --output ./verified-release
+.venv/bin/python scripts/fetch_release.py --release deploy-2026.10.29-signed-1 \
+  --version 0.1.5 --fingerprint "$UTER_PUBLISHER_SHA256" --output ./verified-release
 ```
 
 Переменная `UTER_PUBLISHER_SHA256` должна содержать отпечаток, полученный и
@@ -112,10 +119,9 @@ curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
 пользователей; проверяются и родительские каталоги. В Windows оператор отдельно
 проверяет ACL родительского каталога: команда не умеет подтверждать его приватность.
 Результат содержит `bundle/`, `inputs/` и `downloads/publisher-public.pem`;
-для команд установки укажите эти пути вместо `signed/0.1.4` и `incoming/inputs`.
+для команд установки укажите эти пути вместо `signed/0.1.5` и `incoming/inputs`.
 Команда принимает выпуски с подписанным хешем входного архива и не заменяет доверие
-к самой копии tooling, Python и зависимостям. Она появится в следующем подписанном
-комплекте; в уже выпущенном `0.1.4` её нет.
+к самой копии tooling, Python и зависимостям. В ранее выпущенном `0.1.4` её нет.
 
 Образы этой версии:
 
@@ -140,11 +146,11 @@ CPU, лимиты контейнеров суммарно 5 GiB RAM плюс з�
 Для публичных образов вход в GHCR и токен не требуются.
 
 ```bash
-sudo .venv/bin/python signed/0.1.4/scripts/install.py prepare \
+sudo .venv/bin/python signed/0.1.5/scripts/install.py prepare \
   --home /srv/uter-instance --backend compose --name uter-instance \
   --inputs "$PWD/incoming/inputs"
-sudo .venv/bin/python signed/0.1.4/scripts/install.py check --home /srv/uter-instance
-sudo .venv/bin/python signed/0.1.4/scripts/install.py install --home /srv/uter-instance
+sudo .venv/bin/python signed/0.1.5/scripts/install.py check --home /srv/uter-instance
+sudo .venv/bin/python signed/0.1.5/scripts/install.py install --home /srv/uter-instance
 curl --fail http://127.0.0.1:18000/ready
 ```
 
@@ -152,8 +158,9 @@ curl --fail http://127.0.0.1:18000/ready
 Пример base URL: `https://llm.example/v1`. Путь `/chat/completions` добавляется сервисом.
 Для существующего LiteLLM укажите его адрес, а в качестве модели — разрешённый
 alias LiteLLM, маршрутизированный на vLLM. Адрес должен быть доступен и доверен по TLS
-именно из контейнера или Pod Uter. Мастер не настраивает корпоративные CA, mTLS,
-сеть и прокси; их применимость и поддержку нужно проверить отдельно.
+именно из контейнера или Pod Uter. Для полного набора корпоративных доверенных CA
+добавьте `prepare --llm-ca-bundle PATH`; это заменяет стандартный набор доверия
+процесса Guardrail. mTLS, сеть и прокси установщик не настраивает.
 Если ключ не нужен, оставьте его пустым. HTTP разрешается только явным
 `--allow-http-llm` для доверенной внутренней сети.
 
@@ -172,11 +179,11 @@ PVC, Deployment, Service и NetworkPolicy. Ingress и TLS настраивают
 Публичные образы не требуют файла доступа к registry:
 
 ```bash
-.venv/bin/python signed/0.1.4/scripts/install.py prepare \
+.venv/bin/python signed/0.1.5/scripts/install.py prepare \
   --home "$HOME/uter-k8s" --backend kubernetes --name uter-instance \
   --context MY_CONTEXT --inputs "$PWD/incoming/inputs"
-.venv/bin/python signed/0.1.4/scripts/install.py check --home "$HOME/uter-k8s"
-.venv/bin/python signed/0.1.4/scripts/install.py install --home "$HOME/uter-k8s"
+.venv/bin/python signed/0.1.5/scripts/install.py check --home "$HOME/uter-k8s"
+.venv/bin/python signed/0.1.5/scripts/install.py install --home "$HOME/uter-k8s"
 kubectl --context MY_CONTEXT -n uter-instance get pods,pvc
 kubectl --context MY_CONTEXT -n uter-instance port-forward svc/uter-instance-guardrail 18000:8000
 # В другом терминале:
@@ -200,7 +207,7 @@ curl --fail http://127.0.0.1:18000/ready
 Возьмите пароль admin в защищённом терминале/редакторе и выполните:
 
 ```bash
-.venv/bin/python signed/0.1.4/scripts/smoke_http.py --url http://127.0.0.1:18000
+.venv/bin/python signed/0.1.5/scripts/smoke_http.py --url http://127.0.0.1:18000
 ```
 
 Скрипт спросит пароль скрыто, проверит readiness, вход, зависимости и обычный `/chat`
@@ -226,35 +233,39 @@ Toxicity-модель, проверки ввода/вывода и аудит р
 | Обновление | Контроллер проверяет подпись и совместимость, создаёт зашифрованную копию, обновляет компоненты и выполняет smoke. | Получить и проверить подписанные комплекты и ключ издателя; безопасно хранить и отдельно вынести копию и её ключ. |
 | Восстановление | Создаются отдельные проект или namespace и тома; данные восстанавливаются, запускается smoke. | Проверить данные и внешние зависимости, выбрать момент и вручную переключить трафик. |
 
-Из доверенной копии текущего `main` доступна предварительная проверка с машины
+Из проверенного комплекта доступна предварительная проверка с машины
 оператора:
 
 ```bash
-python3 scripts/preflight.py --backend compose --llm-url "$LLM_URL" \
+.venv/bin/python signed/0.1.5/scripts/preflight.py --backend compose --llm-url "$LLM_URL" \
   --llm-model "$LLM_MODEL" --llm-key-file "$LLM_KEY_FILE"
 ```
 
 Для Kubernetes укажите `--backend kubernetes --context MY_CONTEXT`. Проверка отправляет реальный короткий
 запрос и может расходовать квоту. Она не создаёт контейнеры или Pod и явно сообщает,
 что сеть и доверие сертификатам внутри них, registry и CNI/CSI/RBAC не проверены.
-Команда появится в следующем подписанном выпуске; ранее выпущенный `0.1.4` её не содержит.
+Ранее выпущенный `0.1.4` эту команду не содержит.
 
-Для Compose текущая ветка также содержит `workload_preflight.py`: по явно
+Для Compose комплект также содержит `workload_preflight.py`: по явно
 подтверждённой подписи он запускает проверку в одноразовой сети из локального образа
 Guardrail и передаёт ключ только через stdin. Это проверка Python-клиента внутри образа,
 а не самого Uter, будущей Compose-сети или Kubernetes; подробности и уборка после
 прерывания описаны в [руководстве](docs/corporate-litellm-deployment.md).
 
-В выпуске `0.1.4` автоматической настройки корпоративных CA/mTLS, Ingress, DNS и правил сети,
-ротации секретов, плановых резервных копий и миграции внешних систем здесь нет.
-В текущей ветке разрабатываются дополнительные возможности CA и Compose offline;
-они требуют нового подписанного выпуска и проверки в целевом окружении.
+В `0.1.5` установка и обновление Compose поддерживают `--offline` при предварительно
+доставленных локальных образах с точными digest. Обновление требует локальных образов
+обоих выпусков и пока проверено автоматическими тестами, а не изолированным Docker CI.
+Kubernetes offline не поддерживается; LLM остаётся внешней зависимостью. Для Kubernetes
+есть отключённый по умолчанию [профиль ограничения исходящего трафика](docs/egress-networkpolicy.md),
+который оператор настраивает под свой DNS и LiteLLM; его проверка в изолированном CI
+ещё выполняется. mTLS, Ingress, DNS, ротация секретов и миграция внешних систем
+настраиваются отдельно.
 Наличие функций и примеры проверок не подтверждают работу в конкретном окружении.
 Подробнее, включая закрытый контур и действия при сбое:
 [инструкция для LiteLLM и vLLM](docs/corporate-litellm-deployment.md).
 Команда одной зашифрованной копии для подключения к планировщику описана в
 [инструкции по резервному копированию](docs/scheduled-backup.md); она не создаёт
-расписание и будет доступна в следующем подписанном выпуске.
+расписание: его должен настроить оператор.
 
 Для неинтерактивного prepare задайте `--llm-url`, `--llm-model`, `--llm-key-file`.
 Файл ключа может быть пустым для LLM без авторизации. Секреты не передавайте в командной
@@ -282,11 +293,11 @@ Pod. В Kubernetes: `kubectl --context MY_CONTEXT -n uter-instance get events` �
 ресурсов вместе с администратором; имена и метки сами по себе этого не доказывают.
 Не удаляйте каталог или volumes ради повтора.
 
-Из доверенной копии текущего `main` можно получить ограниченную диагностику первой
+Из проверенного комплекта можно получить ограниченную диагностику первой
 установки, например:
 
 ```bash
-python3 scripts/install_recovery.py --home /srv/uter-instance \
+.venv/bin/python signed/0.1.5/scripts/install_recovery.py --home /srv/uter-instance \
   --expected-backend compose --expected-name uter-instance --expected-context default
 ```
 
@@ -294,8 +305,7 @@ python3 scripts/install_recovery.py --home /srv/uter-instance \
 Флаг `--inspect-runtime` дополнительно читает ограниченную часть метаданных Docker
 или Kubernetes, не меняя ресурсы и не читая Secret. Существующие `pending` не содержат
 идентификаторов, доказывающих владельца ресурсов: диагностика возвращает код 2 и
-`inconclusive`, а не разрешение на автоматический повтор. Команда появится в следующем
-подписанном выпуске и отсутствует в `0.1.4`.
+`inconclusive`, а не разрешение на автоматический повтор. Команда отсутствует в `0.1.4`.
 
 Readiness не заменяет проверку поведения. До открытия доступа проверьте свои запросы,
 политику блокировок, TLS и резервное копирование.
