@@ -5,6 +5,7 @@ Run only from a trusted checkout. This bootstrap cannot authenticate itself,
 the operating system, Python, pip or its package index.
 """
 import argparse
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import stat
@@ -82,6 +83,15 @@ def reject_signed_ancestor(path):
             raise BootstrapError('ENVIRONMENT_INSIDE_SIGNED_BUNDLE')
 
 
+@contextmanager
+def private_umask():
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
 def bootstrap(root, environment):
     if sys.platform != 'linux' or os.name != 'posix':
         raise BootstrapError('LINUX_REQUIRED')
@@ -98,31 +108,32 @@ def bootstrap(root, environment):
     environment = Path(environment).absolute()
     trusted_directory(environment.parent)
     reject_signed_ancestor(environment)
-    if not os.path.lexists(environment):
-        os.mkdir(environment, 0o700)
+    with private_umask():
+        if not os.path.lexists(environment):
+            os.mkdir(environment, 0o700)
+            try:
+                venv.EnvBuilder(with_pip=True, symlinks=False).create(environment)
+            except Exception:
+                raise BootstrapError('ENVIRONMENT_CREATION_FAILED_INSPECT_DIRECTORY') from None
+        trusted_directory(environment, private=True)
+        trusted_tree(environment, allow_internal_links=True)
+        python = trusted_file(environment / 'bin/python3')
+        if not python.stat().st_mode & 0o100:
+            raise BootstrapError('ENVIRONMENT_PYTHON_NOT_EXECUTABLE')
+        print('Preparing Python dependencies; the package index and this checkout must be trusted.',
+              file=sys.stderr, flush=True)
         try:
-            venv.EnvBuilder(with_pip=True, symlinks=False).create(environment)
-        except Exception:
-            raise BootstrapError('ENVIRONMENT_CREATION_FAILED_INSPECT_DIRECTORY') from None
-    trusted_directory(environment, private=True)
-    trusted_tree(environment, allow_internal_links=True)
-    python = trusted_file(environment / 'bin/python3')
-    if not python.stat().st_mode & 0o100:
-        raise BootstrapError('ENVIRONMENT_PYTHON_NOT_EXECUTABLE')
-    print('Preparing Python dependencies; the package index and this checkout must be trusted.',
-          file=sys.stderr, flush=True)
-    try:
-        result = subprocess.run([str(python), '-I', '-m', 'pip', 'install', '--disable-pip-version-check',
-                                 '-r', str(requirements)], stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
-    except (OSError, subprocess.TimeoutExpired):
-        raise BootstrapError('DEPENDENCY_INSTALL_FAILED') from None
-    if result.returncode:
-        raise BootstrapError('DEPENDENCY_INSTALL_FAILED')
-    # Package installation can add files: enforce the same protections again
-    # before executing any of them. The package index itself remains trusted.
-    trusted_tree(environment, allow_internal_links=True)
-    trusted_file(python)
+            result = subprocess.run([str(python), '-I', '-m', 'pip', 'install', '--disable-pip-version-check',
+                                     '-r', str(requirements)], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
+        except (OSError, subprocess.TimeoutExpired):
+            raise BootstrapError('DEPENDENCY_INSTALL_FAILED') from None
+        if result.returncode:
+            raise BootstrapError('DEPENDENCY_INSTALL_FAILED')
+        # Package installation can add files: enforce the same protections again
+        # before executing any of them. The package index itself remains trusted.
+        trusted_tree(environment, allow_internal_links=True)
+        trusted_file(python)
     return python, scripts / 'uter_wizard.py'
 
 

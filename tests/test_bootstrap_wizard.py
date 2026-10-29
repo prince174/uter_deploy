@@ -94,6 +94,18 @@ class BootstrapTests(unittest.TestCase):
                 with self.assertRaisesRegex(bootstrap.BootstrapError, 'TREE_UNTRUSTED'):
                     bootstrap.bootstrap(root, env)
 
+    def test_private_umask_is_used_and_restored_on_failure(self):
+        previous = os.umask(0o002)
+        try:
+            with self.assertRaises(RuntimeError):
+                with bootstrap.private_umask():
+                    observed = os.umask(0o077)
+                    self.assertEqual(observed, 0o077)
+                    raise RuntimeError('test')
+            self.assertEqual(os.umask(0o002), 0o002)
+        finally:
+            os.umask(previous)
+
     def test_pip_failure_does_not_launch_assistant(self):
         with patch.object(bootstrap, 'bootstrap', side_effect=bootstrap.BootstrapError('DEPENDENCY_INSTALL_FAILED')), \
              patch.object(bootstrap.subprocess, 'call') as call:
