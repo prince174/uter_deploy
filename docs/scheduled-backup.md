@@ -91,45 +91,84 @@ sudo /path/to/venv/bin/python /path/to/verified-bundle/scripts/backup_installati
 
 ## Подключить планировщик
 
-После успешной ручной проверки администратор может добавить **показанную выше команду**
-в корпоративный планировщик или `systemd` timer на выбранном сервере. Пример ниже —
-шаблон, который нужно заполнить на целевой машине. `/path/to/...` не является рабочим
-путём; используйте абсолютные пути доверенного Python и проверенного комплекта.
+Для Compose на Linux можно подготовить service и timer отдельной командой.
+Она только создаёт файлы в новом приватном каталоге: Docker и systemd не
+запускаются, расписание не включается. Генератор войдёт в подписанный комплект
+только после его публикации; в комплекте 0.1.4 его нет. Сначала выполните
+ручную копию и проверку восстановления, как описано выше.
 
-`/etc/systemd/system/uter-backup.service`:
+Пример для root после проверки подписи комплекта и независимого подтверждения
+отпечатка публичного ключа издателя:
 
-```ini
-[Unit]
-Description=Uter verified encrypted backup
+```bash
+sudo install -d -m 700 /srv/uter-systemd-output
+sudo /opt/uter-venv/bin/python3 /path/to/verified-bundle/scripts/render_backup_systemd.py \
+  --python /opt/uter-venv/bin/python3 \
+  --bundle /path/to/verified-bundle \
+  --publisher-key /srv/uter-backup-identity/publisher.pem \
+  --publisher-sha256 65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2 \
+  --home /srv/uter-instance \
+  --backup-root /srv/uter-backups \
+  --backup-key /srv/uter-backup-keys/backup.key \
+  --identity-file /srv/uter-backup-identity/identity.json \
+  --name uter-instance --schedule 02:00 \
+  --output /srv/uter-systemd-output/uter-instance
 
-[Service]
-Type=oneshot
-User=root
-ExecStart=/path/to/venv/bin/python /path/to/verified-bundle/scripts/backup_installation.py backup --home /srv/uter-instance --backup-root /srv/uter-backups --backup-key /srv/uter-backup-keys/backup.key --identity-file /srv/uter-backup-identity/identity.json --publisher-key /srv/uter-backup-identity/publisher.pem --expected-backend compose --expected-name uter-instance --expected-context default
+sudo systemd-analyze verify \
+  /srv/uter-systemd-output/uter-instance/uter-backup-uter-instance.service \
+  /srv/uter-systemd-output/uter-instance/uter-backup-uter-instance.timer
 ```
 
-`/etc/systemd/system/uter-backup.timer`:
+Пути в примере необходимо заменить. `--publisher-sha256` — независимо проверенный
+отпечаток **файла публичного ключа**, а не резервный ключ или пароль. Генератор
+сверяет отпечаток и подпись комплекта, проверяет записанную identity и локальные
+метаданные, не запрашивая текущий Docker daemon. В unit указывается только путь
+к ключу; значение ключа не передаётся генератору и в unit не записывается.
 
-```ini
-[Unit]
-Description=Schedule Uter backup
+Разрешены только абсолютные ASCII-пути с буквами, цифрами, `/`, `.`, `_`, `-`
+и без компонентов `.` и `..`. Ссылки не допускаются, в том числе у Python:
+например, виртуальное окружение можно создать с `python3 -m venv --copies`,
+затем проверить конкретный исполняемый файл. Родитель каталога результата,
+каталоги установки, identity и ключа должны быть приватными и принадлежать root.
+Результат создаётся только в новом каталоге, без перезаписи; при прерывании может
+остаться скрытый каталог `.uter-systemd-incomplete-*`, который нужно проверить
+перед удалением. Публикация требует Linux `renameat2` с `RENAME_NOREPLACE`.
 
-[Timer]
-OnCalendar=*-*-* 02:00:00
-Persistent=true
-RandomizedDelaySec=5m
-Unit=uter-backup.service
+Сам Python, его стандартная библиотека, `site-packages`, файлы зависимостей,
+каталоги из PATH и проверенный подписанный комплект должны оставаться под
+контролем root и не быть доступны для записи другим пользователям. Проверка
+исполняемого файла Python и подписи комплекта при генерации не подтверждает
+содержимое зависимостей Python и не защищает от последующей подмены. Используйте
+доверенное окружение и защищённые каталоги в течение всего срока действия
+расписания. Публичный ключ издателя храните отдельно от комплекта.
 
-[Install]
-WantedBy=timers.target
+Расписание принимает только время `HH:MM` и работает **ежедневно по UTC**;
+случайная задержка до пяти минут. Пропущенные запуски не догоняются при загрузке
+(`Persistent=false`). Команда получает `TimeoutStartSec=infinity`, чтобы
+системный таймаут не прервал остановку writers посреди копирования; настройте
+отдельное оповещение о зависшем процессе. Перезагрузка или принудительное
+завершение всё равно могут прервать копирование и потребовать проверки журнала.
+
+Просмотрите оба файла, убедитесь в правильности путей и окна остановки сервиса,
+затем установите их в `/etc/systemd/system` только после проверки отсутствия
+существующих файлов с теми же именами. Далее администратор самостоятельно
+выполняет `systemctl daemon-reload` и `systemctl enable --now` для соответствующего
+timer. Например, после копирования файлов из примера в `/etc/systemd/system`:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now uter-backup-uter-instance.timer
+sudo systemctl list-timers uter-backup-uter-instance.timer
 ```
 
-Время задаётся в часовом поясе сервера. После сохранения и проверки путей оператор
-сам выполняет `sudo systemctl daemon-reload`, затем
-`sudo systemctl enable --now uter-backup.timer` и проверяет
-`systemctl list-timers uter-backup.timer` и результаты сервиса. Для Kubernetes нужны
-свой пользователь, kubeconfig и RBAC; приведённый root-unit не следует без проверки
-переносить на кластер. При использовании сетевого хранилища отдельно обеспечьте его
+Генератор не устанавливает мониторинг и не отправляет копии в другое
+хранилище. После обновления или пересоздания контейнеров identity может устареть:
+копирование завершится ошибкой до явной регистрации в новый файл. Путь к старому
+скрипту подписанного комплекта сам не обновляется; после проверки новой версии
+подготовьте и вручную замените unit, не обходя проверку identity.
+
+Для Kubernetes нужны свой пользователь, kubeconfig и RBAC; генератор предназначен
+только для Compose. При использовании сетевого хранилища отдельно обеспечьте его
 монтирование и доступность до запуска сервиса.
 
 Не помещайте
