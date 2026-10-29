@@ -6,16 +6,59 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import sys
 
 sys.dont_write_bytecode = True  # Signed bundles must remain byte-for-byte immutable.
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import uterctl
-from scripts import adopt_managed, backup_crypto
+from scripts import adopt_managed, backup_crypto, install_recovery
 
 
-def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=None,create_backup_key=False):
+def verify_offline_images(cfg, manifests):
+    """Verify local signed refs before adoption, key creation, or writer stoppage.
+
+    Offline refers only to registry/image pulls. The installed service's LLM and
+    other dependencies can still use the network during adoption and smoke.
+    """
+    if cfg.get('backend') != 'compose' or cfg.get('context') != 'default':
+        raise ValueError('Offline managed update is supported for local Compose only')
+    if os.environ.get('DOCKER_HOST'):
+        raise ValueError('Offline managed update requires a local Unix Docker socket')
+    try:
+        host = json.loads(install_recovery.run_readonly(
+            ['docker', '--context', 'default', 'context', 'inspect', 'default',
+             '--format', '{{json .Endpoints.docker.Host}}']))
+        if not isinstance(host, str) or not host.startswith('unix://'):
+            raise ValueError('Offline managed update requires a local Unix Docker socket')
+        for manifest in manifests:
+            for service, ref in manifest['images'].items():
+                fmt = ('{"id":{{json .Id}},"refs":{{json .RepoDigests}},'
+                       '"os":{{json .Os}},"arch":{{json .Architecture}}}')
+                info = json.loads(install_recovery.run_readonly(
+                    ['docker', '--context', 'default', 'image', 'inspect', '--format', fmt, ref]))
+                digest = ref.rsplit('@', 1)[-1]
+                image_id = info.get('id')
+                refs = info.get('refs') or []
+                if (not isinstance(image_id, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id)
+                        or not isinstance(refs, list) or info.get('os') != 'linux' or info.get('arch') != 'amd64'):
+                    raise ValueError('Offline signed image is not available locally: ' + service)
+                signed_config = (manifest.get('image_config_ids') or {}).get(service)
+                descriptor_match = False
+                if image_id == digest:
+                    descriptor = json.loads(install_recovery.run_readonly(
+                        ['docker', '--context', 'default', 'image', 'inspect', '--format',
+                         '{{json .Descriptor.Digest}}', ref]))
+                    descriptor_match = descriptor == digest
+                if ((ref not in refs and not descriptor_match) or
+                        (signed_config is not None and image_id != signed_config and not descriptor_match)):
+                    raise ValueError('Offline signed image is not available locally: ' + service)
+    except (install_recovery.DiagnosticError, KeyError, IndexError, TypeError, AttributeError, json.JSONDecodeError):
+        raise ValueError('Offline image preflight failed; no update was started') from None
+
+
+def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=None,create_backup_key=False,offline=False):
     if os.name!='posix':raise ValueError('Managed update requires a Linux host')
     home=Path(home).resolve(strict=True);bundle=Path(bundle).resolve(strict=True)
     backup_root_path=Path(backup_root).absolute();backup_key_path=Path(backup_key).absolute()
@@ -48,6 +91,20 @@ def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=Non
         cfg=uterctl.read(home/'install.json')
         if cfg.get('images')!=old['images']:raise ValueError('Current bundle does not match installed images')
     if old['version']==new['version']:raise ValueError('New release must have a different version')
+    if offline:
+        cfg = uterctl.read(home/'install.json')
+        if state_path.exists():
+            site = uterctl.site_config(home)
+            if (site['backend'] != 'compose' or cfg.get('backend') != 'compose' or
+                    cfg.get('name') != site['name'] or cfg.get('context') != site.get('context')):
+                raise ValueError('Offline managed update is supported for local Compose only')
+            version = old.get('version') if isinstance(old, dict) else None
+            if not isinstance(version, str) or not uterctl.VERSION.fullmatch(version):
+                raise ValueError('Current release version is invalid')
+            signed_current = uterctl.verify(home/'releases'/version, publisher_key)
+            if signed_current != old:
+                raise ValueError('Current state does not match the signed installed bundle')
+        verify_offline_images(cfg, (old, new))
     if backup_key.exists():
         if create_backup_key:raise ValueError('Backup key already exists; refusing replacement')
         backup_crypto.read_key(backup_key)
@@ -59,8 +116,10 @@ def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=Non
     label=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+secrets.token_hex(8)
     destination=backup_root/('uter-'+label)
     with contextlib.redirect_stdout(io.StringIO()):
-        uterctl.main(['apply','--home',str(home),'--bundle',str(bundle),'--key',str(publisher_key),
-                      '--backup-dir',str(destination),'--backup-key',str(backup_key)])
+        command = ['apply','--home',str(home),'--bundle',str(bundle),'--key',str(publisher_key),
+                   '--backup-dir',str(destination),'--backup-key',str(backup_key)]
+        if offline:command.append('--offline')
+        uterctl.main(command)
     state=uterctl.read(state_path)
     return {'version':state['current']['version'],'backup':str(destination),
             'backup_id':state['last_backup']['id'],'backup_key':str(backup_key)}
@@ -72,9 +131,10 @@ def main():
         p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--current-bundle',type=Path)
     p.add_argument('--create-backup-key',action='store_true')
+    p.add_argument('--offline',action='store_true',help='Compose only: verify local images and do not pull')
     a=p.parse_args()
     result=update(a.home,a.bundle,a.publisher_key,a.backup_root,a.backup_key,
-                  current_bundle=a.current_bundle,create_backup_key=a.create_backup_key)
+                  current_bundle=a.current_bundle,create_backup_key=a.create_backup_key,offline=a.offline)
     print(json.dumps(result,indent=2))
     print('Store the backup key securely and separately; without it the backup cannot be restored.')
 
