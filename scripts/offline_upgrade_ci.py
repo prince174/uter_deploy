@@ -4,9 +4,11 @@ The upstream is a deterministic HTTP fixture, not a real model. The selected
 images and both release bundles are authenticated by release_upgrade_preflight_ci.
 """
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import signal
@@ -49,6 +51,75 @@ def workload_identity(docker, resources, env):
                      'WORKLOAD_INSPECTION_FAILED', env=env).stdout
         records.append(raw)
     return tuple(records)
+
+
+def verified_outbound_subnet(docker, project, env):
+    """Identify the isolated project's outbound bridge, without reading container env."""
+    if not re.fullmatch(r'uter-offline-ci-[0-9a-f]{12}', project):
+        raise ci.StageError('TEST_NETWORK_IDENTITY_INVALID')
+    raw = ci.run([docker, '--context', 'default', 'network', 'inspect', '--format',
+                  '{{json .}}', project+'_outbound'], 'TEST_NETWORK_INSPECTION_FAILED', env=env).stdout
+    try:
+        if len(raw) > 1024 * 1024:
+            raise ValueError
+        record = json.loads(raw)
+        labels = record['Labels']
+        if (not re.fullmatch(r'[0-9a-f]{64}', record['Id'])
+                or record['Name'] != project+'_outbound' or record['Driver'] != 'bridge'
+                or record['Internal'] is not False
+                or labels.get('com.docker.compose.project') != project
+                or labels.get('com.docker.compose.network') != 'outbound'):
+            raise ValueError
+        configs = record['IPAM']['Config']
+        if len(configs) != 1:
+            raise ValueError
+        subnet = ipaddress.ip_network(configs[0]['Subnet'], strict=True)
+        private = tuple(ipaddress.ip_network(value) for value in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
+        if (subnet.version != 4 or not 16 <= subnet.prefixlen <= 30
+                or not any(subnet.subnet_of(block) for block in private)):
+            raise ValueError
+        if ipaddress.ip_address(configs[0]['Gateway']) not in subnet:
+            raise ValueError
+        members = record['Containers']
+        if not isinstance(members, dict) or len(members) != 2:
+            raise ValueError
+        found = set()
+        for container_id, member in members.items():
+            if not re.fullmatch(r'[0-9a-f]{64}', container_id):
+                raise ValueError
+            address = ipaddress.ip_interface(member['IPv4Address'])
+            if address.version != 4 or address.network != subnet:
+                raise ValueError
+            info = ci.run([docker, '--context', 'default', 'inspect', '--format',
+                           '{{json .Id}} {{json .Name}} {{json .Config.Labels}}', container_id],
+                          'TEST_CONTAINER_INSPECTION_FAILED', env=env).stdout
+            if len(info) > 65536:
+                raise ValueError
+            # Decode the first two JSON strings and then the labels object, without inspecting environment.
+            text = info.decode('utf-8').lstrip(); decoder = json.JSONDecoder()
+            identity, offset = decoder.raw_decode(text)
+            text = text[offset:].lstrip()
+            name, offset = decoder.raw_decode(text)
+            metadata = json.loads(text[offset:].strip())
+            role = metadata.get('com.docker.compose.service')
+            if (identity != container_id or role not in ('guardrail', 'agent')
+                    or name != '/'+project+'-'+role+'-1'
+                    or metadata.get('com.docker.compose.project') != project
+                    or member['Name'] != project+'-'+role+'-1' or role in found):
+                raise ValueError
+            found.add(role)
+        if found != {'guardrail', 'agent'}:
+            raise ValueError
+        return str(subnet), record['Id']
+    except (ValueError, KeyError, TypeError, UnicodeError, AttributeError):
+        raise ci.StageError('TEST_NETWORK_IDENTITY_INVALID') from None
+
+
+def allow_fixture_responses(firewall, gateway, subnet, port):
+    """Permit only established fixture replies to this project's verified bridge."""
+    firewall.command('iptables', '-I', firewall.name, '1', '-s', gateway+'/32', '-d', subnet,
+                     '-p', 'tcp', '--sport', str(port), '-m', 'conntrack',
+                     '--ctstate', 'ESTABLISHED', '-j', 'RETURN')
 
 
 def main():
@@ -125,9 +196,11 @@ def main():
             ci.run([docker, '--context', 'default', 'pull', missing], 'ANONYMOUS_IMAGE_PULL_FAILED', env=env)
             print('Missing local image rejected before installation changes', flush=True)
 
+            outbound_subnet, outbound_id = verified_outbound_subnet(docker, project, env)
             # The fixture is on one exact bridge address, never an RFC1918 wildcard.
             ci.PRIVATE_V4 = ('127.0.0.0/8', gateway+'/32')
             with ci.Firewall(chain, env, addresses) as firewall:
+                allow_fixture_responses(firewall, gateway, outbound_subnet, fixture.server_port)
                 before = firewall.reject_counts()
                 if ci.socket_reachable(reachable) or firewall.reject_counts()['v4-registry-ipv4'] <= before['v4-registry-ipv4']:
                     raise ci.StageError('FIREWALL_NOT_EFFECTIVE')
@@ -156,6 +229,8 @@ def main():
                        'BACKUP_REDIS_INVALID', env=env)
                 if smoke_http.check('http://127.0.0.1:18000', 'admin', credentials['admin']).get('chat') != 'pass':
                     raise ci.StageError('UPGRADE_SMOKE_FAILED')
+                if verified_outbound_subnet(docker, project, env) != (outbound_subnet, outbound_id):
+                    raise ci.StageError('TEST_NETWORK_IDENTITY_CHANGED')
                 print('Signed offline upgrade, authenticated backup export and fixture smoke passed', flush=True)
         finally:
             try:
