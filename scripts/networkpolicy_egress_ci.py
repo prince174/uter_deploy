@@ -23,6 +23,20 @@ from scripts.networkpolicy_ci import CLIENT_IMAGE, calico_manifest, client_pod, 
 FIXTURE_PORT = 8080
 DENIED_PORT = 8081
 
+STAGES = frozenset(('authenticate release inputs', 'create disposable cluster',
+                    'install and wait for Calico and DNS', 'start fixture and control pods',
+                    'verify fixture listeners', 'prepare and install Uter',
+                    'check DNS and internal connections', 'check allowed and denied egress',
+                    'check Redis egress', 'check Uter readiness and completion',
+                    'remove disposable cluster'))
+
+
+def stage(name):
+    """Print a fixed, secret-free progress category only."""
+    if name not in STAGES:
+        raise ValueError('Invalid stage')
+    print('Stage: ' + name, flush=True)
+
 
 def fixture_pod(namespace, name, label):
     """Two real listeners on each destination let timeouts prove policy enforcement."""
@@ -166,6 +180,7 @@ def run():
     with tempfile.TemporaryDirectory(prefix='uter-egress-ci-', dir=work) as temp:
         temp = Path(temp)
         inputs = temp/'inputs'
+        stage('authenticate release inputs')
         manifest = verify_published_inputs(work, inputs)
         env = os.environ.copy()
         for key in list(env):
@@ -181,8 +196,10 @@ def run():
             if cluster in existing:
                 raise StageError('CLUSTER_NAME_ALREADY_EXISTS')
             attempted = True
+            stage('create disposable cluster')
             call(['kind','create','cluster','--name',cluster,'--image',NODE_IMAGE,'--config',config,
                   '--kubeconfig',env['KUBECONFIG']], 'KIND_CREATE_FAILED', env=env)
+            stage('install and wait for Calico and DNS')
             call(kube + ['apply','-f','-'], 'CALICO_APPLY_FAILED', env=env,
                  input_data=calico_manifest(work/'download/calico.yaml'))
             for resource in ('daemonset/calico-node','deployment/calico-kube-controllers','deployment/coredns'):
@@ -190,6 +207,7 @@ def run():
                      'NETWORK_COMPONENT_NOT_READY', env=env, timeout=390)
             call(kube + ['wait','--for=condition=Ready','nodes','--all','--timeout=300s'],
                  'NODES_NOT_READY', env=env, timeout=330)
+            stage('start fixture and control pods')
             for namespace in (fixture_ns, ingress_ns):
                 call(kube + ['create','namespace',namespace], 'NAMESPACE_CREATE_FAILED', env=env)
             marker = 'Uter fixture response '+secrets.token_hex(12)
@@ -212,6 +230,7 @@ def run():
                  input_data=json.dumps(client_pod(ingress_ns)).encode())
             call(kube + ['-n',ingress_ns,'wait','--for=condition=Ready','pod/network-client','--timeout=240s'],
                  'CLIENT_POD_NOT_READY', env=env, timeout=270)
+            stage('verify fixture listeners')
             for addr, port in ((allowed_ip,FIXTURE_PORT),(allowed_ip,DENIED_PORT),(denied_ip,FIXTURE_PORT)):
                 require_probe(tcp_probe(kube,ingress_ns,'pod/network-client',addr,port,env),
                               'CONNECTED','FIXTURE_CONTROL_CONNECTION_FAILED')
@@ -219,6 +238,7 @@ def run():
             home = temp/'home'
             base = 'http://llm.'+fixture_ns+'.svc.cluster.local:8080'
             installer = ROOT/'scripts/install.py'
+            stage('prepare and install Uter')
             call([python, installer, 'prepare', '--home', home, '--backend','kubernetes','--name',name,
                   '--context','kind-'+cluster, '--inputs',inputs, '--llm-url',base+'/v1', '--llm-model','test-model',
                   '--llm-key-file',key,'--allow-http-llm'], 'PREPARE_FAILED', env=env)
@@ -234,6 +254,7 @@ def run():
             call([python,installer,'install','--home',home], 'INSTALL_FAILED', env=env, timeout=600)
             guard = 'deployment/'+name+'-guardrail'
             agent = 'deployment/'+name+'-agent'
+            stage('check DNS and internal connections')
             for target in (guard, agent):
                 for protocol in ('udp','tcp'):
                     require_probe(run_probe(kube,name,target,dns_probe_source(protocol),env), 'DNS_OK','DNS_FAILED')
@@ -242,11 +263,14 @@ def run():
                 require_probe(tcp_probe(kube,name,guard,host,port,env),'CONNECTED','INTERNAL_TRAFFIC_FAILED')
             host=name+'-guardrail.'+name+'.svc.cluster.local'
             require_probe(tcp_probe(kube,name,agent,host,8000,env),'CONNECTED','AGENT_TO_GUARDRAIL_FAILED')
+            stage('check allowed and denied egress')
             require_probe(tcp_probe(kube,name,guard,allowed_ip,FIXTURE_PORT,env),'CONNECTED','LLM_NOT_ALLOWED')
             for target, addr, port in ((guard,allowed_ip,DENIED_PORT),(guard,denied_ip,FIXTURE_PORT),
                                        (agent,allowed_ip,FIXTURE_PORT)):
                 require_probe(tcp_probe(kube,name,target,addr,port,env),'TIMEOUT','OUTBOUND_NOT_DENIED')
+            stage('check Redis egress')
             redis_egress_probe(kube,name,name,allowed_ip,env)
+            stage('check Uter readiness and completion')
             ready = "import json\nfrom urllib import request\nwith request.urlopen(URL,timeout=10) as r:\n assert json.load(r).get('ready') is True\nprint('READY')\n".replace('URL',repr('http://'+host+':8000/ready'))
             require_probe(run_probe(kube,ingress_ns,'pod/network-client',ready,env),'READY','GUARDRAIL_NOT_READY')
             credentials = json.loads((home/'credentials.json').read_text())
@@ -265,8 +289,10 @@ def run():
                 'completion':'pass against deterministic fixture; not a real LLM',
                 'corporate_cni_dns_and_policies':'not tested'}))
         finally:
-            if attempted and not cleanup(['kind','delete','cluster','--name',cluster,'--kubeconfig',env['KUBECONFIG']],env):
-                raise StageError('CI_CLEANUP_FAILED')
+            if attempted:
+                stage('remove disposable cluster')
+                if not cleanup(['kind','delete','cluster','--name',cluster,'--kubeconfig',env['KUBECONFIG']],env):
+                    raise StageError('CI_CLEANUP_FAILED')
 
 
 if __name__ == '__main__':

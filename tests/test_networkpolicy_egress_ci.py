@@ -13,6 +13,15 @@ from scripts import networkpolicy_egress_ci as ci
 
 
 class EgressCITests(unittest.TestCase):
+    def test_progress_only_accepts_fixed_categories(self):
+        with patch('builtins.print') as output:
+            ci.stage('prepare and install Uter')
+            output.assert_called_once_with('Stage: prepare and install Uter', flush=True)
+        with patch('builtins.print') as output:
+            with self.assertRaisesRegex(ValueError,'Invalid stage'):
+                ci.stage('secret-canary')
+            output.assert_not_called()
+
     def test_refuses_local_execution_before_network_calls(self):
         with patch.dict(os.environ, {'GITHUB_ACTIONS': 'false'}, clear=True), \
                 patch.object(ci, 'call') as command:
