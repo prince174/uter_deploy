@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 import uterctl
 from scripts import extract_release_inputs, fetch_release, preflight, workload_preflight
 
-DEFAULT_TAG = 'deploy-2026.10.29-signed-3'
+DEFAULT_TAG = 'deploy-2026.10.29-signed-4'
 DEFAULT_VERSION = '0.1.6'
 FINGERPRINT = re.compile(r'[0-9a-fA-F]{64}\Z')
 NAME = re.compile(r'[a-z][a-z0-9-]{0,38}[a-z0-9]\Z')
@@ -120,6 +120,15 @@ def collect(args):
             raise WizardError('PORT_OR_CPU_INVALID') from None
     choose('llm_url', 'Базовый URL LiteLLM, совместимый с OpenAI API')
     choose('llm_model', 'Имя модели в LiteLLM')
+    if not args.non_interactive and args.llm_max_tokens is None:
+        token_value = ask('Параметр max_tokens для запросов к LLM (1–65536, не общий предел); Enter — не задавать')
+        if token_value:
+            if not token_value.isascii() or not token_value.isdecimal():
+                raise WizardError('LLM_MAX_TOKENS_INVALID')
+            try:
+                args.llm_max_tokens = int(token_value)
+            except ValueError:
+                raise WizardError('LLM_MAX_TOKENS_INVALID') from None
     args._interactive_key = None
     if not args.non_interactive and args.llm_key_file is None:
         method = ask('Ключ LLM: файл (file), скрытый ввод (enter) или нет ключа (none)', 'file').casefold()
@@ -169,6 +178,8 @@ def validate(args):
         raise WizardError('NAME_OR_FINGERPRINT_INVALID')
     if not 1024 <= args.port <= 65535 or not 1 <= args.guardrail_cpus <= 64:
         raise WizardError('PORT_OR_CPU_INVALID')
+    if args.llm_max_tokens is not None and (type(args.llm_max_tokens) is not int or not 1 <= args.llm_max_tokens <= 65536):
+        raise WizardError('LLM_MAX_TOKENS_INVALID')
     if args.offline and args.backend != 'compose':
         raise WizardError('OFFLINE_COMPOSE_ONLY')
     try:
@@ -275,6 +286,7 @@ def run_install(bundle, stage, home, args, inputs=None, key_file=None):
                     '--llm-key-file', str(key_file), '--port', str(args.port),
                     '--guardrail-cpus', str(args.guardrail_cpus)]
         if args.context: command += ['--context', args.context]
+        if args.llm_max_tokens is not None: command += ['--llm-max-tokens', str(args.llm_max_tokens)]
         if args.allow_http_llm: command += ['--allow-http-llm']
         if args.llm_ca_bundle: command += ['--llm-ca-bundle', str(args.llm_ca_bundle)]
         if args.storage_class: command += ['--storage-class', args.storage_class]
@@ -486,6 +498,7 @@ def main(argv=None):
                  'context', 'llm-url', 'llm-model', 'llm-key-file', 'llm-ca-bundle', 'health-url', 'storage-class'):
         p.add_argument('--'+flag)
     p.add_argument('--port', type=int, default=18000)
+    p.add_argument('--llm-max-tokens', type=int, help='Optional upstream generation token setting, 1..65536')
     p.add_argument('--guardrail-cpus', type=float, default=4)
     p.add_argument('--allow-http-llm', action='store_true')
     p.add_argument('--skip-llm-preflight', action='store_true')

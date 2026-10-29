@@ -72,6 +72,35 @@ class InstallerTests(unittest.TestCase):
             m.prepare(self.args, '')
         self.assertEqual(before, (self.args.home / 'credentials.json').read_bytes())
 
+    def test_optional_llm_max_tokens_compose_and_kubernetes(self):
+        for backend in ('compose', 'kubernetes'):
+            for limit in (None, 64):
+                with self.subTest(backend=backend, limit=limit):
+                    self.args.home = self.root / (backend + str(limit))
+                    self.args.backend = backend
+                    self.args.context = 'test-context' if backend == 'kubernetes' else None
+                    self.args.llm_max_tokens = limit
+                    m.prepare(self.args, 'key')
+                    env = self.env('guardrail.env')
+                    if limit is None:
+                        self.assertNotIn('UPSTREAM_OPENAI_MAX_TOKENS', env)
+                    else:
+                        self.assertEqual(env['UPSTREAM_OPENAI_MAX_TOKENS'], '64')
+                    if backend == 'kubernetes':
+                        resources = list(yaml.safe_load_all((self.args.home/'resources.yaml').read_text()))
+                        secret = next(x for x in resources if x['kind'] == 'Secret' and x['metadata']['name'] == 'uter-test-guardrail-env')
+                        values = yaml.safe_load((self.args.home/'values.yaml').read_text())
+                        self.assertEqual(secret['stringData'].get('UPSTREAM_OPENAI_MAX_TOKENS'), None if limit is None else '64')
+                        self.assertNotIn('UPSTREAM_OPENAI_MAX_TOKENS', values['guardrailEnv'])
+
+    def test_invalid_llm_max_tokens_creates_no_installation(self):
+        for value in (0, -1, 65537, True, 2.5, '64'):
+            with self.subTest(value=value):
+                self.args.llm_max_tokens = value
+                with self.assertRaisesRegex(ValueError, 'LLM max tokens'):
+                    m.prepare(self.args, '')
+                self.assertFalse(self.args.home.exists())
+
     def test_bad_input_no_files(self):
         for key, value in [('llm_model', 'a\nJWT_SECRET=bad'), ('llm_url', 'https://user:pw@llm.example'),
                            ('llm_url', 'http://llm.example'), ('name', '../stand'), ('port', 0)]:
@@ -149,10 +178,11 @@ class InstallerTests(unittest.TestCase):
         argv = ['install.py', 'prepare', '--home', str(self.args.home), '--inputs', str(self.root),
                 '--llm-url', self.args.llm_url, '--llm-model', self.args.llm_model,
                 '--llm-key-file', str(self.root / 'llm-key'), '--judge-url', 'http://judge:11434',
-                '--judge-model', 'test-judge', '--guardrail-cpus', '2']
+                '--judge-model', 'test-judge', '--guardrail-cpus', '2', '--llm-max-tokens', '64']
         with patch.object(m.sys, 'argv', argv):
             self.assertEqual(m.main(), 0)
         g = self.env('guardrail.env')
+        self.assertEqual(g['UPSTREAM_OPENAI_MAX_TOKENS'], '64')
         self.assertEqual(g['JUDGE_ENABLED'], 'true')
         self.assertEqual(g['JUDGE_OLLAMA_URL'], 'http://judge:11434')
         self.assertEqual(g['JUDGE_FAIL_CLOSED'], 'true')

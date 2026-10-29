@@ -8,7 +8,7 @@ Kubernetes/Helm. Для запуска нужны готовые образы, �
 [подробной инструкции подключения и развёртывания](docs/corporate-litellm-deployment.md).
 В ней описаны сетевые требования, входные данные, Compose, Kubernetes, проверки и
 ограничения автоматизации. Инструкция использует выпуск
-`deploy-2026.10.29-signed-3` / `0.1.6`. Перед установкой проверьте его подпись
+`deploy-2026.10.29-signed-4` / `0.1.6`. Перед установкой проверьте его подпись
 и отпечаток издателя по независимому каналу. Ранее опубликован [кандидат signed-2](https://github.com/prince174/uter_deploy/releases/tag/deploy-2026.10.29-signed-2).
 
 Для интерактивной установки или обновления используйте [мастер Uter](docs/wizard.md).
@@ -17,7 +17,7 @@ Kubernetes/Helm. Для запуска нужны готовые образы, �
 пример запуска из нового root-owned checkout:
 
 ```bash
-sudo git clone --branch deploy-2026.10.29-signed-3 --single-branch \
+sudo git clone --branch deploy-2026.10.29-signed-4 --single-branch \
   https://github.com/prince174/uter_deploy.git /srv/uter-deploy-tooling
 cd /srv/uter-deploy-tooling
 sudo python3 -I scripts/bootstrap_wizard.py
@@ -45,6 +45,9 @@ HTML открывается локально в браузере без внеш
 
 ## Что уже проверено
 
+Ниже приведены результаты для `signed-3` и более ранних кандидатов; они не
+подтверждают проверку `signed-4`.
+
 Для `deploy-2026.10.29-signed-3` / `0.1.6` в изолированных GitHub-hosted
 окружениях получены следующие результаты:
 
@@ -60,6 +63,17 @@ HTML открывается локально в браузере без внеш
 к vLLM, а также достаточные ресурсы и время ответа для своей нагрузки. Uter не
 гарантирует стабильность внешней инфраструктуры LLM. Прочитать безопасный код этапа
 ошибки и найти дальнейшие шаги поможет [диагностика мастера](docs/wizard.md#диагностика-установки).
+В [дополнительном прогоне signed-3](https://github.com/prince174/uter_deploy/actions/runs/40929728102)
+на Compose авторизованная проверка завершилась `CHAT_HTTP_504`. На момент сбоя
+суммарный счётчик генерации vLLM составлял 1402 токена, выполнялся один запрос и
+три ожидали в очереди. Это наблюдение за общими метриками, а не число токенов
+одного запроса или доказанная причина сбоя.
+
+Для управления длиной ответов в инструкции `signed-4` предусмотрен необязательный
+`--llm-max-tokens` от 1 до 65536. Оставьте пустым, чтобы не задавать переменную;
+при выборе учитывайте риск обрезанных ответов и то, что отдельные сценарии, включая
+RAG, могут переопределять значение. Подбор и диагностика очереди описаны в
+[руководстве мастера](docs/wizard.md#настроить-длину-ответа-llm).
 
 Результаты кандидата `signed-2` приведены для истории и не являются проверками
 `signed-3`:
@@ -138,22 +152,22 @@ kind использует стандартный CNI без применения
 ```bash
 git clone https://github.com/prince174/uter_deploy.git
 cd uter_deploy
-git checkout deploy-2026.10.29-signed-3
+git checkout deploy-2026.10.29-signed-4
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p incoming signed
 curl -fL -o signed/publisher-public.pem \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-3/publisher-public.pem
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-4/publisher-public.pem
 curl -fL -o signed/signed-bundle.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-3/signed-bundle.tar.gz
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-4/signed-bundle.tar.gz
 echo '65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2  signed/publisher-public.pem' | sha256sum -c -
 .venv/bin/python scripts/extract_signed_bundle.py \
   --archive signed/signed-bundle.tar.gz --key signed/publisher-public.pem \
   --output signed/0.1.6
 curl -fL -o incoming/installation-inputs.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-3/installation-inputs.tar.gz
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-4/installation-inputs.tar.gz
 curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-3/installation-inputs.tar.gz.sha256
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.10.29-signed-4/installation-inputs.tar.gz.sha256
 .venv/bin/python signed/0.1.6/scripts/extract_release_inputs.py \
   incoming/installation-inputs.tar.gz incoming/installation-inputs.tar.gz.sha256 incoming/inputs \
   --bundle signed/0.1.6 --key signed/publisher-public.pem
@@ -165,8 +179,8 @@ curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
 из проверенного комплекта. В подписанном манифесте выпуска `0.1.6` указаны
 `data_epoch = 1` и переход только с `0.1.5`; переходы с остальных управляемых
 версий не заявлены.
-Для `signed-2` и `signed-3` используется одна версия `0.1.6`: переход между
-ними не заявлен, не используйте описанный сценарий как обновление `0.1.6 → 0.1.6`.
+Кандидаты `signed-2`, `signed-3` и `signed-4` используют версию `0.1.6`: переход
+между ними не заявлен; не используйте этот сценарий для `0.1.6 → 0.1.6`.
 В проверенных `0.1.5` и `signed-2` образы продукта одинаковы, поэтому такой
 переход не проверяет миграцию между разными сборками. Сверьте подпись и декларацию совместимости в
 опубликованном комплекте до обновления.
@@ -174,7 +188,7 @@ curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
 Из доверенного checkout с `scripts/fetch_release.py` выпуск можно также получить одной командой:
 
 ```bash
-.venv/bin/python scripts/fetch_release.py --release deploy-2026.10.29-signed-3 \
+.venv/bin/python scripts/fetch_release.py --release deploy-2026.10.29-signed-4 \
   --version 0.1.6 --fingerprint "$UTER_PUBLISHER_SHA256" --output ./verified-release
 ```
 

@@ -17,7 +17,7 @@ def args(**overrides):
                 home='/tmp/private/home', name='uter-test', context=None,
                 llm_url='https://llm.invalid/v1', llm_model='model', llm_key_file='/tmp/private/key',
                 llm_ca_bundle=None, health_url=None, storage_class=None, port=18000,
-                guardrail_cpus=2, allow_http_llm=False, skip_llm_preflight=False, offline=False,
+                guardrail_cpus=2, llm_max_tokens=None, allow_http_llm=False, skip_llm_preflight=False, offline=False,
                 reuse_release=False, use_env_proxy=False, _interactive_key=None)
     data.update(overrides)
     return argparse.Namespace(**data)
@@ -29,6 +29,7 @@ class InstallWizardTests(unittest.TestCase):
         with mock.patch('builtins.input', side_effect=AssertionError('unexpected prompt')):
             wizard.collect(data)
         self.assertEqual(data.release,wizard.DEFAULT_TAG)
+        self.assertEqual(data.release,'deploy-2026.10.29-signed-4')
         self.assertEqual(data.version,wizard.DEFAULT_VERSION)
         self.assertEqual(data.backend,'compose')
 
@@ -159,15 +160,35 @@ class InstallWizardTests(unittest.TestCase):
                 self.assertNotIn('hidden-secret',output.getvalue())
 
     def test_installer_arguments_pass_key_path_not_value(self):
-        data=args(allow_http_llm=True,offline=True)
+        data=args(allow_http_llm=True,offline=True,llm_max_tokens=64)
         with mock.patch.object(wizard.subprocess,'run',return_value=argparse.Namespace(returncode=0)) as run:
             wizard.run_install(Path('/verified/bundle'),'prepare',Path('/private/home'),data,
                                Path('/private/inputs'),Path('/private/keyfile'))
             command=run.call_args.args[0]
             self.assertEqual(command[1:4],['-I','-B','/verified/bundle/scripts/install.py'])
             self.assertEqual(command[command.index('--llm-key-file')+1],'/private/keyfile')
+            self.assertEqual(command[command.index('--llm-max-tokens')+1],'64')
             self.assertNotIn('hidden-secret',' '.join(command))
             self.assertIs(run.call_args.kwargs['stdout'],wizard.subprocess.DEVNULL)
+
+    def test_invalid_llm_max_tokens_fail_before_release_download(self):
+        for limit in (0, -1, 65537, True, 2.5, '64'):
+            with self.subTest(limit=limit), mock.patch.object(wizard.fetch_release,'fetch_with_deadline') as fetch:
+                with self.assertRaisesRegex(wizard.WizardError,'LLM_MAX_TOKENS_INVALID'):
+                    wizard.validate(args(llm_max_tokens=limit))
+                fetch.assert_not_called()
+
+    def test_interactive_llm_max_tokens_choice_and_validation(self):
+        data=args(non_interactive=False,skip_llm_preflight=True)
+        with mock.patch.object(wizard.sys.stdin,'isatty',return_value=True), \
+             mock.patch.object(wizard,'ask',side_effect=['18000','64','','']):
+            wizard.collect(data)
+        self.assertEqual(data.llm_max_tokens,64)
+        data=args(non_interactive=False,skip_llm_preflight=True)
+        with mock.patch.object(wizard.sys.stdin,'isatty',return_value=True), \
+             mock.patch.object(wizard,'ask',side_effect=['18000','1.5']):
+            with self.assertRaisesRegex(wizard.WizardError,'LLM_MAX_TOKENS_INVALID'):
+                wizard.collect(data)
 
     def test_failed_check_never_installs(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -298,7 +319,7 @@ class InstallWizardTests(unittest.TestCase):
     def test_interactive_secret_is_hidden_and_empty_requires_explicit_choice(self):
         data=args(non_interactive=False,llm_key_file=None,skip_llm_preflight=True)
         with mock.patch.object(wizard.sys.stdin,'isatty',return_value=True), \
-             mock.patch.object(wizard,'ask',side_effect=['18000','enter','','']), \
+             mock.patch.object(wizard,'ask',side_effect=['18000','','enter','','']), \
              mock.patch.object(wizard.getpass,'getpass',return_value='hidden-secret'), \
              contextlib.redirect_stdout(io.StringIO()) as output:
             wizard.collect(data)
@@ -306,13 +327,13 @@ class InstallWizardTests(unittest.TestCase):
             self.assertNotIn('hidden-secret',output.getvalue())
         data=args(non_interactive=False,llm_key_file=None)
         with mock.patch.object(wizard.sys.stdin,'isatty',return_value=True), \
-             mock.patch.object(wizard,'ask',side_effect=['18000','enter']), \
+             mock.patch.object(wizard,'ask',side_effect=['18000','','enter']), \
              mock.patch.object(wizard.getpass,'getpass',return_value=''):
             with self.assertRaisesRegex(wizard.WizardError,'EMPTY_KEY_REQUIRES_EXPLICIT_NONE'):
                 wizard.collect(data)
         data=args(non_interactive=False,llm_key_file=None)
         with mock.patch.object(wizard.sys.stdin,'isatty',return_value=True), \
-             mock.patch.object(wizard,'ask',side_effect=['18000','enter']), \
+             mock.patch.object(wizard,'ask',side_effect=['18000','','enter']), \
              mock.patch.object(wizard.getpass,'getpass',side_effect=wizard.getpass.GetPassWarning()):
             with self.assertRaisesRegex(wizard.WizardError,'HIDDEN_INPUT_UNAVAILABLE_USE_KEY_FILE'):
                 wizard.collect(data)

@@ -209,6 +209,26 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(deploy.call_args.kwargs["check"])
         self.assertFalse((self.home / "state.json").exists())
 
+    def test_deploy_preserves_optional_llm_limit_for_both_backends(self):
+        runtime=self.home/'runtime'
+        (runtime/'policies').mkdir(exist_ok=True);(runtime/'profiles').mkdir(exist_ok=True);(runtime/'models').mkdir(exist_ok=True)
+        env=runtime/'guardrail.env';env.write_text('UPSTREAM_OPENAI_MAX_TOKENS=64\n')
+        for name in ('agent.env','redis.conf','redis-password','audit-hmac-key','policies/runtime.toml','profiles/model_profiles.toml'):
+            (runtime/name).write_text('fixture')
+        bundle=self.bundle()
+        site={'backend':'compose','name':'uter-test','namespace':'uter-test','context':'default'}
+        with patch.object(u,'run') as run:
+            u.deploy(self.home,bundle,manifest(),site)
+            compose_env=run.call_args.kwargs['env']
+        self.assertEqual(compose_env['RUNTIME_DIR'],runtime.as_posix())
+        self.assertEqual(env.read_text(),'UPSTREAM_OPENAI_MAX_TOKENS=64\n')
+        site['backend']='helm'
+        values=runtime/'values.yaml';values.write_text('guardrailSecret: old-g\n')
+        with patch.object(u,'run') as run:
+            u.deploy(self.home,bundle,manifest(),site)
+        self.assertTrue(all(call.args[0][0]=='helm' for call in run.call_args_list))
+        self.assertEqual(values.read_text(),'guardrailSecret: old-g\n')
+
     def test_compose_stable_project_and_offline(self):
         runtime = self.home / "runtime"
         for name in ["guardrail.env", "agent.env", "redis.conf", "redis-password", "audit-hmac-key", "policies/runtime.toml", "profiles/model_profiles.toml"]:

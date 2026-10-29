@@ -133,6 +133,9 @@ def prepare(args, api_key):
     cpus = getattr(args, 'guardrail_cpus', 4)
     if not 1 <= cpus <= 64:
         raise ValueError('Guardrail CPU limit must be 1..64')
+    llm_max_tokens = getattr(args, 'llm_max_tokens', None)
+    if llm_max_tokens is not None and (type(llm_max_tokens) is not int or not 1 <= llm_max_tokens <= 65536):
+        raise ValueError('LLM max tokens must be an integer from 1 to 65536')
     policy = args.policy.read_text(encoding='utf-8')
     profiles = args.profiles.read_text(encoding='utf-8')
     tomllib.loads(policy)
@@ -155,6 +158,8 @@ def prepare(args, api_key):
                  OPENAI_INGRESS_SHARED_SECRET=secrets.token_hex(32), UPSTREAM_MODE='litellm_openai',
                  UPSTREAM_URL=args.llm_url.rstrip('/'), UPSTREAM_OPENAI_MODEL=args.llm_model,
                  UPSTREAM_API_KEY=api_key, AUDIT_LOG_HMAC_KEY=secrets.token_hex(32), TOXICITY_FAIL_CLOSED='true')
+    if llm_max_tokens is not None:
+        guard['UPSTREAM_OPENAI_MAX_TOKENS'] = str(llm_max_tokens)
     if ca_bundle:
         # Pin OpenSSL's CA file AND directory: leaving the default CA directory
         # would silently retain the platform trust store for some clients.
@@ -365,6 +370,7 @@ def main():
     p.add_argument('--profiles', type=Path)
     p.add_argument('--llm-url')
     p.add_argument('--llm-model')
+    p.add_argument('--llm-max-tokens', type=int, help='Optional upstream generation token setting, 1..65536')
     p.add_argument('--llm-key-file', type=Path)
     p.add_argument('--llm-ca-bundle', type=Path,
                    help='Complete PEM trust bundle for HTTPS LLM; replaces default trust roots')
