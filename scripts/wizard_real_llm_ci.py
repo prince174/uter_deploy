@@ -269,6 +269,39 @@ def metric(url):
         return llm.metric_total(response.read(1024*1024).decode('utf-8'))
 
 
+def report_capacity_and_vllm_metrics(url, label):
+    """Print only fixed numeric capacity and aggregate vLLM counters, never labels."""
+    if label not in {'BEFORE_ACCEPTANCE', 'AFTER_ACCEPTANCE_FAILURE'}:
+        raise Failure('DIAGNOSTIC_LABEL_INVALID')
+    try:
+        load = os.getloadavg()[0]
+        _, memory, _ = llm.read_host_resources(Path('/tmp'))
+        if 0 <= load < 100000 and 0 <= memory < 10**16:
+            print(f'CAPACITY_{label}=CPU_{os.cpu_count()}_LOAD1_{load:.2f}_MEM_AVAILABLE_MIB_{memory//1024**2}',
+                  file=sys.stderr)
+    except (OSError, ValueError, llm.DiagnosticError):
+        print('CAPACITY_'+label+'_UNAVAILABLE', file=sys.stderr)
+    names = {'vllm:generation_tokens_total', 'vllm:prompt_tokens_total',
+             'vllm:num_requests_running', 'vllm:num_requests_waiting'}
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        with opener.open(url+'/metrics', timeout=15) as response:
+            data = response.read(1024*1024+1)
+        if len(data) > 1024*1024: raise ValueError
+        totals = {}
+        for line in data.decode('utf-8').splitlines():
+            match = re.fullmatch(r'(vllm:[a-z_]+)(?:\{[^{}]*\})?\s+([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)', line)
+            if match and match.group(1) in names:
+                value = float(match.group(2))
+                if not 0 <= value < 10**15: raise ValueError
+                totals[match.group(1)] = totals.get(match.group(1), 0) + value
+        for name in sorted(totals):
+            print('VLLM_'+label+'_'+name.removeprefix('vllm:').upper()+'='+str(totals[name]), file=sys.stderr)
+        if not totals: print('VLLM_'+label+'_METRICS_UNAVAILABLE', file=sys.stderr)
+    except (OSError, ValueError, UnicodeError):
+        print('VLLM_'+label+'_METRICS_UNAVAILABLE', file=sys.stderr)
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, message, headers, newurl):
         return None
@@ -498,7 +531,9 @@ def main():
                     isinstance(item, dict) and item.get('id') == llm.MODEL for item in models['data']):
                 raise Failure('VLLM_MODEL_MISMATCH')
             print('Stage: direct vLLM completion', flush=True)
+            direct_started = time.monotonic()
             completion(vllm_url, llm.MODEL)
+            print('VLLM_DIRECT_SECONDS='+str(round(time.monotonic()-direct_started, 1)), flush=True)
             pending_creates.add('LITELLM')
             _, raw = command(['docker', '--context', 'default', 'run', '-d', '--name', proxy, '--network', network,
                               '--label', LABEL+'='+operation, '--memory', '2g', '--cpus', '1', '--cap-drop', 'ALL',
@@ -512,7 +547,9 @@ def main():
                        state_probe=lambda timed: llm.container_state_category(proxy, 'LITELLM', timeout=timed),
                        timeout_category='LITELLM_MODELS_READY_TIMEOUT')
             print('Stage: direct LiteLLM completion', flush=True)
+            direct_started = time.monotonic()
             completion(proxy_url, llm.MODEL_ALIAS, token=key)
+            print('LITELLM_DIRECT_SECONDS='+str(round(time.monotonic()-direct_started, 1)), flush=True)
             print('Stage: signed installation wizard and real LLM acceptance', flush=True)
             wizard = checkout/'scripts/install_wizard.py'
             values = [sys.executable, wizard, '--non-interactive', '--release', tag, '--version', version,
@@ -522,11 +559,15 @@ def main():
                       '--health-url', proxy_url+'/v1/models', '--port', str(llm.UTER_PORT), '--guardrail-cpus', '2']
             if backend == 'kubernetes': values += ['--context', 'kind-'+cluster]
             before = metric(vllm_url)
+            report_capacity_and_vllm_metrics(vllm_url, 'BEFORE_ACCEPTANCE')
+            acceptance_start = time.monotonic()
             attempted = True
             try:
                 run_signed_wizard(common.bootstrap_command(sys.executable, checkout, environment, 'install', values))
             except WizardFailure as exc:
                 if backend == 'compose' and exc.wizard_code == 'ACCEPTANCE_FAILED':
+                    print('WIZARD_ELAPSED_SECONDS='+str(round(time.monotonic()-acceptance_start, 1)), file=sys.stderr)
+                    report_capacity_and_vllm_metrics(vllm_url, 'AFTER_ACCEPTANCE_FAILURE')
                     diagnose_project_containers(name)
                     diagnose_compose_acceptance(home, llm.UTER_PORT)
                 raise

@@ -20,6 +20,27 @@ OPERATION = 'b' * 32
 
 
 class IsolatedWizardLlmTests(unittest.TestCase):
+    def test_capacity_metrics_never_emit_labels(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, size):
+                return (b'vllm:generation_tokens_total{model="secret-canary"} 12\n'
+                        b'vllm:num_requests_running{model="secret-canary"} 1\n'
+                        b'secret-canary 999\n')
+        class Opener:
+            def open(self, *args, **kwargs): return Response()
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out), patch.object(driver.urllib.request, 'build_opener', return_value=Opener()), \
+                patch.object(driver.llm, 'read_host_resources', return_value=(set(), 1024**3, 10**10)), \
+                patch.object(driver.os, 'getloadavg', return_value=(1, 2, 3)), \
+                patch.object(driver.os, 'cpu_count', return_value=4):
+            driver.report_capacity_and_vllm_metrics('http://127.0.0.1:1', 'BEFORE_ACCEPTANCE')
+        self.assertIn('CPU_4_LOAD1_1.00_MEM_AVAILABLE_MIB_1024', out.getvalue())
+        self.assertIn('GENERATION_TOKENS_TOTAL=12.0', out.getvalue())
+        self.assertIn('NUM_REQUESTS_RUNNING=1.0', out.getvalue())
+        self.assertNotIn('secret-canary', out.getvalue())
+
     def test_completion_errors_are_sanitized(self):
         error = urllib.error.HTTPError('http://example/secret-canary', 503, 'secret-canary', {}, None)
         self.addCleanup(error.close)
