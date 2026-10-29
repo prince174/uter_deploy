@@ -20,6 +20,12 @@ OPERATION = 'b' * 32
 
 
 class IsolatedWizardLlmTests(unittest.TestCase):
+    def test_completion_errors_are_sanitized(self):
+        error = urllib.error.HTTPError('http://example/secret-canary', 503, 'secret-canary', {}, None)
+        with patch.object(driver, 'local_json', side_effect=error):
+            with self.assertRaisesRegex(driver.Failure, '^COMPLETION_HTTP_503$'):
+                driver.completion('http://127.0.0.1:1234', 'test')
+
     def test_acceptance_diagnostics_reveal_only_safe_status(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
@@ -51,6 +57,14 @@ class IsolatedWizardLlmTests(unittest.TestCase):
         with contextlib.redirect_stderr(output), self.assertRaisesRegex(driver.Failure, 'SIGNED_WIZARD_FAILED'):
             driver.run_signed_wizard([sys.executable, '-c', program], timeout=10)
         self.assertEqual(output.getvalue(), '')
+
+    def test_signed_acceptance_diagnostic_is_allowlisted(self):
+        output = io.StringIO()
+        program = ("import sys; print('ACCEPTANCE_DIAGNOSTIC=CHAT_TIMEOUT'); "
+                   "print('ACCEPTANCE_DIAGNOSTIC=CHAT_SECRET_CANARY'); sys.exit(1)")
+        with contextlib.redirect_stderr(output), self.assertRaisesRegex(driver.Failure, 'SIGNED_WIZARD_FAILED'):
+            driver.run_signed_wizard([sys.executable, '-c', program], timeout=10)
+        self.assertEqual(output.getvalue(), 'SIGNED_ACCEPTANCE_DIAGNOSTIC=CHAT_TIMEOUT\n')
 
     def test_remote_default_daemon_rejected_before_any_mutation(self):
         remote = [{'Name': 'default', 'Endpoints': {'docker': {'Host': 'tcp://192.0.2.1:2375'}}}]

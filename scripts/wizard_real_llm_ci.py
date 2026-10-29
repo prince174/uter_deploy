@@ -120,6 +120,13 @@ def run_signed_wizard(argv, timeout=1800):
         for code in re.findall(r': fail \(([A-Z_0-9]+)\)', text):
             if code in preflight_codes:
                 print('PREFLIGHT_CODE=' + code, file=sys.stderr)
+        acceptance_stages = {'READY', 'AUTH', 'HEALTH', 'CHAT'}
+        acceptance_categories = {'TIMEOUT', 'NETWORK_FAILED', 'INVALID_RESPONSE', 'NOT_READY',
+                                 'BLOCKED_OR_INVALID', 'FAILED', 'HTTP_OTHER'} | {
+                                     'HTTP_'+str(x) for x in (400, 401, 403, 404, 408, 409, 422, 429, 500, 502, 503, 504)}
+        for stage, category in re.findall(r'ACCEPTANCE_DIAGNOSTIC=(READY|AUTH|HEALTH|CHAT)_([A-Z_0-9]+)', text):
+            if stage in acceptance_stages and category in acceptance_categories:
+                print('SIGNED_ACCEPTANCE_DIAGNOSTIC='+stage+'_'+category, file=sys.stderr)
         raise WizardFailure(wizard_code)
 
 
@@ -305,10 +312,19 @@ def wait_local(url, *, token=None, attempts=150, state_probe=None, timeout_categ
 
 
 def completion(base, model, *, token=None, extra_headers=None):
-    result = local_json(base+'/v1/chat/completions',
-                        {'model':model, 'messages':[{'role':'user', 'content':'Say hi.'}],
-                         'max_tokens':4, 'temperature':0}, token=token,
-                        extra_headers=extra_headers, timeout=360)
+    try:
+        result = local_json(base+'/v1/chat/completions',
+                            {'model':model, 'messages':[{'role':'user', 'content':'Say hi.'}],
+                             'max_tokens':4, 'temperature':0}, token=token,
+                            extra_headers=extra_headers, timeout=360)
+    except urllib.error.HTTPError as exc:
+        code = exc.code; exc.close()
+        raise Failure('COMPLETION_HTTP_'+(str(code) if code in
+                      (400,401,403,404,408,409,422,429,500,502,503,504) else 'OTHER')) from None
+    except (socket.timeout, TimeoutError):
+        raise Failure('COMPLETION_TIMEOUT') from None
+    except (OSError, ValueError, TypeError):
+        raise Failure('COMPLETION_NETWORK_OR_RESPONSE_INVALID') from None
     choices = result.get('choices') if isinstance(result, dict) else None
     item = choices[0] if isinstance(choices, list) and choices else None
     message = item.get('message') if isinstance(item, dict) else None
@@ -451,8 +467,10 @@ def main():
             models = wait_local(vllm_url+'/v1/models', attempts=225,
                                 state_probe=lambda timed: llm.container_state_category(vllm, 'VLLM', timeout=timed),
                                 timeout_category='VLLM_MODELS_READY_TIMEOUT')
-            if not any(item.get('id') == llm.MODEL for item in models.get('data', [])):
+            if not isinstance(models, dict) or not isinstance(models.get('data'), list) or not any(
+                    isinstance(item, dict) and item.get('id') == llm.MODEL for item in models['data']):
                 raise Failure('VLLM_MODEL_MISMATCH')
+            print('Stage: direct vLLM completion', flush=True)
             completion(vllm_url, llm.MODEL)
             pending_creates.add('LITELLM')
             _, raw = command(['docker', '--context', 'default', 'run', '-d', '--name', proxy, '--network', network,
@@ -466,6 +484,7 @@ def main():
             wait_local(proxy_url+'/v1/models', token=key,
                        state_probe=lambda timed: llm.container_state_category(proxy, 'LITELLM', timeout=timed),
                        timeout_category='LITELLM_MODELS_READY_TIMEOUT')
+            print('Stage: direct LiteLLM completion', flush=True)
             completion(proxy_url, llm.MODEL_ALIAS, token=key)
             print('Stage: signed installation wizard and real LLM acceptance', flush=True)
             wizard = checkout/'scripts/install_wizard.py'
