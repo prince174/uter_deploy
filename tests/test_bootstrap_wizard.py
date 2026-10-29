@@ -128,7 +128,17 @@ class BootstrapTests(unittest.TestCase):
                     return SimpleNamespace(returncode=0)
                 return real_run(args, *pos, **kwargs)
             with patch.object(bootstrap.subprocess, 'run', side_effect=intercept) as run:
-                python, wizard = bootstrap.bootstrap(root, root / '.uter-wizard-venv')
+                try:
+                    python, wizard = bootstrap.bootstrap(root, root / '.uter-wizard-venv')
+                except bootstrap.BootstrapError:
+                    environment = root / '.uter-wizard-venv'
+                    unsafe = []
+                    for item in environment.rglob('*'):
+                        info = item.lstat()
+                        if not item.is_symlink() and info.st_mode & 0o022:
+                            unsafe.append((str(item.relative_to(environment)), oct(info.st_mode & 0o777)))
+                    print('Generated venv writable modes:', unsafe[:10])
+                    raise
             self.assertTrue(python.is_file())
             self.assertFalse(python.is_symlink())
             self.assertEqual(wizard, scripts / 'uter_wizard.py')
