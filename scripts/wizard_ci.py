@@ -412,6 +412,33 @@ def check_disallowed_transition(backend, staged, home, backups, key, checkout, e
         raise CheckFailure('DISALLOWED_TRANSITION_NOT_REJECTED')
 
 
+def check_ci_max_tokens(stage, backend, phase):
+    """Verify only the explicit test setting on disposable runner-owned resources."""
+    if phase not in ('before_update', 'restored', 'after_update'):
+        raise CheckFailure('MAX_TOKENS_PHASE_INVALID')
+    try:
+        if backend == 'compose':
+            folder = 'restored-compose-api' if phase == 'restored' else 'managed'
+            path = stage/'work'/folder/'runtime/guardrail.env'
+            if path.is_symlink() or path.stat().st_size > 65536:
+                raise ValueError
+            values = [line.partition('=')[2] for line in path.read_text(encoding='utf-8').splitlines()
+                      if line.startswith('UPSTREAM_OPENAI_MAX_TOKENS=')]
+            if values != ['64']:
+                raise ValueError
+        elif backend == 'kubernetes':
+            name = 'uter-restored-api-ci' if phase == 'restored' else 'uter-upgrade-ci'
+            result = command(['kubectl', '--context', 'kind-uter-upgrade-ci', '-n', name,
+                              'get', 'secret', name+'-guardrail-env', '-o',
+                              'jsonpath={.data.UPSTREAM_OPENAI_MAX_TOKENS}'], timeout=30)
+            if result.returncode or result.stdout != b'NjQ=':
+                raise ValueError
+        else:
+            raise ValueError
+    except (OSError, UnicodeError, ValueError):
+        raise CheckFailure('MAX_TOKENS_SETTING_NOT_PRESERVED') from None
+
+
 def update_upgrade(stage, staged, checkout, environment, old_tag, new_tag, backend):
     """Reuse real signed release backup, data, LLM and recovery checks."""
     work = stage/'work'
@@ -419,6 +446,7 @@ def update_upgrade(stage, staged, checkout, environment, old_tag, new_tag, backe
     if command(['docker', '--context', 'default', 'container', 'inspect', 'uter-real-llm-ci']).returncode == 0:
         raise CheckFailure('TEST_LLM_CONTAINER_ALREADY_EXISTS')
     original_root, original_builder, original_call = upgrade.ROOT, upgrade.published_update_command, upgrade.call
+    original_audit = upgrade.audit_and_redis
     import scripts.recovery_compose_api_ci as recover_compose
     import scripts.recovery_kubernetes_api_ci as recover_kubernetes
     old_recovery_roots = recover_compose.ROOT, recover_kubernetes.ROOT
@@ -432,6 +460,7 @@ def update_upgrade(stage, staged, checkout, environment, old_tag, new_tag, backe
         'NEW_SIGNED_BUNDLE_PATH': str(staged['new']), 'PUBLISHER_KEY_PATH': str(staged['public'])})
     upgrade.ROOT = recover_compose.ROOT = recover_kubernetes.ROOT = stage
     attempted = []
+    checked_settings = []
 
     def builder(python, old, new, home, public, backups, key):
         argv = update_command(python, old, new, home, public, backups, key)
@@ -447,10 +476,21 @@ def update_upgrade(stage, staged, checkout, environment, old_tag, new_tag, backe
             attempted.append(True)
         return original_call(argv, **kwargs)
 
-    upgrade.published_update_command, upgrade.call = builder, run_checked
+    def audit_checked(argv, env, action):
+        phase = {'write': 'before_update', 'read': 'restored', 'check': 'after_update'}.get(action)
+        if phase is None or phase in checked_settings:
+            raise CheckFailure('MAX_TOKENS_PHASE_INVALID')
+        check_ci_max_tokens(stage, backend, phase)
+        result = original_audit(argv, env, action)
+        checked_settings.append(phase)
+        return result
+
+    upgrade.published_update_command, upgrade.call, upgrade.audit_and_redis = builder, run_checked, audit_checked
     try:
         upgrade.main()
         if attempted != [True]: raise CheckFailure('SIGNED_UPDATE_WIZARD_NOT_EXERCISED')
+        if checked_settings != ['before_update', 'restored', 'after_update']:
+            raise CheckFailure('MAX_TOKENS_PHASE_INCOMPLETE')
         result = json.loads((work/'adopt-backup-evidence/result.json').read_text())
         if (result.get('upgrade') != 'pass' or result.get('full_restore_to_workloads') != 'production recovery command and isolated installation passed'
                 or result.get('real_inference') != 'pass'):
@@ -460,6 +500,7 @@ def update_upgrade(stage, staged, checkout, environment, old_tag, new_tag, backe
         return unchanged
     finally:
         upgrade.ROOT, upgrade.published_update_command, upgrade.call = original_root, original_builder, original_call
+        upgrade.audit_and_redis = original_audit
         recover_compose.ROOT, recover_kubernetes.ROOT = old_recovery_roots
         for key, value in old_env.items():
             if value is None: os.environ.pop(key, None)
@@ -490,6 +531,7 @@ def main():
         report = {'backend': backend, 'signed_install_wizard': 'pass', 'wrong_fingerprint_rejected': 'pass',
                   'signed_update_wizard': 'pass', 'disallowed_transition_rejected': 'pass',
                   'encrypted_backup_and_restore': 'pass', 'fresh_llm': 'HTTP fixture',
+                  'explicit_max_tokens_setting': 64, 'max_tokens_preserved_in_update_and_restore': 'pass',
                   'upgrade_llm': 'isolated Ollama real inference',
                   'bootstrap_trust': 'signed Git commit; Git/Python/package index independently trusted',
                   'product_image_digests_unchanged': unchanged, 'arbitrary_data_migration': 'not_verified'}

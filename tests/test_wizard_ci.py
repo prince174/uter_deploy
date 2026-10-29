@@ -1,5 +1,6 @@
 import os
 import io
+import json
 from pathlib import Path
 import subprocess
 import tarfile
@@ -11,6 +12,65 @@ from scripts import wizard_ci as ci
 
 
 class WizardCiTests(unittest.TestCase):
+    def test_max_tokens_checked_in_old_and_restored_compose_without_secret_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp)
+            for folder in ('managed', 'restored-compose-api'):
+                runtime = stage/'work'/folder/'runtime'; runtime.mkdir(parents=True)
+                (runtime/'guardrail.env').write_text('PRIVATE=secret-canary\nUPSTREAM_OPENAI_MAX_TOKENS=64\n')
+            for phase in ('before_update', 'restored', 'after_update'):
+                ci.check_ci_max_tokens(stage, 'compose', phase)
+            env = stage/'work/restored-compose-api/runtime/guardrail.env'
+            env.write_text('PRIVATE=secret-canary\nUPSTREAM_OPENAI_MAX_TOKENS=63\n')
+            with self.assertRaisesRegex(ci.CheckFailure, '^MAX_TOKENS_SETTING_NOT_PRESERVED$') as caught:
+                ci.check_ci_max_tokens(stage, 'compose', 'restored')
+            self.assertNotIn('secret-canary', str(caught.exception))
+            env.write_text('UPSTREAM_OPENAI_MAX_TOKENS=64\nUPSTREAM_OPENAI_MAX_TOKENS=64\n')
+            with self.assertRaises(ci.CheckFailure):
+                ci.check_ci_max_tokens(stage, 'compose', 'restored')
+
+    def test_max_tokens_checked_in_only_fixed_kubernetes_secret_field(self):
+        with mock.patch.object(ci, 'command', return_value=subprocess.CompletedProcess([], 0, b'NjQ=', b'')) as run:
+            ci.check_ci_max_tokens(Path('/unused'), 'kubernetes', 'before_update')
+            ci.check_ci_max_tokens(Path('/unused'), 'kubernetes', 'restored')
+        commands = [item.args[0] for item in run.call_args_list]
+        self.assertIn('uter-upgrade-ci-guardrail-env', commands[0])
+        self.assertIn('uter-restored-api-ci-guardrail-env', commands[1])
+        self.assertTrue(all(args[-1] == 'jsonpath={.data.UPSTREAM_OPENAI_MAX_TOKENS}' for args in commands))
+        with mock.patch.object(ci, 'command', return_value=subprocess.CompletedProcess([], 0, b'', b'')):
+            with self.assertRaisesRegex(ci.CheckFailure, '^MAX_TOKENS_SETTING_NOT_PRESERVED$'):
+                ci.check_ci_max_tokens(Path('/unused'), 'kubernetes', 'restored')
+        with self.assertRaisesRegex(ci.CheckFailure, '^MAX_TOKENS_PHASE_INVALID$'):
+            ci.check_ci_max_tokens(Path('/unused'), 'kubernetes', 'invalid')
+
+    def test_signed_update_verifies_each_setting_phase_and_restores_hook(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp); work = stage/'work/adopt-backup-evidence'; work.mkdir(parents=True)
+            (work/'result.json').write_text(json.dumps({'upgrade':'pass', 'real_inference':'pass',
+                'full_restore_to_workloads':'production recovery command and isolated installation passed',
+                'product_image_digests_unchanged': True}))
+            checkout = stage/'checkout'
+            staged = {'old':stage/'old', 'new':stage/'new', 'public':stage/'publisher'}
+            def simulate_upgrade():
+                ci.upgrade.call(['/python', '-I', str(checkout/'scripts/bootstrap_wizard.py'),
+                                 '--home', str(stage/'home'), '--backup-root', str(stage/'backup'),
+                                 '--backup-key', str(stage/'key')])
+                for action in ('write', 'read', 'check'):
+                    ci.upgrade.audit_and_redis([], None, action)
+            original_audit = ci.upgrade.audit_and_redis
+            with mock.patch.object(ci.upgrade, 'assert_compose_project_absent'), \
+                    mock.patch.object(ci, 'command', return_value=subprocess.CompletedProcess([], 1, b'', b'')), \
+                    mock.patch.object(ci, 'check_disallowed_transition'), \
+                    mock.patch.object(ci, 'check_ci_max_tokens') as setting, \
+                    mock.patch.object(ci.upgrade, 'call', return_value=b''), \
+                    mock.patch.object(ci.upgrade, 'audit_and_redis', return_value={}) as original, \
+                    mock.patch.object(ci.upgrade, 'main', side_effect=simulate_upgrade):
+                self.assertTrue(ci.update_upgrade(stage, staged, checkout, stage/'venv', 'old', 'new', 'compose'))
+                self.assertEqual([call.args[2] for call in setting.call_args_list],
+                                 ['before_update', 'restored', 'after_update'])
+                self.assertIs(ci.upgrade.audit_and_redis, original)
+            self.assertIs(ci.upgrade.audit_and_redis, original_audit)
+
     def env(self, root):
         return {'GITHUB_ACTIONS': 'true', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
                 'RUNNER_ENVIRONMENT': 'github-hosted', 'RUNNER_OS': 'Linux',
