@@ -1,0 +1,51 @@
+name: Verify published Compose systemd backup
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published signed release of deployment version 0.1.5
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  systemd-backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout trusted candidate verifier
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: driver
+          persist-credentials: false
+      - name: Checkout published tag identity
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: prince174/uter_deploy
+          ref: ${{ inputs.release_tag }}
+          path: release
+          persist-credentials: false
+      - name: Download public release assets
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || exit 1
+          mkdir -p work/download
+          for file in installation-inputs.tar.gz installation-inputs.tar.gz.sha256 signed-bundle.tar.gz publisher-public.pem; do
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+              --connect-timeout 20 --max-time 180 --max-filesize 134217728 \
+              -o "work/download/$file" "https://github.com/prince174/uter_deploy/releases/download/$RELEASE_TAG/$file"
+          done
+          echo '65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2  work/download/publisher-public.pem' | sha256sum -c -
+      - name: Authenticate signed release and tag
+        run: |
+          python3 -m venv work/venv
+          work/venv/bin/pip install --quiet -r driver/requirements.txt
+          work/venv/bin/python driver/scripts/extract_signed_bundle.py --archive work/download/signed-bundle.tar.gz --key work/download/publisher-public.pem --output work/signed
+          work/venv/bin/python -c 'import json,subprocess; m=json.load(open("work/signed/manifest.json")); assert m["version"]=="0.1.5" and m["deployment_commit"]==subprocess.check_output(["git","-C","release","rev-parse","HEAD"],text=True).strip() and m.get("installation_archive_sha256")'
+      - name: Run generated backup service once
+        env:
+          TEST_WORKSPACE: ${{ github.workspace }}/work
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_RUN_ID,GITHUB_EVENT_NAME,GITHUB_REPOSITORY,GITHUB_WORKSPACE,RUNNER_ENVIRONMENT,RUNNER_OS,TEST_WORKSPACE \
+            "$PWD/work/venv/bin/python" driver/scripts/systemd_backup_ci.py
