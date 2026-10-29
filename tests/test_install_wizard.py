@@ -147,13 +147,13 @@ class InstallWizardTests(unittest.TestCase):
                  mock.patch.object(wizard.workload_preflight,'read_trusted_key',return_value='hidden-secret'), \
                  mock.patch.object(wizard.preflight,'preflight',side_effect=AssertionError('not skipped')), \
                  mock.patch.object(wizard.preflight,'runtime_checks',return_value=[]) as runtime, \
-                 mock.patch.object(wizard,'run_install') as run, mock.patch.object(wizard,'smoke') as smoke, \
-                 mock.patch.object(wizard,'mark_acceptance') as mark, \
+                 mock.patch.object(wizard,'run_install') as run, \
+                 mock.patch.object(wizard,'accept_with_operation_lock') as acceptance, \
                  contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(wizard.execute(data),0)
                 self.assertEqual([call.args[1] for call in run.call_args_list],['prepare','check','install'])
                 self.assertEqual(verify.call_count,5)
-                fetch.assert_called_once(); inputs.assert_called_once();smoke.assert_called_once();mark.assert_called_once_with(home)
+                fetch.assert_called_once(); inputs.assert_called_once();acceptance.assert_called_once_with(release/'bundle',home,data.port)
                 runtime.assert_called_once_with('compose',None)
                 self.assertIn('Проверка LLM с хоста пропущена',output.getvalue())
                 self.assertNotIn('hidden-secret',output.getvalue())
@@ -207,7 +207,7 @@ class InstallWizardTests(unittest.TestCase):
                  mock.patch.object(wizard.preflight,'runtime_checks',return_value=[]), \
                  mock.patch.object(wizard,'run_install'),mock.patch.object(wizard,'start_forward',return_value=forward), \
                  mock.patch.object(wizard,'stop_forward') as stop, \
-                 mock.patch.object(wizard,'smoke',side_effect=wizard.WizardError('ACCEPTANCE_FAILED')):
+                 mock.patch.object(wizard,'accept_with_operation_lock',side_effect=wizard.WizardError('ACCEPTANCE_FAILED')):
                 with self.assertRaisesRegex(wizard.WizardError,'ACCEPTANCE_FAILED'):
                     wizard.execute(args(backend='kubernetes',context='explicit',skip_llm_preflight=True))
                 stop.assert_called_once_with(forward)
@@ -234,10 +234,66 @@ class InstallWizardTests(unittest.TestCase):
                  mock.patch.object(wizard,'authenticated_inputs'), \
                  mock.patch.object(wizard.workload_preflight,'read_trusted_key',return_value='hidden-secret'), \
                  mock.patch.object(wizard.preflight,'runtime_checks',return_value=[]), \
-                 mock.patch.object(wizard,'run_install'), mock.patch.object(wizard,'smoke'), \
-                 mock.patch.object(wizard,'mark_acceptance'):
+                 mock.patch.object(wizard,'run_install'), mock.patch.object(wizard,'accept_with_operation_lock'):
                 wizard.execute(args(reuse_release=True,offline=True,skip_llm_preflight=True))
                 fetch.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX locking and private directories')
+    def test_acceptance_holds_operation_lock_during_smoke_and_state_write(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home=Path(temp); state=home/'install-state.json'
+            state.write_text('{"status":"ready","acceptance":"not-run"}');state.chmod(0o600)
+            def check_lock(*_):
+                self.assertTrue((home/'operation.lock').is_file())
+                with self.assertRaises(FileExistsError):
+                    with wizard.uterctl.locked(home): pass
+            with mock.patch.object(wizard,'smoke',side_effect=check_lock):
+                wizard.accept_with_operation_lock(home/'bundle',home,18000)
+            self.assertFalse((home/'operation.lock').exists())
+            self.assertEqual(json.loads(state.read_text()),{'status':'ready','acceptance':'passed'})
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX locking and private directories')
+    def test_acceptance_rejects_busy_lock_and_preserves_its_owner(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home=Path(temp); state=home/'install-state.json'
+            state.write_text('{"status":"ready","acceptance":"not-run"}');state.chmod(0o600)
+            lock=home/'operation.lock';lock.write_text('other operation');lock.chmod(0o600)
+            with mock.patch.object(wizard,'smoke') as smoke:
+                with self.assertRaisesRegex(wizard.WizardError,'INSTALLATION_OPERATION_LOCKED'):
+                    wizard.accept_with_operation_lock(home/'bundle',home,18000)
+                smoke.assert_not_called()
+            self.assertEqual(lock.read_text(),'other operation')
+            self.assertEqual(json.loads(state.read_text()),{'status':'ready','acceptance':'not-run'})
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX locking and private directories')
+    def test_acceptance_refuses_already_adopted_or_pending_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home=Path(temp); state=home/'install-state.json'
+            state.write_text('{"status":"ready","acceptance":"not-run"}');state.chmod(0o600)
+            managed=home/'state.json';managed.write_text('{}');managed.chmod(0o600)
+            with mock.patch.object(wizard,'smoke') as smoke:
+                with self.assertRaisesRegex(wizard.WizardError,'INSTALLATION_STATE_CHANGED'):
+                    wizard.accept_with_operation_lock(home/'bundle',home,18000)
+                smoke.assert_not_called()
+            self.assertFalse((home/'operation.lock').exists())
+            managed.unlink();state.write_text('{"status":"pending"}')
+            with mock.patch.object(wizard,'smoke') as smoke:
+                with self.assertRaisesRegex(wizard.WizardError,'INSTALLATION_STATE_CHANGED'):
+                    wizard.accept_with_operation_lock(home/'bundle',home,18000)
+                smoke.assert_not_called()
+            self.assertEqual(json.loads(state.read_text()),{'status':'pending'})
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX locking and private directories')
+    def test_acceptance_refuses_adoption_that_appears_during_smoke(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home=Path(temp); state=home/'install-state.json'
+            state.write_text('{"status":"ready","acceptance":"not-run"}');state.chmod(0o600)
+            def change(*_): (home/'state.json').write_text('{}')
+            with mock.patch.object(wizard,'smoke',side_effect=change):
+                with self.assertRaisesRegex(wizard.WizardError,'INSTALLATION_STATE_CHANGED'):
+                    wizard.accept_with_operation_lock(home/'bundle',home,18000)
+            self.assertEqual(json.loads(state.read_text()),{'status':'ready','acceptance':'not-run'})
+            self.assertFalse((home/'operation.lock').exists())
 
     def test_interactive_secret_is_hidden_and_empty_requires_explicit_choice(self):
         data=args(non_interactive=False,llm_key_file=None,skip_llm_preflight=True)

@@ -381,6 +381,29 @@ def mark_acceptance(home):
         raise WizardError('ACCEPTANCE_STATE_WRITE_FAILED') from None
 
 
+def accept_with_operation_lock(bundle, home, port):
+    """Serialize acceptance with managed adoption/update/backup, not arbitrary admins."""
+    try:
+        workload_preflight.secure_directory(home)
+        with uterctl.locked(home):
+            # An adoption or update that completed after install but before this
+            # lock makes the earlier install identity unsuitable for acceptance.
+            if os.path.lexists(home/'state.json'):
+                raise WizardError('INSTALLATION_STATE_CHANGED')
+            raw = workload_preflight.read_trusted_file(home/'install-state.json', 65536,
+                                                       secret=True, error='STATE_INVALID')
+            if json.loads(raw) != {'status': 'ready', 'acceptance': 'not-run'}:
+                raise WizardError('INSTALLATION_STATE_CHANGED')
+            smoke(bundle, home, port)
+            if os.path.lexists(home/'state.json'):
+                raise WizardError('INSTALLATION_STATE_CHANGED')
+            mark_acceptance(home)
+    except FileExistsError:
+        raise WizardError('INSTALLATION_OPERATION_LOCKED') from None
+    except (OSError, ValueError, TypeError, RecursionError, workload_preflight.ProbeError):
+        raise WizardError('ACCEPTANCE_LOCK_OR_STATE_FAILED') from None
+
+
 def execute(args):
     release, home = validate(args)
     if not port_is_free(args.port):
@@ -440,8 +463,7 @@ def execute(args):
         try:
             if args.backend == 'kubernetes':
                 forward = start_forward(args.context, args.name, args.port)
-            smoke(bundle, home, args.port)
-            mark_acceptance(home)
+            accept_with_operation_lock(bundle, home, args.port)
         finally:
             stop_forward(forward)
     print('Установка и авторизованная проверка сервиса прошли успешно.', flush=True)
