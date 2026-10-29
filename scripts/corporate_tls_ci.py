@@ -231,11 +231,14 @@ def main():
     cluster = name + '-kind'
     fixture = forward = None
     cluster_attempted = install_attempted = False
-    with tempfile.TemporaryDirectory(prefix='uter-corporate-tls-', dir=work) as temp:
+    # The probe requires root-owned private ancestors; GitHub's workspace is
+    # owned by the runner account, while /tmp protects private children via sticky bit.
+    with tempfile.TemporaryDirectory(prefix='uter-corporate-tls-', dir='/tmp') as temp:
         temp = Path(temp)
         inputs = temp / 'inputs'
-        verify_published_inputs(work, inputs)
+        manifest = verify_published_inputs(work, inputs)
         home = temp / 'home'
+        probe_dir = temp / 'workload-preflight'
         docker_config = temp / 'docker-config'
         docker_config.mkdir(mode=0o700)
         env = os.environ.copy()
@@ -271,6 +274,28 @@ def main():
             fixture = start_fixture('trusted')
             wait_fixture(base, certs['ca'], fixture_token, fixture)
             print('Stage: deterministic HTTPS fixture ready (not a real LLM)', flush=True)
+            if backend == 'compose':
+                # Probe a disposable network using the exact signed Guardrail image.
+                # This is urllib inside that image, not the application or its future network.
+                call(['docker', '--context', 'default', 'pull', manifest['images']['guardrail']],
+                     'PREFLIGHT_IMAGE_PULL_FAILED', env=env)
+                probe_dir.mkdir(mode=0o700)
+                probe = call([python, ROOT/'scripts/workload_preflight.py', 'probe',
+                              '--bundle', work/'signed', '--publisher-key', work/'download/publisher-public.pem',
+                              '--fingerprint', PUBLISHER_FINGERPRINT, '--state-dir', probe_dir,
+                              '--llm-url', base+'/v1', '--llm-model', 'fixture-model',
+                              '--llm-key-file', token_file, '--llm-ca-bundle', certs['ca']],
+                             'WORKLOAD_PREFLIGHT_FAILED', env=env)
+                try:
+                    probe_result = json.loads(probe)
+                except (ValueError, UnicodeError):
+                    raise StageError('WORKLOAD_PREFLIGHT_OUTPUT_INVALID') from None
+                if (probe_result.get('result') != 'pass' or
+                        probe_result.get('actual_uter_application') != 'not_checked' or
+                        probe_result.get('actual_compose_network') != 'not_checked' or
+                        any(probe_dir.iterdir())):
+                    raise StageError('WORKLOAD_PREFLIGHT_RESULT_INVALID')
+                print('Stage: disposable image network probe passed and cleaned up', flush=True)
             installer = ROOT / 'scripts/install.py'
             prepare = [python, installer, 'prepare', '--home', home, '--backend', backend, '--name', name,
                        '--inputs', inputs, '--llm-url', base + '/v1', '--llm-model', 'fixture-model',
@@ -326,6 +351,13 @@ def main():
                 terminate(forward)
             except (OSError, subprocess.TimeoutExpired):
                 cleanup_failed = True
+            if probe_dir.exists():
+                for operation in probe_dir.iterdir():
+                    if not operation.is_dir() or operation.is_symlink():
+                        cleanup_failed = True
+                    else:
+                        cleanup_failed |= not cleanup([str(python), str(ROOT/'scripts/workload_preflight.py'),
+                                                       'cleanup', '--operation-dir', str(operation)], env)
             if install_attempted and backend == 'compose':
                 cleanup_failed |= not cleanup(compose + ['down', '--volumes', '--remove-orphans'], env)
             if cluster_attempted:

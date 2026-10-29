@@ -254,6 +254,34 @@ class InstallerTests(unittest.TestCase):
             m.prepare(self.args, 'fixture-key')
         self.assertFalse(self.args.home.exists())
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX trust checks')
+    def test_ca_rejects_untrusted_ancestors_hardlinks_and_writable_file_before_prepare(self):
+        pem = self.ca_certificate()
+        source = self.root / 'ca.pem'; source.write_bytes(pem); source.chmod(0o644)
+        self.assertEqual(m.read_ca_bundle(source), pem.decode())
+        parse_certificates = m.x509.load_pem_x509_certificates
+        def replace_after_read(data):
+            source.write_bytes(b'changed after read')
+            return parse_certificates(data)
+        with patch.object(m.x509, 'load_pem_x509_certificates', side_effect=replace_after_read):
+            self.assertEqual(m.read_ca_bundle(source), pem.decode())
+        source.write_bytes(pem)
+        shared = self.root / 'shared'; shared.mkdir(); shared.chmod(0o777)
+        bad = shared / 'ca.pem'; bad.write_bytes(pem)
+        link = self.root / 'link'; link.symlink_to(self.root, target_is_directory=True)
+        hard = self.root / 'hard'; os.link(source, hard)
+        fifo = self.root / 'fifo'; os.mkfifo(fifo)
+        for candidate in (bad, link / 'ca.pem', hard, fifo):
+            with self.subTest(candidate=candidate):
+                self.args.llm_ca_bundle = candidate
+                with self.assertRaises((ValueError, OSError)):
+                    m.prepare(self.args, 'fixture-key')
+                self.assertFalse(self.args.home.exists())
+        hard.unlink();source.chmod(0o666);self.args.llm_ca_bundle = source
+        with self.assertRaises(ValueError):
+            m.prepare(self.args, 'fixture-key')
+        self.assertFalse(self.args.home.exists())
+
     @unittest.skipUnless(os.name == 'posix', 'POSIX file descriptor permissions')
     def test_ca_permissions_apply_only_to_regular_optional_file(self):
         m.prepare_ca_permissions(self.root)  # Legacy installations have no CA file.

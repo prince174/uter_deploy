@@ -43,10 +43,41 @@ def scalar(value):
 def read_ca_bundle(path):
     """Accept only a bounded PEM certificate bundle, never private keys or extra data."""
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
-    fd = os.open(path, flags)
+    if os.name == 'posix':
+        source_path = Path(path)
+        if '..' in source_path.parts:
+            raise ValueError('Untrusted LLM CA path')
+        source_path = source_path.absolute()
+        directory = None
+        try:
+            directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+            directory = os.open('/', directory_flags)
+            root = os.fstat(directory)
+            if root.st_uid != 0 or root.st_mode & 0o022:
+                raise ValueError('Untrusted LLM CA path')
+            for part in source_path.parts[1:-1]:
+                next_directory = os.open(part, directory_flags, dir_fd=directory)
+                os.close(directory)
+                directory = next_directory
+                info = os.fstat(directory)
+                sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid()) or
+                        (info.st_mode & 0o022 and not sticky_root)):
+                    raise ValueError('Untrusted LLM CA path')
+            fd = os.open(source_path.name, flags, dir_fd=directory)
+        finally:
+            if directory is not None:
+                os.close(directory)
+    else:
+        # Windows ACLs are not verified here; keep the existing Windows path support.
+        fd = os.open(path, flags)
     with os.fdopen(fd, 'rb') as source:
-        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode):
             raise ValueError('LLM CA bundle must be a regular file')
+        if os.name == 'posix' and (info.st_uid not in (0, os.geteuid()) or
+                                   info.st_mode & 0o022 or info.st_nlink != 1):
+            raise ValueError('Untrusted LLM CA file')
         data = source.read(CA_LIMIT + 1)
     if not data or len(data) > CA_LIMIT or PEM_CERT.sub(b'', data).strip():
         raise ValueError('LLM CA bundle must contain only PEM certificates and be at most 1 MiB')
