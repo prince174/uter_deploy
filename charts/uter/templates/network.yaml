@@ -21,3 +21,59 @@ spec:
         - protocol: TCP
           port: {{ if eq $name "redis" }}6379{{ else if eq $name "guardrail" }}8000{{ else }}8001{{ end }}
 {{- end }}
+
+{{- if not (kindIs "bool" $.Values.networkPolicy.egress.enabled) }}{{ fail "networkPolicy.egress.enabled must be boolean" }}{{ end }}
+{{- if $.Values.networkPolicy.egress.enabled }}
+{{- $e := $.Values.networkPolicy.egress }}
+{{- range $role := list "dns" "llm" }}
+{{- $target := index $e $role }}
+{{- if not (kindIs "map" $target) }}{{ fail (printf "networkPolicy.egress.%s must be a mapping" $role) }}{{ end }}
+{{- if not (has $target.mode (list "pod" "ipv4")) }}{{ fail (printf "networkPolicy.egress.%s.mode must be pod or ipv4" $role) }}{{ end }}
+{{- $port := toString $target.port }}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" $port)) (gt (int $port) 65535) }}{{ fail (printf "networkPolicy.egress.%s.port must be 1-65535" $role) }}{{ end }}
+{{- if eq $target.mode "pod" }}
+{{- if or (not (kindIs "string" $target.namespace)) (gt (len $target.namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $target.namespace)) }}{{ fail (printf "networkPolicy.egress.%s.namespace must be an exact namespace" $role) }}{{ end }}
+{{- if or (not (kindIs "string" $target.podLabelKey)) (gt (len $target.podLabelKey) 63) (not (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$" $target.podLabelKey)) }}{{ fail (printf "networkPolicy.egress.%s.podLabelKey must be an unqualified label key" $role) }}{{ end }}
+{{- if or (not (kindIs "string" $target.podLabelValue)) (gt (len $target.podLabelValue) 63) (not (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$" $target.podLabelValue)) }}{{ fail (printf "networkPolicy.egress.%s.podLabelValue must be a nonempty label value" $role) }}{{ end }}
+{{- else }}
+{{- if or (not (kindIs "string" $target.ipv4)) (not (regexMatch "^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$" $target.ipv4)) }}{{ fail (printf "networkPolicy.egress.%s.ipv4 must be one IPv4 address" $role) }}{{ end }}
+{{- end }}
+{{- end }}
+{{- range $name := list "guardrail" "agent" "redis" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}-egress
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/name: {{ $name }}}
+  policyTypes: [Egress]
+  {{- if eq $name "redis" }}
+  egress: []
+  {{- else }}
+  egress:
+    - to:
+        - {{- include "uter.egressPeer" $e.dns | nindent 10 }}
+      ports:
+        - {protocol: UDP, port: {{ $e.dns.port }}}
+        - {protocol: TCP, port: {{ $e.dns.port }}}
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/name: {{ if eq $name "agent" }}guardrail{{ else }}agent{{ end }}}
+      ports:
+        - {protocol: TCP, port: {{ if eq $name "agent" }}8000{{ else }}8001{{ end }}}
+    {{- if eq $name "guardrail" }}
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/name: redis}
+      ports:
+        - {protocol: TCP, port: 6379}
+    - to:
+        - {{- include "uter.egressPeer" $e.llm | nindent 10 }}
+      ports:
+        - {protocol: TCP, port: {{ $e.llm.port }}}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}

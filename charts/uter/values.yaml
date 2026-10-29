@@ -32,5 +32,13 @@ resources:
 # NetworkPolicy requires a supporting CNI. Permit ingress only from designated namespace.
 ingressNamespace: ingress-nginx
 
+# Optional egress isolation. Explicitly configure both endpoints before enabling.
+# mode: pod uses an exact namespace and Pod label; mode: ipv4 uses one IPv4 /32.
+networkPolicy:
+  egress:
+    enabled: false
+    dns: {mode: '', namespace: '', podLabelKey: '', podLabelValue: '', ipv4: '', port: 53}
+    llm: {mode: '', namespace: '', podLabelKey: '', podLabelValue: '', ipv4: '', port: 0}
+
 # Use only with protected images that embed the required Hugging Face model.
 useEmbeddedModels: false
