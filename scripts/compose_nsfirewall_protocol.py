@@ -36,4 +36,6 @@ def release_without_capture(home,operation,adapter):
         adapter.release_before_capture(record)
     except Exception:
         raise NamespaceProtocolError('NS_PROTOCOL_RELEASE_INCOMPLETE') from None
-    journal.advance(home,operation=operation,expected='aborting',next_phase='restored')
+    # Only Redis has been released. Guardrail/Agent remain stopped and their
+    # restoration has not been attempted or verified by this protocol.
+    journal.advance(home,operation=operation,expected='aborting',next_phase='redis_released')

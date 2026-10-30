@@ -175,8 +175,8 @@ def _verify(home, bundle, publisher, manifest):
             first_operation=operation;first_key=key
             PHASE='PRE_CAPTURE_RELEASE'
             protocol.release_without_capture(home,operation,adapter)
-            if journal.read(home)['phase']!='restored':raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_RELEASE')
-            verify_closed(selector);remove_ci_marker('restored');adapter.close();adapter=None
+            if journal.read(home)['phase']!='redis_released':raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_RELEASE')
+            verify_closed(selector);remove_ci_marker('redis_released');adapter.close();adapter=None
 
             # Round 2: real encrypted RDB while fenced; production release is
             # intentionally refused after capture. CI performs separate explicit

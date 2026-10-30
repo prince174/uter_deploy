@@ -11,6 +11,8 @@ from pathlib import Path
 import select
 import shlex
 import signal
+import socket
+import struct
 import subprocess
 import time
 
@@ -19,6 +21,7 @@ from scripts import compose_fence_adapter as compose, redis_fence_journal as jou
 NSENTER='/usr/bin/nsenter'
 IPTABLES='/usr/sbin/iptables'
 MAX_OUTPUT=1024*1024
+PROC_ROOT=Path('/proc')
 
 
 class NamespaceFenceError(ValueError): pass
@@ -27,18 +30,41 @@ class NamespaceFenceError(ValueError): pass
 class Adapter(compose.Adapter):
     def __init__(self, home, bundle, publisher_key, backup_key):
         super().__init__(home,bundle,publisher_key,backup_key)
-        self.fd=None;self.net_identity=None;self.initial_rules=None;self.initial_hash=None
+        self.fd=None;self.daemon_fd=None;self.daemon_pid=None;self.net_identity=None;self.initial_rules=None;self.initial_hash=None
         self.operation=None;self.redis_pid=None;self.installed=False;self.release_permit=None
 
     def close(self):
         """Close only the local FD; never silently remove or change firewall."""
         if self.fd is not None:os.close(self.fd);self.fd=None
+        if self.daemon_fd is not None:os.close(self.daemon_fd);self.daemon_fd=None
+
+    def _daemon_identity(self):
+        """Require a visible root-owned dockerd peer for the local Unix socket."""
+        peer=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+        try:
+            peer.settimeout(3);peer.connect('/var/run/docker.sock')
+            pid,uid,_=struct.unpack('3i',peer.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
+            if uid!=0 or pid<=1:raise ValueError
+            proc=Path('/proc')/str(pid)
+            if (proc/'comm').read_text(encoding='utf-8').strip()!='dockerd':raise ValueError
+            namespaces=[os.stat('/proc/self/ns/pid'),os.stat('/proc/1/ns/pid'),os.stat(proc/'ns/pid')]
+            if len({(item.st_dev,item.st_ino) for item in namespaces})!=1:raise ValueError
+            return pid
+        except (OSError,ValueError,UnicodeError,struct.error):
+            raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED') from None
+        finally:peer.close()
 
     def _fd_nonhost(self):
         if self.fd is None:raise NamespaceFenceError('NS_FENCE_FD_UNAVAILABLE')
-        value=os.fstat(self.fd);host=os.stat('/proc/self/ns/net')
-        if (value.st_dev,value.st_ino)==(host.st_dev,host.st_ino):
+        if self.daemon_fd is None or self._daemon_identity()!=self.daemon_pid:
+            raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED')
+        value=os.fstat(self.fd)
+        blocked=(os.stat('/proc/self/ns/net'),os.stat('/proc/1/ns/net'),os.fstat(self.daemon_fd))
+        if any((value.st_dev,value.st_ino)==(host.st_dev,host.st_ino) for host in blocked):
             raise NamespaceFenceError('NS_FENCE_HOST_NAMESPACE_REJECTED')
+        current=os.stat('/proc/'+str(self.daemon_pid)+'/ns/net');old=os.fstat(self.daemon_fd)
+        if (current.st_dev,current.st_ino)!=(old.st_dev,old.st_ino):
+            raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED')
         return value.st_dev,value.st_ino
 
     def _journal(self,record,phases):
@@ -48,6 +74,22 @@ class Adapter(compose.Adapter):
             raise NamespaceFenceError('NS_FENCE_JOURNAL_MISMATCH')
         return current
 
+    def _exclusive_namespace(self, identity, allowed):
+        """Reject visible foreign threads in netns; trusted host must prevent races."""
+        try:
+            for process in PROC_ROOT.iterdir():
+                if not process.name.isdigit():continue
+                try:tasks=list((process/'task').iterdir())
+                except FileNotFoundError:continue
+                for task in tasks:
+                    if not task.name.isdigit():continue
+                    try:ns=os.stat(task/'ns/net')
+                    except FileNotFoundError:continue  # exited or kernel thread
+                    if (ns.st_dev,ns.st_ino)==identity and int(process.name) not in allowed:
+                        raise NamespaceFenceError('NS_FENCE_NAMESPACE_PEER')
+        except NamespaceFenceError:raise
+        except OSError:raise NamespaceFenceError('NS_FENCE_PROC_UNVERIFIED') from None
+
     def _live_namespace(self, plan):
         self._lock()
         value=self._fd_nonhost()
@@ -56,6 +98,24 @@ class Adapter(compose.Adapter):
         if state['pid']!=self.redis_pid:raise NamespaceFenceError('NS_FENCE_PROCESS_CHANGED')
         observed=os.stat('/proc/'+str(self.redis_pid)+'/ns/net')
         if value!=(observed.st_dev,observed.st_ino):raise NamespaceFenceError('NS_FENCE_NAMESPACE_CHANGED')
+        # Only the exact init and Redis process may share loopback. The host,
+        # Docker daemon and all other controllers are trusted not to race this
+        # observation; this is not a continuous monitor of hostile root.
+        lines=self._run('top',plan['container_id'],'-eo','pid,ppid,comm').splitlines()
+        if not lines or lines[0].split()!=['PID','PPID','COMMAND']:raise NamespaceFenceError('NS_FENCE_PROCESS_CHANGED')
+        rows=[line.split(maxsplit=2) for line in lines[1:]]
+        if len(rows)!=2 or any(len(row)!=3 for row in rows):raise NamespaceFenceError('NS_FENCE_PROCESS_CHANGED')
+        child=[row for row in rows if row[2]=='redis-server' and row[1]==str(self.redis_pid)]
+        init=[row for row in rows if row[0]==str(self.redis_pid) and row[2] in ('docker-init','tini')]
+        if len(child)!=1 or len(init)!=1 or not child[0][0].isdigit():raise NamespaceFenceError('NS_FENCE_PROCESS_CHANGED')
+        childpid=int(child[0][0]);childns=os.stat('/proc/'+str(childpid)+'/ns/net')
+        if value!=(childns.st_dev,childns.st_ino):raise NamespaceFenceError('NS_FENCE_NAMESPACE_CHANGED')
+        status=Path('/proc/'+str(childpid)+'/status').read_text(encoding='utf-8').splitlines()
+        fields={line.split(':',1)[0]:line.split(':',1)[1].strip() for line in status if ':' in line}
+        if (any(fields.get(name)!='0000000000000000' for name in ('CapEff','CapPrm','CapInh','CapAmb','CapBnd'))
+                or fields.get('NoNewPrivs')!='1'):
+            raise NamespaceFenceError('NS_FENCE_CAPABILITIES_UNSUPPORTED')
+        self._exclusive_namespace(value,{self.redis_pid,childpid})
 
     def _cmd(self, args):
         """Bounded namespace command; timeout or error leaves mutation uncertain."""
@@ -140,6 +200,8 @@ class Adapter(compose.Adapter):
         state=self._state(plan,detached=False,restart='unless-stopped',original_endpoint=True)
         self.redis_pid=state['pid'];self.operation=record['operation']
         try:
+            self.daemon_pid=self._daemon_identity()
+            self.daemon_fd=os.open('/proc/'+str(self.daemon_pid)+'/ns/net',os.O_RDONLY)
             self.fd=os.open('/proc/'+str(self.redis_pid)+'/ns/net',os.O_RDONLY)
             self.net_identity=self._fd_nonhost()
             again=os.stat('/proc/'+str(self.redis_pid)+'/ns/net')

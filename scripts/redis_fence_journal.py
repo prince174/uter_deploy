@@ -12,7 +12,7 @@ import secrets
 import stat
 
 NAME = 'redis-fence-operation.json'
-PHASES = ('prepared', 'isolating', 'isolated', 'capturing', 'captured', 'releasing', 'aborting', 'restored')
+PHASES = ('prepared', 'isolating', 'isolated', 'capturing', 'captured', 'releasing', 'aborting', 'redis_released', 'restored')
 TRANSITIONS = {
     'prepared': frozenset(('isolating', 'aborting')),
     'isolating': frozenset(('isolated', 'aborting')),
@@ -20,7 +20,8 @@ TRANSITIONS = {
     'capturing': frozenset(('captured', 'aborting')),
     'captured': frozenset(('releasing', 'aborting')),
     'releasing': frozenset(('restored', 'aborting')),
-    'aborting': frozenset(('restored',)),
+    'aborting': frozenset(('restored', 'redis_released')),
+    'redis_released': frozenset(('restored',)),
     'restored': frozenset(),
 }
 FIELDS = frozenset(('schema', 'operation', 'backend', 'site', 'resource', 'plan_sha256', 'phase'))

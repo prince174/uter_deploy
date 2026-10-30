@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -45,6 +46,65 @@ class NamespaceFenceTests(unittest.TestCase):
              mock.patch.object(ns.subprocess,'Popen') as popen:
             with self.assertRaises(ns.NamespaceFenceError):self.adapter._cmd(['-S','INPUT'])
         popen.assert_not_called()
+
+    def test_rejects_every_host_or_daemon_namespace_and_changed_daemon(self):
+        self.adapter.fd=40;self.adapter.daemon_fd=41;self.adapter.daemon_pid=99
+        def entry(ino):return SimpleNamespace(st_dev=1,st_ino=ino)
+        for conflict in ('self','init','daemon'):
+            with self.subTest(conflict=conflict):
+                def stat(path):
+                    return entry(7 if ((conflict=='self' and str(path)=='/proc/self/ns/net') or
+                                       (conflict=='init' and str(path)=='/proc/1/ns/net')) else 2)
+                def fstat(fd):return entry(7 if fd==40 or conflict=='daemon' else 2)
+                with mock.patch.object(self.adapter,'_daemon_identity',return_value=99), \
+                     mock.patch.object(ns.os,'stat',side_effect=stat),mock.patch.object(ns.os,'fstat',side_effect=fstat):
+                    with self.assertRaisesRegex(ns.NamespaceFenceError,'HOST_NAMESPACE_REJECTED'):self.adapter._fd_nonhost()
+        with mock.patch.object(self.adapter,'_daemon_identity',return_value=100):
+            with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_UNVERIFIED'):self.adapter._fd_nonhost()
+
+    def test_extra_loopback_process_wrong_child_namespace_and_capabilities_are_rejected(self):
+        self.adapter.net_identity=(1,7);self.adapter.redis_pid=42
+        rows='PID PPID COMMAND\n42 1 docker-init\n43 42 redis-server\n'
+        plan={'container_id':'a'*64}
+        clear=''.join(name+':\t0000000000000000\n' for name in ('CapEff','CapPrm','CapInh','CapAmb','CapBnd'))+'NoNewPrivs:\t1\n'
+        def run(top, namespace=7, status=clear):
+            with mock.patch.object(self.adapter,'_lock'),mock.patch.object(self.adapter,'_fd_nonhost',return_value=(1,7)), \
+                 mock.patch.object(self.adapter,'_state',return_value={'pid':42}),mock.patch.object(self.adapter,'_run',return_value=top), \
+                 mock.patch.object(ns.os,'stat',side_effect=lambda p:SimpleNamespace(st_dev=1,st_ino=namespace if str(p)=='/proc/43/ns/net' else 7)), \
+                 mock.patch.object(ns.Path,'read_text',return_value=status),mock.patch.object(self.adapter,'_exclusive_namespace'):
+                self.adapter._live_namespace(plan)
+        run(rows)
+        for top,namespace,status in ((rows+'44 42 helper\n',7,None),(rows,8,None),
+                                     (rows,7,clear.replace('CapPrm:\t0000000000000000','CapPrm:\t0000000000001000')),
+                                     (rows,7,clear.replace('NoNewPrivs:\t1','NoNewPrivs:\t0'))):
+            with self.subTest(top=top,namespace=namespace,status=status):
+                with self.assertRaises(ns.NamespaceFenceError):
+                    run(top,namespace,status or clear)
+
+    def test_rejects_foreign_thread_in_namespace_and_unreadable_proc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'namespace';source.write_text('')
+            identity=source.stat();expected=(identity.st_dev,identity.st_ino)
+            for pid in ('42','43','44'):
+                namespace=root/pid/'task'/pid/'ns/net';namespace.parent.mkdir(parents=True)
+                os.link(source,namespace)
+            with mock.patch.object(ns,'PROC_ROOT',root):
+                with self.assertRaisesRegex(ns.NamespaceFenceError,'NAMESPACE_PEER'):
+                    self.adapter._exclusive_namespace(expected,{42,43})
+                self.adapter._exclusive_namespace(expected,{42,43,44})
+                with mock.patch.object(ns.Path,'iterdir',side_effect=PermissionError):
+                    with self.assertRaisesRegex(ns.NamespaceFenceError,'PROC_UNVERIFIED'):
+                        self.adapter._exclusive_namespace(expected,{42,43,44})
+
+    def test_successful_release_marks_redis_only(self):
+        for old,new in (('prepared','isolating'),('isolating','isolated')):
+            journal.advance(self.home,operation=self.operation,expected=old,next_phase=new)
+        adapter=mock.Mock()
+        def authorize(record):
+            journal.advance(self.home,operation=self.operation,expected='isolated',next_phase='aborting');return True
+        adapter.authorize_release_before_capture.side_effect=authorize
+        protocol.release_without_capture(self.home,self.operation,adapter)
+        self.assertEqual(journal.read(self.home)['phase'],'redis_released')
 
     def test_protocol_never_removes_rule_after_any_uncertain_mutation(self):
         for failing in ('disable_restart','install_rule','close_clients','verify_fenced'):
