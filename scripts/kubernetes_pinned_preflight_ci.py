@@ -76,10 +76,19 @@ def verify(home,bundle,key,manifest):
         with preflight.checked_session(home,bundle,key,raw,profile) as session:
             if session.manifest!=manifest or session.reverify()['safe_to_update'] is not False:raise ValueError
         # Disposable CI-only binary pin, not independently trusted evidence.
-        stage='PIN_BINARY_OPEN'
-        binary_path=Path('/usr/local/bin/uter-ci-kubectl')
+        stage='PIN_BINARY_READ'
+        binary_path=Path('/usr/bin/uter-ci-kubectl')
         binary_digest=hashlib.sha256(binary_path.read_bytes()).hexdigest()
-        fd=trusted_kubectl.open_binary(binary_path,binary_digest)
+        stage='PIN_BINARY_OPEN'
+        try:fd=trusted_kubectl.open_binary(binary_path,binary_digest)
+        except Exception:
+            for part in (binary_path,*binary_path.parents):
+                info=part.lstat()
+                if info.st_uid!=0:stage='PIN_BINARY_OWNER';break
+                if info.st_mode&0o022:stage='PIN_BINARY_MODE';break
+                if part.is_symlink():stage='PIN_BINARY_SYMLINK';break
+            else:stage='PIN_BINARY_CONTENT'
+            raise
         try:
             old={name:os.environ.get(name) for name in ('PATH','HTTPS_PROXY','HTTP_PROXY','KUBECTL_EXTERNAL_DIFF')}
             try:

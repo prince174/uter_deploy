@@ -84,7 +84,7 @@ jobs:
           tar -xzf helm-v3.17.3-linux-amd64.tar.gz
           sudo install linux-amd64/helm /usr/local/bin/helm
           # Test-only copy: all authenticated API calls use the same open FD.
-          sudo install "$(command -v kubectl)" /usr/local/bin/uter-ci-kubectl
+          sudo install -m 0755 "$(command -v kubectl)" /usr/bin/uter-ci-kubectl
       - name: Verify signatures, input hashes, tags and transition
         shell: bash
         run: |

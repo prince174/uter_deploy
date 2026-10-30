@@ -414,7 +414,8 @@ def _verify(home,bundle,key,manifest):
         from scripts import kubernetes_pinned_preflight_ci
         try:result=kubernetes_pinned_preflight_ci.verify(home,bundle,key,manifest)
         except kubernetes_pinned_preflight_ci.PinnedCITestError as error:
-            if error.stage in {'PIN_MATERIAL','PIN_BASELINE','PIN_BINARY_OPEN','PIN_BINARY_SESSION',
+            if error.stage in {'PIN_MATERIAL','PIN_BASELINE','PIN_BINARY_READ','PIN_BINARY_OPEN','PIN_BINARY_OWNER',
+                               'PIN_BINARY_MODE','PIN_BINARY_SYMLINK','PIN_BINARY_CONTENT','PIN_BINARY_SESSION',
                                'PIN_BINARY_REVERIFY','PIN_OPERATOR_PROFILE'}:PHASE=error.stage
             raise
         if result!={'result':'sealed_pinned_queries_exercised','cluster_authenticated':False,'safe_to_update':False}:
