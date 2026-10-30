@@ -120,4 +120,3 @@ jobs:
             work/adopt-backup-evidence/kubernetes-categories.json
           retention-days: 30
           if-no-files-found: warn
-
