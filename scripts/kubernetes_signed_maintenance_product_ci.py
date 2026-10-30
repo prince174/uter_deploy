@@ -181,7 +181,8 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
                     b'KUBE_EXECUTOR_ROOT_CHANGED',b'KUBE_EXECUTOR_MODULE_UNTRUSTED',b'KUBE_PREFLIGHT_INSTALLATION_UNVERIFIED',
                     b'KUBE_PREFLIGHT_IDENTITY_UNVERIFIED',b'KUBE_FINALIZER_PLAN_MISMATCH',b'KUBE_FINALIZER_JOURNAL_MISMATCH',b'UNCLASSIFIED')}
                 allowed_details|={('READONLY_TRANSPORT_DETAIL_TRANSPORT_'+prefix+'_'+suffix).encode('ascii')
-                    for prefix in ('ARGUMENTS','SESSION','CREDENTIAL','BINARY','SPAWN','AUTH','IDENTITY')
+                    for prefix in ('ARGUMENTS','SESSION','CREDENTIAL','BINARY','SPAWN','AUTH',
+                                   'SCOPE_BEFORE','REDIS_IDENTITY','SCOPE_AFTER')
                     for suffix in ('TIMEOUT','INVALID')}
                 if len(lines)>1 and lines[-2] in allowed_details:
                     print('KUBE_SIGNED_CI_'+lines[-2].decode('ascii'),file=sys.stderr)

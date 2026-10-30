@@ -71,7 +71,8 @@ if __name__ == '__main__':
                  'KUBE_FINALIZER_PLAN_MISMATCH','KUBE_FINALIZER_JOURNAL_MISMATCH'}
         code=str(error) if str(error) in allowed else 'UNCLASSIFIED'
         stage=getattr(error,'stage',None)
-        stages={prefix+'_'+suffix for prefix in ('ARGUMENTS','SESSION','CREDENTIAL','BINARY','SPAWN','AUTH','IDENTITY')
+        stages={prefix+'_'+suffix for prefix in ('ARGUMENTS','SESSION','CREDENTIAL','BINARY','SPAWN','AUTH',
+                                                  'SCOPE_BEFORE','REDIS_IDENTITY','SCOPE_AFTER')
                 for suffix in ('TIMEOUT','INVALID')}
         if stage in stages: code='TRANSPORT_'+stage
         print('READONLY_TRANSPORT_DETAIL_'+code)

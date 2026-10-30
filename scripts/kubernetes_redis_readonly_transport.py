@@ -136,8 +136,9 @@ def connect(session,operation,admin_user,credential_path,expected_run_id):
         stage='AUTH';
         if connection._exchange(('AUTH',admin_user,secret)) != 'OK': raise ValueError
         del secret
-        stage='IDENTITY'
-        connection._scope();connection.client_id=connection._identity();connection._scope()
+        stage='SCOPE_BEFORE';connection._scope()
+        stage='REDIS_IDENTITY';connection.client_id=connection._identity()
+        stage='SCOPE_AFTER';connection._scope()
         yield connection
     except GeneratorExit:
         raise
