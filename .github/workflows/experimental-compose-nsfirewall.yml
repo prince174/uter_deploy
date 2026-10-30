@@ -1,0 +1,25 @@
+name: Synthetic Compose Redis namespace firewall
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  synthetic-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Unit tests without Docker or firewall mutations
+        run: python3 -m unittest tests.test_experimental_compose_nsfirewall_ci -v
+      - name: Install firewall utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends iptables util-linux >/dev/null
+      - name: Run scoped synthetic experiment on disposable runner
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS \
+            python3 -m scripts.experimental_compose_nsfirewall_ci
