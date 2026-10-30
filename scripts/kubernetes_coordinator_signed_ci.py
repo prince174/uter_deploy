@@ -25,9 +25,29 @@ from scripts import (adopt_backup_ci, backup_snapshot,
 
 ROOT=Path(__file__).resolve().parents[1]
 PHASE='GUARD'
+EXECUTOR_REQUIRED=frozenset(('uterctl.py','scripts/kubernetes_executor_ci_child.py',
+    'scripts/kubernetes_fence_coordinator.py','scripts/kubernetes_fence_recovery_session.py',
+    'scripts/kubernetes_fence_start.py','scripts/kubernetes_backup_coordinator.py',
+    'scripts/kubernetes_audit_reader.py','scripts/kubernetes_audit_reader_plan.py',
+    'scripts/kubernetes_config_snapshot.py','scripts/kubernetes_runtime_pin.py',
+    'scripts/kubernetes_loopback_snapshot.py','scripts/kubernetes_loopback_auth.py',
+    'scripts/kubernetes_trusted_kubectl.py','scripts/backup_installation.py',
+    'scripts/backup_snapshot.py','scripts/backup_crypto.py','scripts/backup_store.py',
+    'scripts/redis_fence_journal.py'))
 
 
 class CoordinatorCITestError(ValueError):pass
+
+
+def _validate_executor(executor,public,manifest):
+    """Trusted launcher checks signature and root-protected files before exec."""
+    if uterctl.verify(executor,public)!=manifest:raise ValueError
+    inventory=json.loads((executor/'checksums.json').read_bytes())
+    if not EXECUTOR_REQUIRED.issubset(inventory):raise ValueError
+    for path in (executor,*executor.rglob('*')):
+        info=path.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:raise ValueError
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):raise ValueError
 
 
 def verify(home,product,publisher,manifest):
@@ -57,6 +77,7 @@ def verify(home,product,publisher,manifest):
                 'publisher_sha256':hashlib.sha256(Path(publisher).read_bytes()).hexdigest()}
         with tempfile.TemporaryDirectory(prefix='kube-coordinator-ci-',dir=ROOT/'work') as folder:
             private=Path(folder);os.chmod(private,0o700)
+            if private.stat().st_uid!=0 or private.stat().st_mode&0o077:raise ValueError
             key=private/'backup-key';key.write_bytes(os.urandom(32));key.chmod(0o600)
             config=private/'kubeconfig';config.write_bytes(raw);config.chmod(0o600)
             profile=private/'profile';profile_store.create(profile,key.read_bytes(),record)
@@ -79,13 +100,14 @@ def verify(home,product,publisher,manifest):
             inventory=json.dumps(uterctl.inventory(executor),sort_keys=True,indent=2).encode()
             (executor/'checksums.json').write_bytes(inventory)
             (executor/'checksums.sig').write_bytes(base64.b64encode(signer.sign(inventory)))
-            if uterctl.verify(executor,public)!=manifest:raise ValueError
+            _validate_executor(executor,public,manifest)
             destination=private/'backup'
             def command(mode):
                 return [sys.executable,'-I','-B',str(executor/'scripts/kubernetes_executor_ci_child.py'),mode,
                         str(home),str(product),str(publisher),str(config),str(profile),str(key),str(public),
                         str(binary_path),str(destination)]
             PHASE='START_CHILD'
+            _validate_executor(executor,public,manifest)
             child=subprocess.Popen(command('start'),stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             try:out,err=child.communicate(timeout=900)
             except subprocess.TimeoutExpired:
@@ -103,6 +125,7 @@ def verify(home,product,publisher,manifest):
                     or info.st_mode&0o077 or lock.read_bytes()!=str(child.pid).encode()):raise ValueError
             lock.unlink()
             PHASE='RECOVERY_CHILD'
+            _validate_executor(executor,public,manifest)
             resumed=subprocess.run(command('resume'),stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE,timeout=900)
             if resumed.returncode!=0 or resumed.stdout.strip()!=b'CI_BACKUP_RECEIPT_VERIFIED_STRUCTURE_ONLY':

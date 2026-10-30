@@ -3,9 +3,20 @@ import os
 from pathlib import Path
 import sys
 import time
+import types
+import importlib.machinery
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
+# Bind the package to this signed executor exactly as the production launcher
+# does. Some imported scripts add ROOT to sys.path again; a namespace package
+# would otherwise expand to duplicate paths and fail closed on authentication.
+package=types.ModuleType('scripts')
+package.__path__=[str(ROOT/'scripts')]
+package.__package__='scripts'
+package.__spec__=importlib.machinery.ModuleSpec('scripts',loader=None,is_package=True)
+package.__spec__.submodule_search_locations=package.__path__
+sys.modules['scripts']=package
 import uterctl
 from scripts import (kubernetes_fence_coordinator as coordinator,
                      kubernetes_fence_finalizer as finalizer, kubernetes_fence_recovery_session as recovery,

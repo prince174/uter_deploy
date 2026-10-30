@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -21,3 +23,13 @@ class CoordinatorCITests(unittest.TestCase):
                   'kubernetes_audit_reader.py','kubernetes_config_snapshot.py','kubernetes_trusted_kubectl.py',
                   'backup_store.py','backup_snapshot.py','redis_fence_journal.py'}
         self.assertTrue(required.issubset(names))
+
+    def test_child_keeps_package_path_fixed_after_nested_imports(self):
+        if os.name!='posix':self.skipTest('Linux isolated child required')
+        child=ci.ROOT/'scripts/kubernetes_executor_ci_child.py'
+        source=('import importlib.util,sys;'
+                's=importlib.util.spec_from_file_location("fixture_child",sys.argv[1]);'
+                'm=importlib.util.module_from_spec(s);s.loader.exec_module(m);'
+                'assert tuple(sys.modules["scripts"].__path__)==(str(m.ROOT/"scripts"),)')
+        result=subprocess.run([sys.executable,'-I','-B','-c',source,str(child)],capture_output=True,timeout=30)
+        self.assertEqual(result.returncode,0)
