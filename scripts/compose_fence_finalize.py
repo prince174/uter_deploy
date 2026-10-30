@@ -73,7 +73,7 @@ def _attach_running_redis(adapter,record,plan,saved):
 def _validate_live(adapter,record,executor_key,destination):
     """Recheck signed installation, original IDs, Redis, health and all HMACs."""
     if journal.read(adapter.home)!=record or record['phase']!='writers_resumed':raise ValueError
-    for name in ('backup-operation.json','recovery-operation.json','session-migration-block.json',
+    for name in (journal.FINALIZE_ANCHOR,'backup-operation.json','recovery-operation.json','session-migration-block.json',
                  'redis-loopback-intent.json','redis-loopback-attempt.json'):
         if os.path.lexists(adapter.home/name):raise ValueError
     diagnostic.inspect_installation(adapter.home,adapter.bundle,adapter.publisher_key)
@@ -126,7 +126,26 @@ def finalize(adapter,record,executor_key,destination):
                     _same_inode(directory,name,files[name]);os.unlink(name,dir_fd=directory);os.fsync(directory)
                 if journal.read(adapter.home)!=final:raise ValueError
                 _same_inode(last_directory,journal.NAME,last_files[journal.NAME])
-                os.unlink(journal.NAME,dir_fd=last_directory);os.fsync(last_directory)
+                # A durable hardlink blocks current controllers even if the
+                # original marker is unlinked and the following fsync fails.
+                # Old released controllers do not know this extra guard.
+                os.link(journal.NAME,journal.FINALIZE_ANCHOR,src_dir_fd=last_directory,
+                        dst_dir_fd=last_directory,follow_symlinks=False)
+                os.fsync(last_directory)
+                try:
+                    os.unlink(journal.NAME,dir_fd=last_directory);os.fsync(last_directory)
+                except OSError:
+                    # Best effort only; if this fails the anchor itself still
+                    # blocks the current controller and requires inspection.
+                    try:
+                        os.link(journal.FINALIZE_ANCHOR,journal.NAME,src_dir_fd=last_directory,
+                                dst_dir_fd=last_directory,follow_symlinks=False)
+                        os.fsync(last_directory)
+                    except OSError:pass
+                    raise
+                # Journal deletion is now durable. Failure removing this extra
+                # anchor leaves a safe blocking marker unless unlink succeeded.
+                os.unlink(journal.FINALIZE_ANCHOR,dir_fd=last_directory);os.fsync(last_directory)
     except Exception:
         # Never stop/start containers, replay deletion, or restore old data.
         raise FinalizeError('FENCE_FINALIZE_INCOMPLETE') from None

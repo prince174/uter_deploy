@@ -61,7 +61,7 @@ def verify_offline_images(cfg, manifests):
 def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=None,create_backup_key=False,offline=False):
     if os.name!='posix':raise ValueError('Managed update requires a Linux host')
     home=Path(home).resolve(strict=True);bundle=Path(bundle).resolve(strict=True)
-    if os.path.lexists(home/'redis-fence-operation.json'):
+    if os.path.lexists(home/'redis-fence-operation.json') or os.path.lexists(home/'compose-fence-finalize-anchor.json'):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
     backup_root_path=Path(backup_root).absolute();backup_key_path=Path(backup_key).absolute()
     if backup_root_path.is_symlink() or backup_key_path.is_symlink():
@@ -111,7 +111,7 @@ def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=Non
     # Adoption and uterctl apply each check again under their own lock, so an
     # intervening fence cannot slip through after this short preflight lock.
     with uterctl.locked(home):
-        if os.path.lexists(home/'redis-fence-operation.json'):
+        if os.path.lexists(home/'redis-fence-operation.json') or os.path.lexists(home/'compose-fence-finalize-anchor.json'):
             raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         if backup_key.exists():
             if create_backup_key:raise ValueError('Backup key already exists; refusing replacement')

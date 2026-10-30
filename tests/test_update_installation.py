@@ -48,14 +48,15 @@ class ManagedUpdateTests(unittest.TestCase):
         self.assertFalse((self.home/'state.json').exists())
 
     def test_incomplete_redis_fence_blocks_before_key_creation(self):
-        marker=self.home/'redis-fence-operation.json'
-        marker.symlink_to(self.home/'missing')
-        with patch('scripts.update_installation.adopt_managed.adopt') as adopt:
-            with self.assertRaisesRegex(ValueError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
-                update_installation.update(self.home, self.root/'new', self.public,
-                                           self.backups, self.backup_key, create_backup_key=True)
-        adopt.assert_not_called()
-        self.assertFalse(self.backup_key.exists())
+        for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json'):
+            with self.subTest(name=name):
+                marker=self.home/name;marker.symlink_to(self.home/'missing')
+                with patch('scripts.update_installation.adopt_managed.adopt') as adopt:
+                    with self.assertRaisesRegex(ValueError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                        update_installation.update(self.home, self.root/'new', self.public,
+                                                   self.backups, self.backup_key, create_backup_key=True)
+                adopt.assert_not_called();marker.unlink()
+                self.assertFalse(self.backup_key.exists())
 
     def test_fence_appearing_after_initial_check_blocks_under_lock_before_key_or_adoption(self):
         marker=self.home/'redis-fence-operation.json'

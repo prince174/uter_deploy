@@ -379,6 +379,8 @@ def smoke(bundle, home, port):
 
 def mark_acceptance(home):
     """Record success only after authenticated smoke; never alter a pending install."""
+    if os.path.lexists(home/'redis-fence-operation.json') or os.path.lexists(home/'compose-fence-finalize-anchor.json'):
+        raise WizardError('REDIS_FENCE_REQUIRES_INSPECTION')
     try:
         workload_preflight.secure_directory(home)
         state_path = home/'install-state.json'
@@ -406,7 +408,7 @@ def accept_with_operation_lock(bundle, home, port):
     try:
         workload_preflight.secure_directory(home)
         with uterctl.locked(home):
-            if os.path.lexists(home/'redis-fence-operation.json'):
+            if os.path.lexists(home/'redis-fence-operation.json') or os.path.lexists(home/'compose-fence-finalize-anchor.json'):
                 raise WizardError('REDIS_FENCE_REQUIRES_INSPECTION')
             # An adoption or update that completed after install but before this
             # lock makes the earlier install identity unsuitable for acceptance.

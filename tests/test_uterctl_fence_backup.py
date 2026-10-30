@@ -29,6 +29,25 @@ class FenceBackupCLITests(unittest.TestCase):
             '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key),
             '--backup-dir',str(self.destination if dest is None else dest)])
 
+    def test_each_fence_command_rejects_dangling_finalize_anchor_before_mutation(self):
+        anchor=self.fx.home/journal.FINALIZE_ANCHOR;anchor.symlink_to(self.fx.home/'missing')
+        commands=('fence-recover-redis','fence-backup-redis','fence-start-redis',
+                  'fence-recover-snapshot-redis','fence-resume-writers','fence-finalize')
+        with patch.object(compose_nsfirewall_adapter.Adapter,'__init__',side_effect=AssertionError('adapter created')):
+            for command in commands:
+                with self.subTest(command=command),self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                    uterctl.main([command,'--home',str(self.fx.home),'--bundle',str(self.bundle),
+                        '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key),
+                        '--backup-dir',str(self.destination)])
+        self.assertTrue(anchor.is_symlink());self.assertEqual(journal.read(self.fx.home)['phase'],'isolated')
+
+    def test_anchor_is_rechecked_under_lock_before_recovery_record(self):
+        anchor=self.fx.home/journal.FINALIZE_ANCHOR;anchor.symlink_to(self.fx.home/'missing')
+        with patch.object(uterctl,'verify') as verify:
+            with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                uterctl.recover_compose_redis_before_snapshot(self.fx.home,self.bundle,self.fx.pub,self.key)
+        verify.assert_not_called();self.assertFalse((self.fx.home/'operation.lock').exists())
+
     def test_real_backend_selected_and_captured_state_retained_under_lock(self):
         def capture(adapter,record,executor,key,destination):
             self.assertEqual((self.fx.home/'operation.lock').read_text(),str(os.getpid()))

@@ -305,6 +305,8 @@ def reject_reserved_compose_names(name):
 def install(home, cfg, *, offline=False):
     if os.name != 'posix':
         raise ValueError('Install is supported on Linux; prepare/check can run elsewhere')
+    if os.path.lexists(home/'redis-fence-operation.json') or os.path.lexists(home/'compose-fence-finalize-anchor.json'):
+        raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
     if (home / 'install-state.json').exists():
         raise ValueError('Install already attempted; preserve secrets/data and diagnose. Use uterctl for managed updates.')
     if offline and cfg['backend'] != 'compose':

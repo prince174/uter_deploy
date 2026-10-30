@@ -68,10 +68,12 @@ class BackupInstallationTests(unittest.TestCase):
         self.register_identity('compose', 'default')
 
     def test_incomplete_fence_blocks_scheduled_backup_metadata(self):
-        marker=self.home/'redis-fence-operation.json'
-        marker.symlink_to(self.home/'missing')
-        with self.assertRaisesRegex(m.BackupError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
-            m.installation_metadata(self.home)
+        for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json'):
+            with self.subTest(name=name):
+                marker=self.home/name;marker.symlink_to(self.home/'missing')
+                with self.assertRaisesRegex(m.BackupError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                    m.installation_metadata(self.home)
+                marker.unlink()
 
     def write_state(self):
         (self.home / 'state.json').write_text(json.dumps(self.state))

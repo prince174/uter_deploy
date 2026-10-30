@@ -1,4 +1,5 @@
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -37,17 +38,17 @@ class SnapshotTests(unittest.TestCase):
         return b''
 
     def test_resume_refuses_any_fence_marker_before_touching_either_backend(self):
-        marker=self.home/'redis-fence-operation.json'
-        for backend in ('compose','helm'):
-            for kind in ('file','dangling_symlink'):
-                with self.subTest(backend=backend,kind=kind):
-                    if kind=='file':marker.write_text('invalid',encoding='utf-8')
-                    else:marker.symlink_to(self.home/'missing')
-                    with patch.object(backup_snapshot,'checked') as checked:
-                        with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
-                            backup_snapshot.resume_writers(self.home,self.cfg,dict(self.site,backend=backend),self.current)
-                        checked.assert_not_called()
-                    marker.unlink()
+        for backend,kind,marker_name in itertools.product(('compose','helm'),('file','dangling_symlink'),
+                                                            ('redis-fence-operation.json','compose-fence-finalize-anchor.json')):
+            with self.subTest(backend=backend,kind=kind,marker_name=marker_name):
+                marker=self.home/marker_name
+                if kind=='file':marker.write_text('invalid',encoding='utf-8')
+                else:marker.symlink_to(self.home/'missing')
+                with patch.object(backup_snapshot,'checked') as checked:
+                    with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                        backup_snapshot.resume_writers(self.home,self.cfg,dict(self.site,backend=backend),self.current)
+                    checked.assert_not_called()
+                marker.unlink()
 
     def test_snapshot_failure_does_not_resume_if_fence_appears(self):
         marker=self.home/'redis-fence-operation.json'
@@ -123,14 +124,15 @@ class SnapshotTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX symlink handling')
     def test_fence_journal_refuses_snapshot_before_workloads_change(self):
-        marker=self.home/'redis-fence-operation.json'
-        marker.symlink_to(self.home/'missing')
-        with patch.object(backup_snapshot.adopt_installation,'verify_live') as live, \
-             patch.object(backup_snapshot,'checked') as checked:
-            with self.assertRaisesRegex(ValueError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
-                backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key)
-        live.assert_not_called(); checked.assert_not_called()
-        self.assertFalse((self.root/'backup').exists())
+        for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json'):
+            with self.subTest(name=name):
+                marker=self.home/name;marker.symlink_to(self.home/'missing')
+                with patch.object(backup_snapshot.adopt_installation,'verify_live') as live, \
+                     patch.object(backup_snapshot,'checked') as checked:
+                    with self.assertRaisesRegex(ValueError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                        backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key)
+                live.assert_not_called();checked.assert_not_called();marker.unlink()
+                self.assertFalse((self.root/'backup').exists())
 
     def test_optional_ca_bundle_is_preserved_in_encrypted_runtime(self):
         ca = b'example CA bundle content'

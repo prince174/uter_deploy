@@ -12,6 +12,15 @@ import secrets
 import stat
 
 NAME = 'redis-fence-operation.json'
+FINALIZE_ANCHOR = 'compose-fence-finalize-anchor.json'
+
+
+def blocks_mutation(directory):
+    """Both names block; a dangling link or partial cleanup is never ignored."""
+    directory=Path(directory)
+    return os.path.lexists(directory/NAME) or os.path.lexists(directory/FINALIZE_ANCHOR)
+
+
 PHASES = ('prepared', 'isolating', 'isolated', 'capturing', 'captured', 'snapshot_releasing', 'releasing', 'aborting', 'pre_capture_aborting', 'redis_released', 'writers_resuming', 'writers_resumed', 'finalizing', 'restored')
 TRANSITIONS = {
     'prepared': frozenset(('isolating', 'aborting', 'pre_capture_aborting')),

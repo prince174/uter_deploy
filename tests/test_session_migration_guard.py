@@ -121,10 +121,11 @@ class ControllerSessionGateTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX symlink handling')
     def test_existing_fence_journal_blocks_controller_before_backup_or_deploy(self):
-        marker = self.fx.home/'redis-fence-operation.json'
         before = (self.fx.home/'state.json').read_bytes()
-        for dangling in (False, True):
-            with self.subTest(dangling=dangling):
+        for dangling,marker_name in ((False,'redis-fence-operation.json'),(True,'redis-fence-operation.json'),
+                                     (False,'compose-fence-finalize-anchor.json'),(True,'compose-fence-finalize-anchor.json')):
+            with self.subTest(dangling=dangling,marker_name=marker_name):
+                marker = self.fx.home/marker_name
                 if dangling:
                     marker.symlink_to(self.fx.home/'missing-target')
                 else:

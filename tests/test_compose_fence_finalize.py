@@ -41,6 +41,7 @@ class ComposeFenceFinalizeTests(unittest.TestCase):
             finalize.finalize(self.adapter,self.record,'executor-key',None)
         self.assertEqual(removed[-1],journal.NAME)
         self.assertFalse((self.home/journal.NAME).exists())
+        self.assertFalse((self.home/journal.FINALIZE_ANCHOR).exists())
         self.assertTrue(backup.exists());self.adapter._run.assert_not_called()
 
     def test_interrupted_cleanup_keeps_finalizing_marker_and_never_starts_or_restores(self):
@@ -57,6 +58,68 @@ class ComposeFenceFinalizeTests(unittest.TestCase):
                 finalize.finalize(self.adapter,self.record,'executor-key',None)
         self.assertEqual(journal.read(self.home)['phase'],'finalizing')
         self.adapter._run.assert_not_called()
+
+    def test_fsync_failure_after_journal_unlink_rearms_blocking_marker(self):
+        real_fsync=os.fsync
+        def fail_after_unlink(fd):
+            if not os.path.lexists(self.home/journal.NAME) and os.path.lexists(self.home/journal.FINALIZE_ANCHOR):
+                raise OSError('injected')
+            return real_fsync(fd)
+        with patch.object(finalize.origin,'read',return_value=self.released), \
+             patch.object(finalize,'_validate_live',return_value=self.released),patch.object(finalize.os,'fsync',side_effect=fail_after_unlink):
+            with self.assertRaisesRegex(finalize.FinalizeError,'^FENCE_FINALIZE_INCOMPLETE$'):
+                finalize.finalize(self.adapter,self.record,'executor-key',None)
+        self.assertTrue(os.path.lexists(self.home/journal.NAME))
+        self.assertTrue(os.path.lexists(self.home/journal.FINALIZE_ANCHOR))
+        self.assertTrue(journal.blocks_mutation(self.home));self.adapter._run.assert_not_called()
+
+    def test_relink_failure_still_leaves_anchor_blocking_mutations(self):
+        real_fsync=os.fsync;real_link=os.link
+        def fail_after_unlink(fd):
+            if not os.path.lexists(self.home/journal.NAME) and os.path.lexists(self.home/journal.FINALIZE_ANCHOR):
+                raise OSError('injected fsync failure')
+            return real_fsync(fd)
+        def fail_relink(src,dst,*args,**kwargs):
+            if src==journal.FINALIZE_ANCHOR and dst==journal.NAME:raise OSError('injected relink failure')
+            return real_link(src,dst,*args,**kwargs)
+        with patch.object(finalize.origin,'read',return_value=self.released), \
+             patch.object(finalize,'_validate_live',return_value=self.released), \
+             patch.object(finalize.os,'fsync',side_effect=fail_after_unlink),patch.object(finalize.os,'link',side_effect=fail_relink):
+            with self.assertRaisesRegex(finalize.FinalizeError,'^FENCE_FINALIZE_INCOMPLETE$'):
+                finalize.finalize(self.adapter,self.record,'executor-key',None)
+        self.assertFalse(os.path.lexists(self.home/journal.NAME))
+        self.assertTrue(os.path.lexists(self.home/journal.FINALIZE_ANCHOR))
+        self.assertTrue(journal.blocks_mutation(self.home));self.adapter._run.assert_not_called()
+
+    def test_anchor_unlink_failure_blocks_even_after_journal_deletion_was_synced(self):
+        real_unlink=os.unlink
+        def fail_anchor(path,*args,**kwargs):
+            if path==journal.FINALIZE_ANCHOR:raise OSError('injected anchor unlink failure')
+            return real_unlink(path,*args,**kwargs)
+        with patch.object(finalize.origin,'read',return_value=self.released), \
+             patch.object(finalize,'_validate_live',return_value=self.released), \
+             patch.object(finalize.os,'unlink',side_effect=fail_anchor):
+            with self.assertRaisesRegex(finalize.FinalizeError,'^FENCE_FINALIZE_INCOMPLETE$'):
+                finalize.finalize(self.adapter,self.record,'executor-key',None)
+        self.assertFalse(os.path.lexists(self.home/journal.NAME))
+        self.assertTrue(os.path.lexists(self.home/journal.FINALIZE_ANCHOR))
+        self.assertTrue(journal.blocks_mutation(self.home));self.adapter._run.assert_not_called()
+
+    def test_fsync_failure_after_anchor_unlink_is_not_claimed_as_blocked(self):
+        real_fsync=os.fsync;seen_anchor=[False]
+        def fail_after_anchor_removed(fd):
+            if os.path.lexists(self.home/journal.FINALIZE_ANCHOR):seen_anchor[0]=True
+            if seen_anchor[0] and not os.path.lexists(self.home/journal.NAME) and not os.path.lexists(self.home/journal.FINALIZE_ANCHOR):
+                raise OSError('injected post-anchor fsync failure')
+            return real_fsync(fd)
+        with patch.object(finalize.origin,'read',return_value=self.released), \
+             patch.object(finalize,'_validate_live',return_value=self.released), \
+             patch.object(finalize.os,'fsync',side_effect=fail_after_anchor_removed):
+            with self.assertRaisesRegex(finalize.FinalizeError,'^FENCE_FINALIZE_INCOMPLETE$'):
+                finalize.finalize(self.adapter,self.record,'executor-key',None)
+        self.assertFalse(os.path.lexists(self.home/journal.NAME))
+        self.assertFalse(os.path.lexists(self.home/journal.FINALIZE_ANCHOR))
+        self.assertFalse(journal.blocks_mutation(self.home));self.adapter._run.assert_not_called()
 
     def test_replaced_evidence_rejected_before_cleanup(self):
         def replace(*args):

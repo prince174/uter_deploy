@@ -1,6 +1,7 @@
 import argparse
 import base64
 import contextlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -88,14 +89,14 @@ class AdoptionTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'posix', 'POSIX fence and locking')
     def test_adoption_refuses_fence_created_before_lock_without_smoke_or_writes(self):
-        for managed in (False, True):
-            with self.subTest(managed=managed), tempfile.TemporaryDirectory() as folder:
+        for managed,marker_name in itertools.product((False, True),('redis-fence-operation.json','compose-fence-finalize-anchor.json')):
+            with self.subTest(managed=managed,marker_name=marker_name), tempfile.TemporaryDirectory() as folder:
                 original=self.root; self.root=Path(folder)
                 try:
                     for name,data in [('images',json.dumps(self.images)),('policy','[policy]\nenabled=true\n'),
                                       ('profiles','[profile]\nenabled=true\n')]: (self.root/name).write_text(data)
                     home=self.prepare(); before=sorted(p.name for p in (home/'runtime').iterdir())
-                    marker=home/'redis-fence-operation.json'; real_lock=uterctl.locked
+                    marker=home/marker_name; real_lock=uterctl.locked
                     @contextlib.contextmanager
                     def inject(path):
                         with real_lock(path):
