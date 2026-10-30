@@ -248,6 +248,15 @@ def run_scenario():
         if len(saved) != 1 or Path(new_bundle) != target or Path(old_bundle) != source:
             raise CheckFailure('SIGNED_FIXTURE_INVALID')
         cmd, env, before_audit = saved[0]
+        if (os.environ.get('UTER_CI_VERIFY_KUBE_LOOPBACK') == 'true'
+                or os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true'):
+            # The ordinary update wizard adopts lazily when it starts. These
+            # opt-in CI hooks need that same signed adoption before the wizard.
+            from scripts import adopt_managed
+            try:
+                adopt_managed.adopt(Path(home), source, public)
+            except Exception:
+                raise CheckFailure('CI_SIGNED_ADOPTION_FAILED') from None
         if os.environ.get('UTER_CI_VERIFY_KUBE_LOOPBACK') == 'true':
             from scripts import kubernetes_loopback_signed_ci
             try:
@@ -261,8 +270,8 @@ def run_scenario():
             try:
                 compose_fence_signed_ci.verify(Path(home), source, public, old)
             except compose_fence_signed_ci.SignedComposeFenceCheckFailure as error:
-                    stages={'GUARD','PATH_CHECK','CONFIG_READ','SITE_READ','SIGNED_IDENTITY','DOCKER_SCOPE',
-                            'INSPECTION','STOP_WRITERS','WRITER','ISOLATE','SNAPSHOT','CI_RECONNECT'}
+                stages={'GUARD','PATH_CHECK','CONFIG_READ','SITE_READ','SIGNED_IDENTITY','DOCKER_SCOPE',
+                        'INSPECTION','STOP_WRITERS','WRITER','ISOLATE','SNAPSHOT','CI_RECONNECT'}
                 stage=compose_fence_signed_ci.PHASE
                 if str(error) in {'COMPOSE_SIGNED_CI_GUARD','COMPOSE_SIGNED_CI_PATH','COMPOSE_SIGNED_CI_IDENTITY',
                                   'COMPOSE_SIGNED_CI_ACTIONS_GUARD','COMPOSE_SIGNED_CI_HOSTED_GUARD',
@@ -354,7 +363,8 @@ def main():
             status, output = run_checked([str(python), '-I', '-B', str(stage/'scripts/session_gate_e2e_ci.py'),
                                           '--staged'], env=env, timeout=3300, limit=1024*1024)
             if status:
-                allowed = {'EXPECTED_SIGNED_GATE_MISSING','KUBE_LOOPBACK_CI_UNVERIFIED','KUBE_LOOPBACK_CI_GUARD',
+                allowed = {'EXPECTED_SIGNED_GATE_MISSING','CI_SIGNED_ADOPTION_FAILED',
+                           'KUBE_LOOPBACK_CI_UNVERIFIED','KUBE_LOOPBACK_CI_GUARD',
                            'KUBE_LOOPBACK_CI_FIXTURE','KUBE_LOOPBACK_CI_STOP_WRITERS','KUBE_LOOPBACK_CI_HOLD',
                            'KUBE_LOOPBACK_CI_PATCH','KUBE_LOOPBACK_CI_TERMINATION','KUBE_LOOPBACK_CI_POD',
                            'KUBE_LOOPBACK_CI_SNAPSHOT','KUBE_LOOPBACK_CI_RECONNECT','KUBE_LOOPBACK_CI_START_WRITERS',
