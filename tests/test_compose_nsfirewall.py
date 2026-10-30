@@ -121,7 +121,7 @@ class NamespaceFenceTests(unittest.TestCase):
     def test_successful_release_marks_redis_only(self):
         for old,new in (('prepared','isolating'),('isolating','isolated')):
             journal.advance(self.home,operation=self.operation,expected=old,next_phase=new)
-        adapter=mock.Mock()
+        adapter=mock.Mock();adapter.backup_key=b'k'*32
         def authorize(record):
             journal.advance(self.home,operation=self.operation,expected='isolated',next_phase='pre_capture_aborting');return True
         adapter.authorize_release_before_capture.side_effect=authorize
@@ -161,7 +161,7 @@ class NamespaceFenceTests(unittest.TestCase):
     def test_release_uncertainty_keeps_abort_journal(self):
         for old,new in (('prepared','isolating'),('isolating','isolated')):
             journal.advance(self.home,operation=self.operation,expected=old,next_phase=new)
-        adapter=mock.Mock()
+        adapter=mock.Mock();adapter.backup_key=b'k'*32
         def authorize(record):
             journal.advance(self.home,operation=self.operation,expected='isolated',next_phase='pre_capture_aborting');return True
         adapter.authorize_release_before_capture.side_effect=authorize
@@ -177,7 +177,7 @@ class NamespaceFenceTests(unittest.TestCase):
                 for old,new in (('prepared','isolating'),('isolating','isolated'),('isolated','pre_capture_aborting')):
                     if journal.read(folder)['phase']==phase:break
                     journal.advance(folder,operation=record['operation'],expected=old,next_phase=new)
-                adapter=mock.Mock();adapter.attach_before_capture_recovery.return_value=True
+                adapter=mock.Mock();adapter.backup_key=b'k'*32;adapter.attach_before_capture_recovery.return_value=True
                 adapter.recover_before_capture.return_value=True
                 protocol.recover_before_capture(folder,record['operation'],adapter)
                 self.assertEqual(journal.read(folder)['phase'],'redis_released')
@@ -187,7 +187,7 @@ class NamespaceFenceTests(unittest.TestCase):
     def test_recovery_fails_closed_at_capture_and_on_uncertain_mutation(self):
         for old,new in (('prepared','isolating'),('isolating','isolated')):
             journal.advance(self.home,operation=self.operation,expected=old,next_phase=new)
-        adapter=mock.Mock();adapter.attach_before_capture_recovery.return_value=True
+        adapter=mock.Mock();adapter.backup_key=b'k'*32;adapter.attach_before_capture_recovery.return_value=True
         adapter.recover_before_capture.side_effect=RuntimeError('unknown')
         with self.assertRaisesRegex(protocol.NamespaceProtocolError,'RECOVERY_INCOMPLETE'):
             protocol.recover_before_capture(self.home,self.operation,adapter)

@@ -15,7 +15,7 @@ from pathlib import Path
 import stat
 
 import uterctl
-from scripts import (backup_snapshot, backup_store, compose_nsfirewall_adapter as fence,
+from scripts import (backup_snapshot, backup_store, compose_fence_origin as origin, compose_nsfirewall_adapter as fence,
                      compose_nsfirewall_checkpoint as checkpoint, redis_fence_journal as journal,
                      snapshot_only_receipts as receipts)
 
@@ -131,7 +131,7 @@ def recover(adapter,executor_bundle,executor_publisher,destination):
         if record['backend']!='compose' or record['phase'] not in ('captured','snapshot_releasing'):raise ValueError
         binding=_bound(adapter,record,executor_bundle,executor_publisher,destination)
         descriptor,_=receipts.read_descriptor(adapter.home,adapter.backup_key)
-        receipt,_=receipts.read_receipt(adapter.home,adapter.backup_key)
+        receipt,receipt_hash=receipts.read_receipt(adapter.home,adapter.backup_key)
         decision,_=receipts.read_decision(adapter.home,adapter.backup_key)
         if (descriptor['operation']!=record['operation'] or descriptor['backend']!='compose'
                 or descriptor['site']!=record['site'] or descriptor['resource']!=record['resource']
@@ -152,6 +152,7 @@ def recover(adapter,executor_bundle,executor_publisher,destination):
         if record['phase']=='captured':
             if adapter.verify_fenced(record) is not True:raise ValueError
             record=journal.advance(adapter.home,operation=record['operation'],expected='captured',next_phase='snapshot_releasing')
+        origin.ensure(adapter.home,adapter.backup_key,record,'snapshot',receipt_hash)
         if adapter._recover_snapshot_only(record) is not True:raise ValueError
         journal.advance(adapter.home,operation=record['operation'],expected='snapshot_releasing',next_phase='redis_released')
         return verified['id']

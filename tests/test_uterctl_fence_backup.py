@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import uterctl
-from scripts import compose_nsfirewall_adapter, compose_snapshot_only, redis_fence_journal as journal
+from scripts import compose_fence_resume, compose_nsfirewall_adapter, compose_snapshot_only, redis_fence_journal as journal
 from tests import test_controller as fixtures
 
 
@@ -130,3 +130,32 @@ class FenceBackupCLITests(unittest.TestCase):
                               '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key),
                               '--backup-dir',str(self.destination)])
             recover.assert_not_called()
+
+    def test_resume_writers_cli_keeps_marker_and_uses_locked_scoped_backend(self):
+        for old,new in (('isolated','pre_capture_aborting'),('pre_capture_aborting','redis_released')):
+            journal.advance(self.fx.home,operation=self.record['operation'],expected=old,next_phase=new)
+        def run(adapter,record,executor,destination):
+            self.assertEqual((self.fx.home/'operation.lock').read_text(),str(os.getpid()))
+            self.assertIsNone(destination)
+            journal.advance(self.fx.home,operation=record['operation'],expected='redis_released',next_phase='writers_resuming')
+            journal.advance(self.fx.home,operation=record['operation'],expected='writers_resuming',next_phase='writers_resumed')
+        output=io.StringIO()
+        with patch.object(compose_fence_resume,'resume',side_effect=run) as run_call, \
+             patch.object(compose_nsfirewall_adapter.Adapter,'close') as close, \
+             patch.object(uterctl,'deploy') as deploy,contextlib.redirect_stdout(output):
+            uterctl.main(['fence-resume-writers','--home',str(self.fx.home),'--bundle',str(self.bundle),
+                          '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key)])
+        run_call.assert_called_once();close.assert_called_once();deploy.assert_not_called()
+        self.assertEqual(journal.read(self.fx.home)['phase'],'writers_resumed')
+        self.assertIn('Traffic may have started',output.getvalue())
+        self.assertFalse((self.fx.home/'operation.lock').exists())
+
+    def test_resume_writers_cli_refuses_retry_after_uncertain_start(self):
+        for old,new in (('isolated','pre_capture_aborting'),('pre_capture_aborting','redis_released'),
+                        ('redis_released','writers_resuming')):
+            journal.advance(self.fx.home,operation=self.record['operation'],expected=old,next_phase=new)
+        with patch.object(compose_fence_resume,'resume') as run_call:
+            with self.assertRaisesRegex(ValueError,'^FENCE_RECOVERY_STATE_UNSUPPORTED$'):
+                uterctl.main(['fence-resume-writers','--home',str(self.fx.home),'--bundle',str(self.bundle),
+                              '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key)])
+        run_call.assert_not_called();self.assertEqual(journal.read(self.fx.home)['phase'],'writers_resuming')

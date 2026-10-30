@@ -1,5 +1,5 @@
 """Experimental journaled netns fence protocol; not an update implementation."""
-from scripts import redis_fence_journal as journal
+from scripts import compose_fence_origin as origin, redis_fence_journal as journal
 
 
 class NamespaceProtocolError(ValueError): pass
@@ -33,6 +33,7 @@ def release_without_capture(home,operation,adapter):
     record=_record(home,operation,'isolated')
     try:
         if adapter.authorize_release_before_capture(record) is not True:raise ValueError
+        origin.ensure(home,adapter.backup_key,journal.read(home),'pre_capture')
         adapter.release_before_capture(record)
     except Exception:
         raise NamespaceProtocolError('NS_PROTOCOL_RELEASE_INCOMPLETE') from None
@@ -55,6 +56,7 @@ def recover_before_capture(home,operation,adapter):
         if adapter.attach_before_capture_recovery(record) is not True:raise ValueError
         if record['phase']!='pre_capture_aborting':
             journal.advance(home,operation=operation,expected=record['phase'],next_phase='pre_capture_aborting')
+        origin.ensure(home,adapter.backup_key,journal.read(home),'pre_capture')
         if adapter.recover_before_capture(record) is not True:raise ValueError
         journal.advance(home,operation=operation,expected='pre_capture_aborting',next_phase='redis_released')
     except Exception:
