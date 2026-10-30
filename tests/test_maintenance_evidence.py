@@ -2,8 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
-from scripts import maintenance_evidence as evidence, maintenance_protocol as protocol, redis_fence_journal as journal
+from scripts import (maintenance_evidence as evidence, maintenance_protocol as protocol,
+                     maintenance_transport as transport, redis_fence_journal as journal)
 
 
 class EvidenceTests(unittest.TestCase):
@@ -104,6 +107,51 @@ class EvidenceTests(unittest.TestCase):
                                          plan_sha256=self.plan, lock_guard=lambda: True)
             self.assertTrue(recorder.intent('agent', 'pod-uid/container-id', self.boot))
             self.assertTrue(recorder.receipt('agent', 'pod-uid/container-id', self.boot, self.receipt))
+
+    def test_composed_transport_coordinator_and_evidence_for_both_backends(self):
+        for backend in ('compose', 'kubernetes'):
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as folder:
+                home = Path(folder)
+                resource = 'd'*64 if backend == 'compose' else '12345678-1234-1234-1234-123456789abc'
+                journal.create(home, backend=backend, site='uter-test', resource=resource,
+                               plan_sha256=self.plan, operation=self.operation)
+                recorder = evidence.Recorder(home, b'k'*32, operation=self.operation, backend=backend,
+                                             plan_sha256=self.plan, lock_guard=lambda: True)
+                identities = {'agent': ('1'*64,), 'guardrail': ('2'*64,)}
+                boots = {'agent': 'a'*32, 'guardrail': 'b'*32}
+                states = {'agent': 'running', 'guardrail': 'running'}
+                events = []
+                api = SimpleNamespace(binary_fd=9, context='pinned-context')
+                session = SimpleNamespace(site='uter-test', _executor=object(),
+                    _record={'schema': 2, 'kubectl_sha256': 'c'*64}, config_sha256='d'*64,
+                    _inner=SimpleNamespace(api=api, config_fd=10), _scope=lambda: None)
+                def run(command, *, fds=(), timeout=8):
+                    method, port = command[-2:]
+                    service = 'agent' if port == '8001' else 'guardrail'
+                    events.append((service, method))
+                    if method == 'POST': states[service] = 'quiesced'; state = 'draining'
+                    else: state = states[service]
+                    item = {'protocol': 1, 'boot_id': boots[service], 'state': state,
+                            'safe_to_stop': state == 'quiesced', 'active_requests': 0, 'error': None, 'evidence': None}
+                    if state == 'quiesced':
+                        item['evidence'] = (self.receipt['evidence'] if service == 'agent' else
+                            {'redis_closed': True, 'audit': {'last_seq': 1, 'last_hash': 'f'*64,
+                                                             'fsynced': True, 'verified': True}})
+                    return json.dumps({'status': 202 if state == 'draining' else 200,
+                                       'body': json.dumps(item)}).encode()
+                def request(service, instance, method, timeout):
+                    target = ({'container_id': instance} if backend == 'compose' else
+                              {'session': session, 'pod': 'uter-test-'+service+'-abcd-xyz'})
+                    return transport.request(service=service, method=method, identity_guard=lambda: True, **target)
+                with mock.patch.object(transport, '_run', side_effect=run), \
+                     mock.patch.object(transport.kubernetes_trusted_kubectl, 'verify'), \
+                     mock.patch.object(transport.kubernetes_sealed_config, 'verify_sealed'):
+                    result = protocol.collect(identities, observe_inventory=lambda: dict(identities), request=request,
+                                              record_intent=recorder.intent, record_receipt=recorder.receipt)
+                self.assertEqual(set(result), {'1'*64, '2'*64})
+                self.assertLess(events.index(('agent', 'POST')), events.index(('guardrail', 'POST')))
+                self.assertEqual(len(list(home.glob('maintenance-receipt-*'))), 2)
+                self.assertEqual(journal.read(home)['phase'], 'prepared')
 
 
 if __name__ == '__main__':
