@@ -102,5 +102,10 @@ class KubernetesLoopbackTests(unittest.TestCase):
                 experiment._ci_kube_command(['get','pods'])
             self.assertNotIn('secret',str(error.exception))
 
+    def test_client_failure_category_is_fixed_and_never_returns_raw_stderr(self):
+        for code in ('CI_CLIENT_MISSING_ENV','CI_CLIENT_CONNECT','CI_CLIENT_AUTH','CI_CLIENT_PING'):
+            self.assertEqual(experiment._client_failure(('private '+code).encode()),code.removeprefix('CI_'))
+        self.assertEqual(experiment._client_failure(b'private details'), 'CLIENT_EXEC')
+
 
 if __name__=='__main__':unittest.main()

@@ -33,12 +33,16 @@ PHASE='GUARD'
 CLIENT_PROCESS=None
 CLIENT_PROGRAM=r'''
 import os,socket,sys
-s=socket.create_connection((sys.argv[1],6379),timeout=10);s.settimeout(10)
+secret=os.environ.get('REDIS_PASSWORD')
+if not secret:raise SystemExit('CI_CLIENT_MISSING_ENV')
+try:s=socket.create_connection((sys.argv[1],6379),timeout=10)
+except OSError:raise SystemExit('CI_CLIENT_CONNECT')
+s.settimeout(10)
 def req(*items):
  b=b'*%d\r\n'%len(items)+b''.join(b'$%d\r\n'%len(x.encode())+x.encode()+b'\r\n' for x in items)
  s.sendall(b);return s.recv(1024)
-if not req('AUTH',os.environ['REDIS_PASSWORD']).startswith(b'+OK'):raise SystemExit(2)
-if not req('PING').startswith(b'+PONG'):raise SystemExit(3)
+if not req('AUTH',secret).startswith(b'+OK'):raise SystemExit('CI_CLIENT_AUTH')
+if not req('PING').startswith(b'+PONG'):raise SystemExit('CI_CLIENT_PING')
 print('READY',flush=True);sys.stdin.readline()
 try:
  if req('PING') != b'': raise SystemExit(4)
@@ -50,6 +54,13 @@ print('CLOSED',flush=True)
 
 class KubernetesLoopbackCIError(ValueError):
     pass
+
+
+def _client_failure(stderr):
+    """Return fixed categories only; raw kubectl output is never published."""
+    for code in ('CI_CLIENT_MISSING_ENV','CI_CLIENT_CONNECT','CI_CLIENT_AUTH','CI_CLIENT_PING'):
+        if code.encode() in stderr: return code.removeprefix('CI_')
+    return 'CLIENT_EXEC'
 
 
 def _ci_kube_command(args, *, timeout=30):
@@ -206,10 +217,21 @@ def _verify(home,bundle,key,manifest):
         PHASE='CLIENT_EXEC'
         CLIENT_PROCESS=subprocess.Popen(['kubectl','--context',CONTEXT,'-n',SITE,'exec','-i',
                          'pod/uter-ci-loopback-probe','--','python','-u','-c',CLIENT_PROGRAM,ip],
-                         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                          start_new_session=True)
         selector=selectors.DefaultSelector();selector.register(CLIENT_PROCESS.stdout,selectors.EVENT_READ)
         if not selector.select(20) or CLIENT_PROCESS.stdout.readline().strip()!=b'READY':
+            try: os.killpg(CLIENT_PROCESS.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+            try: CLIENT_PROCESS.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT') from None
+            os.set_blocking(CLIENT_PROCESS.stderr.fileno(),False)
+            try: diagnostic=os.read(CLIENT_PROCESS.stderr.fileno(),4096)
+            except BlockingIOError: diagnostic=b''
+            PHASE=_client_failure(diagnostic)
+            CLIENT_PROCESS.stdin.close();CLIENT_PROCESS.stdout.close();CLIENT_PROCESS.stderr.close()
+            CLIENT_PROCESS=None
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT')
         PHASE='HOLD'
         plan=finalizer.plan_from_pod(CONTEXT,SITE,name,pod)
@@ -234,6 +256,7 @@ def _verify(home,bundle,key,manifest):
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT_NOT_CLOSED')
         if CLIENT_PROCESS.wait(timeout=10)!=0:
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT_NOT_CLOSED')
+        CLIENT_PROCESS.stdin.close();CLIENT_PROCESS.stdout.close();CLIENT_PROCESS.stderr.close()
         CLIENT_PROCESS=None
         # This removal is exclusively CI fixture cleanup after observation. It
         # must not be reused as a real-world safe finalizer release.
@@ -318,4 +341,8 @@ def verify(home,bundle,key,manifest):
             except ProcessLookupError: pass
             try: CLIENT_PROCESS.wait(timeout=10)
             except subprocess.TimeoutExpired: pass
+            for stream in (CLIENT_PROCESS.stdin,CLIENT_PROCESS.stdout,CLIENT_PROCESS.stderr):
+                if stream is not None:
+                    try: stream.close()
+                    except OSError: pass
             CLIENT_PROCESS=None

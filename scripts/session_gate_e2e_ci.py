@@ -264,6 +264,7 @@ def run_scenario():
             except kubernetes_loopback_signed_ci.KubernetesLoopbackCIError:
                 stages={'GUARD','FIXTURE','STOP_WRITERS','HOLD','PATCH','TERMINATION','POD','SNAPSHOT',
                         'RECONNECT','START_WRITERS','CLIENT_CREATE','CLIENT_READY','CLIENT_EXEC',
+                        'CLIENT_MISSING_ENV','CLIENT_CONNECT','CLIENT_AUTH','CLIENT_PING',
                         'RECONNECT_PATCH','RECONNECT_ROLLOUT','RECONNECT_DATA',
                         'RECONNECT_PROBE','RECONNECT_JOURNAL','RECONNECT_WRITERS'}
                 phase=kubernetes_loopback_signed_ci.PHASE
@@ -375,6 +376,8 @@ def main():
                            'KUBE_LOOPBACK_CI_PATCH','KUBE_LOOPBACK_CI_TERMINATION','KUBE_LOOPBACK_CI_POD',
                            'KUBE_LOOPBACK_CI_SNAPSHOT','KUBE_LOOPBACK_CI_RECONNECT','KUBE_LOOPBACK_CI_START_WRITERS',
                            'KUBE_LOOPBACK_CI_CLIENT_CREATE','KUBE_LOOPBACK_CI_CLIENT_READY','KUBE_LOOPBACK_CI_CLIENT_EXEC',
+                           'KUBE_LOOPBACK_CI_CLIENT_MISSING_ENV','KUBE_LOOPBACK_CI_CLIENT_CONNECT',
+                           'KUBE_LOOPBACK_CI_CLIENT_AUTH','KUBE_LOOPBACK_CI_CLIENT_PING',
                            'KUBE_LOOPBACK_CI_RECONNECT_PATCH','KUBE_LOOPBACK_CI_RECONNECT_ROLLOUT',
                            'KUBE_LOOPBACK_CI_RECONNECT_DATA','KUBE_LOOPBACK_CI_RECONNECT_PROBE',
                            'KUBE_LOOPBACK_CI_RECONNECT_JOURNAL','KUBE_LOOPBACK_CI_RECONNECT_WRITERS',
