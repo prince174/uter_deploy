@@ -97,6 +97,9 @@ def collect(inventory, *, observe_inventory, request, record_intent, record_rece
                     value = _parse(raw, boots[instance])
                     if status != 202 or value['state'] not in ('draining', 'quiesced'):
                         raise ProtocolError('MAINTENANCE_POST_UNVERIFIED')
+            # Start every replica in the phase before waiting for any one of
+            # them. Guardrail remains running until all Agents are confirmed.
+            for instance in initial[service]:
                 while True:
                     if clock() >= deadline:
                         raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')

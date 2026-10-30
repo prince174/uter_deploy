@@ -84,6 +84,27 @@ class EvidenceTests(unittest.TestCase):
             self.recorder.intent('agent', 'instance', self.boot)
         self.assertEqual(journal.read(self.home)['phase'], 'prepared')
 
+    def test_evidence_is_key_bound_and_backend_bound(self):
+        self.recorder.intent('agent', 'instance', self.boot)
+        wrong = evidence.Recorder(self.home, b'z'*32, operation=self.operation,
+                                  backend='compose', plan_sha256=self.plan, lock_guard=lambda: True)
+        with self.assertRaises(evidence.EvidenceError):
+            wrong.receipt('agent', 'instance', self.boot, self.receipt)
+        with self.assertRaises(evidence.EvidenceError):
+            evidence.Recorder(self.home, b'k'*32, operation=self.operation,
+                              backend='kubernetes', plan_sha256=self.plan, lock_guard=lambda: True)
+
+    def test_kubernetes_scope_requires_its_own_journal(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            journal.create(home, backend='kubernetes', site='uter-test',
+                           resource='12345678-1234-1234-1234-123456789abc',
+                           plan_sha256=self.plan, operation=self.operation)
+            recorder = evidence.Recorder(home, b'k'*32, operation=self.operation, backend='kubernetes',
+                                         plan_sha256=self.plan, lock_guard=lambda: True)
+            self.assertTrue(recorder.intent('agent', 'pod-uid/container-id', self.boot))
+            self.assertTrue(recorder.receipt('agent', 'pod-uid/container-id', self.boot, self.receipt))
+
 
 if __name__ == '__main__':
     unittest.main()

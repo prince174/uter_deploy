@@ -90,11 +90,11 @@ class CoordinatorTests(unittest.TestCase):
             self.run_protocol(record=record)
         self.assertFalse(any(e[0] == 'POST' for e in self.events))
 
-    def test_uncertain_receipt_persistence_blocks_remaining_writers(self):
+    def test_uncertain_receipt_persistence_blocks_guardrail(self):
         with self.assertRaisesRegex(protocol.ProtocolError, 'RECEIPT_PERSISTENCE_UNVERIFIED'):
             self.run_protocol(save=lambda *_: False)
         self.assertIn(('POST', 'agent-1'), self.events)
-        self.assertNotIn(('POST', 'agent-2'), self.events)
+        self.assertIn(('POST', 'agent-2'), self.events)
         self.assertNotIn(('POST', 'guard-1'), self.events)
 
 
