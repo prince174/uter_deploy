@@ -78,7 +78,18 @@ def exercise(home):
                                           record_intent=recorder.intent, record_receipt=recorder.receipt)
     if set(result) != {pinned['agent']['id'], pinned['guardrail']['id']} or not stable():
         raise ProbeError('MAINTENANCE_CI_RECEIPTS_UNVERIFIED')
+    # Simulate a lost process after both receipts. This runs only in the
+    # disposable CI project and does not establish continuous fencing.
+    _docker('stop', '--time', '5', pinned['agent']['id'])
+    invalidated = False
+    try:
+        inventory()
+    except Exception:
+        invalidated = True
+    if not invalidated:
+        raise ProbeError('MAINTENANCE_CI_STOP_NOT_DETECTED')
     (home.parent/'integration-evidence'/'maintenance.txt').write_text(
         'Agent and Guardrail maintenance receipts verified on exact compiled containers.\n'
+        'Stopping the receipted Agent invalidated the inventory.\n'
         'Redis fence, backup, update and recovery were not tested by this probe.\n', encoding='utf-8')
     print('MAINTENANCE_COMPOSE_PRODUCT_RECEIPTS_PASS: no Redis fence, backup or update asserted', flush=True)
