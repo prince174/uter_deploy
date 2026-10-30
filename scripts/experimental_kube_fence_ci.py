@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 
 from scripts import experimental_netns_probe as safe
+from scripts import kubernetes_fence_finalizer as finalizer_step
+from scripts import redis_fence_journal as fence_journal
 
 REDIS = 'ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc'
 PYTHON = 'python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea'
@@ -327,6 +329,27 @@ def main():
                 if proc.poll() is None: proc.kill()
                 _, diagnostic=proc.communicate(timeout=10);proc=None
                 raise RuntimeError('original synthetic client failed: '+client_failure_category(diagnostic))
+            PHASE='original-journaled-finalizer-step'
+            # Real adapter runs only against this explicitly selected synthetic
+            # cluster. The private plan and journal remain in CI temp storage.
+            operation_home=Path(tmp)/'finalizer-transaction';operation_home.mkdir(mode=0o700)
+            import uterctl
+            with uterctl.locked(operation_home):
+                adapter=finalizer_step.Kubectl(context='kind-'+cluster,namespace=namespace,env=env)
+                original=original_pod()
+                plan=finalizer_step.plan_from_pod('kind-'+cluster,namespace,original_name,original)
+                finalizer_step.persist_plan(operation_home,plan)
+                record=fence_journal.create(operation_home,backend='kubernetes',site=namespace,
+                                            resource=original_uid,plan_sha256=finalizer_step.plan_hash(plan))
+                result=finalizer_step.hold(operation_home,plan,record['operation'],adapter)
+                if result!={'result':'finalizer_held','redis_isolated':False}:
+                    raise RuntimeError('synthetic journaled hold invalid')
+                result=finalizer_step.release_unchanged(operation_home,plan,record['operation'],adapter)
+                if result!={'result':'own_finalizer_removed','redis_isolated':False,'transaction_restored':False}:
+                    raise RuntimeError('synthetic journaled release invalid')
+                if fence_journal.read(operation_home)['phase']!='aborting':
+                    raise RuntimeError('synthetic journal incorrectly asserted restored')
+            original=original_pod()
             PHASE='original-finalizer'
             finalizer(original,'add');protected.append(original)
             PHASE='original-loopback-rollout'
