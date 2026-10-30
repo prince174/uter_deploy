@@ -1,6 +1,8 @@
 import json
 import os
+import contextlib
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -74,16 +76,20 @@ class ManagedUpdateTests(unittest.TestCase):
 
     def test_fence_created_after_preflight_is_rechecked_by_adoption(self):
         marker=self.home/'redis-fence-operation.json'
-        create=backup_crypto.create_key
-        def create_then_fence(path):
-            create(path)
-            marker.symlink_to(self.home/'missing')
+        real_lock=uterctl.locked
+        @contextlib.contextmanager
+        def fence_after_preflight(path):
+            with real_lock(path):
+                yield
+            if self.backup_key.exists() and not os.path.lexists(marker):
+                # A cooperating fence may acquire the same lock between the
+                # updater's preflight and the later adoption transaction.
+                with real_lock(path): marker.symlink_to(self.home/'missing')
         # Supply the ordinary ready state and matching signed deployment assets.
         (self.home/'install-state.json').write_text('{"status":"ready"}')
-        import shutil
         shutil.copytree(self.root/'old'/'compose',self.home/'compose')
         shutil.copytree(self.root/'old'/'charts',self.home/'charts')
-        with patch.object(backup_crypto,'create_key',side_effect=create_then_fence), \
+        with patch.object(uterctl,'locked',side_effect=fence_after_preflight), \
                 patch.object(update_installation.adopt_managed.managed_smoke,'prepare') as smoke:
             with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
                 update_installation.update(self.home,self.root/'new',self.public,self.backups,self.backup_key,
