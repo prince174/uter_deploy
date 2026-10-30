@@ -1,7 +1,10 @@
 import json
+import contextlib
+import io
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest import mock
 
@@ -15,6 +18,132 @@ def images(a, b, redis='c'):
 
 
 class ChangedImageUpgradeTests(unittest.TestCase):
+    def test_public_assets_reject_symlink_parent_and_symlink_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); (root/'real').mkdir(); (root/'real/asset').write_text('public')
+            (root/'parent-link').symlink_to(root/'real', target_is_directory=True)
+            with self.assertRaisesRegex(ci.CheckFailure, '^PUBLIC_ASSET_INVALID$'):
+                ci.copy_public_asset(root, 'parent-link/asset', root/'output')
+            (root/'file-link').symlink_to(root/'real/asset')
+            with self.assertRaisesRegex(ci.CheckFailure, '^PUBLIC_ASSET_INVALID$'):
+                ci.copy_public_asset(root, 'file-link', root/'output')
+            ci.copy_public_asset(root, 'real/asset', root/'output')
+            self.assertEqual((root/'output').read_text(), 'public')
+
+    def test_staged_snapshot_uses_exact_git_commit_not_uncommitted_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); repo = root/'repo'; stage = root/'stage'; repo.mkdir(); stage.mkdir()
+            def git(*args):
+                return subprocess.check_output(['git','-C',str(repo),*args], stderr=subprocess.DEVNULL).decode().strip()
+            git('init','-q'); git('config','user.name','test'); git('config','user.email','test@example.invalid')
+            (repo/'scripts').mkdir(); (repo/'scripts/test.py').write_text('trusted')
+            (repo/'uterctl.py').write_text('controller')
+            (repo/'requirements.txt').write_text('')
+            git('add','.'); git('commit','-qm','snapshot'); commit = git('rev-parse','HEAD')
+            (repo/'scripts/test.py').write_text('uncommitted')
+            ci.export_ci_git_snapshot(repo, stage, commit)
+            self.assertEqual((stage/'scripts/test.py').read_text(), 'trusted')
+            with self.assertRaisesRegex(ci.CheckFailure, '^CI_SNAPSHOT_INVALID$'):
+                ci.export_ci_git_snapshot(repo, root/'other', '0'*40)
+            # Untracked Git info/attributes must not silently alter the archive.
+            (repo/'.git/info/attributes').write_text('scripts/test.py export-ignore\n')
+            other = root/'altered'; other.mkdir()
+            with self.assertRaisesRegex(ci.CheckFailure, '^CI_SNAPSHOT_INVALID$'):
+                ci.export_ci_git_snapshot(repo, other, commit)
+
+    def test_stage_is_removed_even_if_snapshot_export_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Path(folder); observed = []
+            for side in ('old','new'):
+                path = repo/'work/pair'/side; path.mkdir(parents=True)
+                for name in ('signed-bundle.tar.gz','publisher-public.pem','installation-inputs.tar.gz',
+                             'installation-inputs.tar.gz.sha256'):
+                    (path/name).write_text('test')
+            env = {'GITHUB_SHA':'a'*40,'UTER_CI_OLD_TAG':'old','UTER_CI_NEW_TAG':'new',
+                   'UTER_CI_OLD_VERSION':'0.1.6','UTER_CI_NEW_VERSION':'0.1.7'}
+            def export(_, stage, sha):
+                observed.append(stage)
+                raise ci.CheckFailure('CI_SNAPSHOT_INVALID')
+            with mock.patch.object(ci, 'export_ci_git_snapshot', side_effect=export):
+                with self.assertRaisesRegex(ci.CheckFailure, '^CI_SNAPSHOT_INVALID$'):
+                    with ci.stage_workspace(repo, env): pass
+            self.assertEqual(len(observed),1)
+            self.assertFalse(observed[0].exists())
+
+    def test_evidence_rejects_symlink_destination_and_existing_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); stage = root/'stage'; workspace = root/'workspace'
+            path = stage/'work/adopt-backup-evidence'; path.mkdir(parents=True)
+            (path/'result.json').write_text('{"safe":true}')
+            workspace.mkdir(); (workspace/'work').symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(ci.CheckFailure, '^EVIDENCE_DESTINATION_INVALID$'):
+                ci.publish_safe_evidence(stage, workspace)
+            (workspace/'work').unlink(); (workspace/'work').mkdir()
+            ci.publish_safe_evidence(stage, workspace)
+            self.assertEqual((workspace/'work/adopt-backup-evidence/result.json').read_text(), '{"safe":true}')
+            with self.assertRaisesRegex(ci.CheckFailure, '^EVIDENCE_DESTINATION_INVALID$'):
+                ci.publish_safe_evidence(stage, workspace)
+
+    def test_private_child_runs_isolated_from_stage_and_filters_untrusted_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); stage = root/'stage'; workspace = root/'workspace'
+            (stage/'scripts').mkdir(parents=True); workspace.mkdir()
+            script = stage/'scripts/verify_changed_image_upgrade_ci.py'
+            script.write_text("import json,os,sys\nfrom pathlib import Path\n"
+                              "Path(__file__).parent.joinpath('proof.json').write_text(json.dumps({"
+                              "'isolated':sys.flags.isolated,'workspace':os.environ['GITHUB_WORKSPACE']}))\n"
+                              "print('raw-secret-canary')\n"
+                              "print('Changed image upgrade check failed: LEGACY_SESSION_COMPATIBILITY_NOT_PRESERVED')\n"
+                              "sys.exit(1)\n")
+            env = {'PATH':os.environ.get('PATH',''), 'PYTHONPATH':'/untrusted', 'BACKEND':'compose'}
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                with self.assertRaisesRegex(ci.CheckFailure, '^LEGACY_SESSION_COMPATIBILITY_NOT_PRESERVED$'):
+                    ci.run_private_child(Path(os.sys.executable),stage,workspace,env,timeout=30)
+            proof = json.loads((stage/'scripts/proof.json').read_text())
+            self.assertEqual(proof, {'isolated':1,'workspace':str(stage)})
+            self.assertNotIn('raw-secret-canary', output.getvalue())
+
+    def test_staged_child_reverifies_releases_before_workloads(self):
+        env = {'SOURCE_GIT_WORKSPACE':'/trusted-commit-repository', 'UTER_CI_OLD_TAG':'old',
+               'UTER_CI_NEW_TAG':'new', 'UTER_CI_OLD_VERSION':'0.1.6', 'UTER_CI_NEW_VERSION':'0.1.7'}
+        order = []
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch.object(ci.release,'verify_assets',side_effect=lambda *a,**k:order.append('verify')), \
+             mock.patch.object(ci,'run_staged',side_effect=lambda *a:order.append('workloads')):
+            ci.staged_main()
+        self.assertEqual(order,['verify','workloads'])
+
+    def test_private_python_does_not_inherit_pip_or_python_overrides(self):
+        calls = []
+        def run(args, **kwargs):
+            calls.append((args,kwargs))
+            return subprocess.CompletedProcess(args,0)
+        with mock.patch.dict(os.environ, {'PATH':'/usr/bin','PYTHONPATH':'/bad','PIP_INDEX_URL':'secret-canary'}, clear=True), \
+             mock.patch.object(ci.subprocess,'run',side_effect=run):
+            self.assertEqual(ci.prepare_private_python(Path('/safe')),Path('/safe/venv/bin/python'))
+        self.assertEqual(calls[0][0][:3], ['/usr/bin/python3','-m','venv'])
+        self.assertIn('-I', calls[1][0])
+        self.assertNotIn('PYTHONPATH',calls[1][1]['env'])
+        self.assertNotIn('PIP_INDEX_URL',calls[1][1]['env'])
+        self.assertEqual(calls[1][1]['env']['PIP_CONFIG_FILE'],os.devnull)
+
+    def test_main_keeps_parent_environment_and_exports_evidence_on_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); stage = root/'stage'; stage.mkdir()
+            env = {'GITHUB_WORKSPACE':'old-workspace','DOCKER_CONFIG':'old-config',
+                   'OLD_SIGNED_BUNDLE_PATH':'old-bundle'}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'validate_inputs'), \
+                 mock.patch.object(ci, 'stage_workspace', return_value=contextlib.nullcontext(stage)), \
+                 mock.patch.object(ci, 'prepare_private_python', return_value=stage/'venv/bin/python'), \
+                 mock.patch.object(ci, 'run_private_child', side_effect=ci.CheckFailure('STAGED_CHILD_FAILED')), \
+                 mock.patch.object(ci, 'publish_safe_evidence') as publish:
+                with self.assertRaisesRegex(ci.CheckFailure, '^STAGED_CHILD_FAILED$'):
+                    ci.main()
+                self.assertEqual(dict(os.environ),env)
+            publish.assert_called_once_with(stage,root)
+
     def test_both_product_digests_must_change_but_redis_may_stay(self):
         old = images('a', 'b')
         ci.require_new_images(old, images('d', 'e'))
@@ -87,7 +216,7 @@ class ChangedImageUpgradeTests(unittest.TestCase):
             with mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'validate_inputs'), \
                  mock.patch.object(ci.harness, 'main'), mock.patch.dict(os.environ, env, clear=True):
                 with self.assertRaisesRegex(ci.CheckFailure, '^POST_UPDATE_RESTORE_MISSING$'):
-                    ci.main()
+                    ci.run_staged(root)
             self.assertIs(ci.harness.audit_and_redis, original)
             self.assertFalse((root/'work/changed-image-upgrade-evidence.json').exists())
 
@@ -121,7 +250,7 @@ class ChangedImageUpgradeTests(unittest.TestCase):
                  mock.patch.object(ci.sessions, 'verify_restored'), \
                  mock.patch.object(ci, 'restore_post_update', side_effect=restore), \
                  mock.patch.dict(os.environ, env, clear=True):
-                ci.main()
+                ci.run_staged(root)
             self.assertEqual(events, ['hmac-audit-write', 'hmac-audit-check', 'restore', 'hmac-audit-read'])
             report = json.loads((root/'work/changed-image-upgrade-evidence.json').read_text())
             self.assertTrue(report['guardrail_and_agent_image_digests_changed'])
@@ -152,7 +281,7 @@ class ChangedImageUpgradeTests(unittest.TestCase):
                  mock.patch.object(ci.sessions, 'verify_restored'), \
                  mock.patch.object(ci, 'restore_post_update', side_effect=restore), mock.patch.dict(os.environ, env, clear=True):
                 with self.assertRaisesRegex(ci.CheckFailure, '^LEGACY_SESSION_COMPATIBILITY_NOT_PRESERVED$'):
-                    ci.main()
+                    ci.run_staged(root)
             report = json.loads((root/'work/changed-image-upgrade-evidence.json').read_text())
             self.assertEqual(report['session_identity']['legacy_alias_history_automatically_accessible'], 'no')
 

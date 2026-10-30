@@ -72,6 +72,10 @@ jobs:
           done
       - name: Install tooling
         run: |
+          # The root-owned isolated stage uses the distro interpreter, not the
+          # runner-owned virtual environment. Ensure distro venv/ensurepip exists.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-venv > /dev/null
           python3 -m venv .venv
           .venv/bin/pip install -r requirements.txt
           curl -fsSLO https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz
@@ -107,7 +111,7 @@ jobs:
           test "$GITHUB_ACTIONS" = true
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test "$RUNNER_OS" = Linux
-          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS,GITHUB_WORKSPACE,BACKEND,UTER_CI_RELEASE_MODE,UTER_CI_STRICT_RUNNER,UTER_CI_OLD_VERSION,UTER_CI_NEW_VERSION,UTER_CI_OLD_TAG,UTER_CI_NEW_TAG,OLD_SIGNED_BUNDLE_PATH,NEW_SIGNED_BUNDLE_PATH,PUBLISHER_KEY_PATH \
+          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_SHA,RUNNER_ENVIRONMENT,RUNNER_OS,GITHUB_WORKSPACE,BACKEND,UTER_CI_RELEASE_MODE,UTER_CI_STRICT_RUNNER,UTER_CI_OLD_VERSION,UTER_CI_NEW_VERSION,UTER_CI_OLD_TAG,UTER_CI_NEW_TAG,OLD_SIGNED_BUNDLE_PATH,NEW_SIGNED_BUNDLE_PATH,PUBLISHER_KEY_PATH \
             "$PWD/.venv/bin/python" scripts/verify_changed_image_upgrade_ci.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
