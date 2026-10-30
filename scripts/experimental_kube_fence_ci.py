@@ -22,13 +22,18 @@ PASS = 'synthetic-only-password'
 LABEL = 'app=synthetic-redis'
 PHASE = 'initialization'
 OLD_CLIENT = r'''
-import socket,sys
-s=socket.create_connection(('synthetic-redis',6379),timeout=10);s.settimeout(10)
+import socket,sys,time
+for attempt in range(40):
+ try:
+  s=socket.create_connection((sys.argv[1],6379),timeout=2);break
+ except (OSError,TimeoutError):time.sleep(.25)
+else:raise SystemExit('FIXTURE_CONNECTION_FAILED')
+s.settimeout(10)
 def req(*xs):
  b=b'*%d\r\n'%len(xs)+b''.join(b'$%d\r\n'%len(x.encode())+x.encode()+b'\r\n' for x in xs)
  s.sendall(b);return s.recv(1024)
-assert req('AUTH','synthetic-only-password').startswith(b'+OK')
-assert req('SET','synthetic:pre-fence','before').startswith(b'+OK')
+if not req('AUTH','synthetic-only-password').startswith(b'+OK'):raise SystemExit('FIXTURE_AUTH_FAILED')
+if not req('SET','synthetic:pre-fence','before').startswith(b'+OK'):raise SystemExit('FIXTURE_WRITE_FAILED')
 print('READY',flush=True);sys.stdin.readline()
 try:
  r=req('SET','synthetic:pre-fence','after')
@@ -56,6 +61,16 @@ def command(argv, *, env, data=None, timeout=180):
 def marker_valid(marker, old_uid):
     """Only a synthetic fixture assertion, never a real-world proof."""
     return bool(re.fullmatch(r'[a-z0-9-]{1,64}', old_uid) and marker == old_uid)
+
+
+def client_failure_category(stderr):
+    """Expose only fixed synthetic categories, never the raw kubectl error."""
+    for marker in ('FIXTURE_CONNECTION_FAILED', 'FIXTURE_AUTH_FAILED', 'FIXTURE_WRITE_FAILED'):
+        if marker.encode() in stderr:
+            return marker
+    if b'Error from server' in stderr: return 'KUBECTL_EXEC_FAILED'
+    if b'Traceback' in stderr: return 'FIXTURE_EXCEPTION'
+    return 'NO_FIXED_DIAGNOSTIC'
 
 
 def deployment(hanging=False, bind='0.0.0.0'):
@@ -151,21 +166,25 @@ def main():
                            'command':['python','-c','import time;time.sleep(900)']}]}})
             PHASE='fixtures-ready'
             ready();k('wait','--for=condition=Ready','pod/client','--timeout=180s')
-            old,old_uid,_=current()
+            old,old_uid,old_ip=current()
+            if redis(old,'PING')!='PONG': raise RuntimeError('synthetic old Redis not ready')
             PHASE='old-client-connect'
-            proc=subprocess.Popen(kube+['exec','-i','client','--','python','-u','-c',OLD_CLIENT],
-                                  env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
+            proc=subprocess.Popen(kube+['exec','-i','client','--','python','-u','-c',OLD_CLIENT,old_ip],
+                                  env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             selector=selectors.DefaultSelector();selector.register(proc.stdout,selectors.EVENT_READ)
-            if not selector.select(20) or proc.stdout.readline().strip()!='READY':
-                raise RuntimeError('synthetic established connection failed')
+            if not selector.select(30) or proc.stdout.readline().strip()!=b'READY':
+                if proc.poll() is None: proc.kill()
+                _, diagnostic=proc.communicate(timeout=10)
+                proc=None
+                raise RuntimeError('synthetic established connection failed: '+client_failure_category(diagnostic))
             PHASE='fenced-rollout'
             set_template(False,'127.0.0.1');ready()
             new,new_uid,ip=current()
             if new_uid==old_uid or old in [p['metadata']['name'] for p in json.loads(k('get','pods','-l',LABEL,'-o','json'))['items']]:
                 raise RuntimeError('old synthetic pod still exists')
             PHASE='old-client-disconnect'
-            proc.stdin.write('check\n');proc.stdin.flush()
-            if not selector.select(20) or proc.stdout.readline().strip()!='CLOSED' or proc.wait(timeout=5):
+            proc.stdin.write(b'check\n');proc.stdin.flush()
+            if not selector.select(20) or proc.stdout.readline().strip()!=b'CLOSED' or proc.wait(timeout=5):
                 raise RuntimeError('old synthetic connection did not close')
             proc=None
             PHASE='shutdown-marker-and-aof'

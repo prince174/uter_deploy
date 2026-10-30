@@ -34,6 +34,12 @@ class SyntheticKubernetesFenceTests(unittest.TestCase):
                 experiment.main()
             command.assert_not_called()
 
+    def test_client_diagnostics_are_bounded_categories_without_raw_output(self):
+        self.assertEqual(experiment.client_failure_category(b'FIXTURE_AUTH_FAILED secret'), 'FIXTURE_AUTH_FAILED')
+        self.assertEqual(experiment.client_failure_category(b'Error from server: secret'), 'KUBECTL_EXEC_FAILED')
+        self.assertEqual(experiment.client_failure_category(b'Traceback: private data'), 'FIXTURE_EXCEPTION')
+        self.assertEqual(experiment.client_failure_category(b'private data'), 'NO_FIXED_DIAGNOSTIC')
+
 
 if __name__ == '__main__':
     unittest.main()
