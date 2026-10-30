@@ -21,6 +21,16 @@ from scripts import (backup_installation, kubernetes_audit_reader_plan as audit_
 class StartError(ValueError):pass
 
 
+def _require_maintenance_proof(session, operation):
+    """Block fresh operations until ingress, restart and receipt proof exists.
+
+    Previous zero-exit observation does not prove application quiescence.
+    Recovery of operations already started uses separate recovery code and is
+    deliberately unaffected. This gate cannot be disabled by CLI input.
+    """
+    raise StartError('KUBE_MAINTENANCE_PROOF_REQUIRED')
+
+
 def _wait(check,timeout):
     deadline=time.monotonic()+timeout
     while time.monotonic()<deadline:
@@ -40,6 +50,7 @@ def start(session,operation,*,timeout=180):
         plan=finalizer.read_plan(home)
         finalizer._check_journal(home,plan,operation,'prepared')
         session.reverify()
+        _require_maintenance_proof(session,operation)
         writers.prepare(home,session,operation,session.writer_uids,key)
         for service in writers.SERVICES:writer_finalizer.prepare(home,session,operation,service,key)
         recovery.seal_before_mutation(session,operation,key)
@@ -61,4 +72,5 @@ def start(session,operation,*,timeout=180):
         redis_release.release(home,session,operation,key)
         return {'redis_finalizer_release_requested':True,'complete_backup':False,
                 'redis_isolated':False,'safe_to_backup':False,'safe_to_update':False}
+    except StartError:raise
     except Exception:raise StartError('KUBE_START_UNCERTAIN_INSPECTION_REQUIRED') from None

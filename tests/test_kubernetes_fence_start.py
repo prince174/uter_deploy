@@ -14,6 +14,7 @@ class StartSequenceTests(unittest.TestCase):
     def test_happy_sequence_never_authorizes_backup_or_update(self):
         from contextlib import ExitStack
         with ExitStack() as stack:
+            stack.enter_context(patch.object(start,'_require_maintenance_proof'))
             stack.enter_context(patch.object(start.backup_installation,'safe_file',return_value=b'k'*32))
             stack.enter_context(patch.object(start.finalizer,'read_plan',return_value={}))
             stack.enter_context(patch.object(start.finalizer,'_check_journal'))
@@ -37,9 +38,19 @@ class StartSequenceTests(unittest.TestCase):
             with self.assertRaises(start.StartError):start.start(self.session,self.operation)
             stop.assert_not_called()
 
+    def test_new_operation_is_blocked_before_workload_mutation_without_proof(self):
+        with patch.object(start.backup_installation,'safe_file',return_value=b'k'*32), \
+             patch.object(start.finalizer,'read_plan',return_value={}), \
+             patch.object(start.finalizer,'_check_journal'), \
+             patch.object(start.writer_finalizer,'hold') as hold, patch.object(start.writers,'stop') as stop:
+            with self.assertRaisesRegex(start.StartError, 'KUBE_MAINTENANCE_PROOF_REQUIRED'):
+                start.start(self.session,self.operation)
+            hold.assert_not_called(); stop.assert_not_called()
+
     def test_uncertain_stop_is_not_retried(self):
         from contextlib import ExitStack
         with ExitStack() as stack:
+            stack.enter_context(patch.object(start,'_require_maintenance_proof'))
             stack.enter_context(patch.object(start.backup_installation,'safe_file',return_value=b'k'*32))
             stack.enter_context(patch.object(start.finalizer,'read_plan',return_value={}))
             stack.enter_context(patch.object(start.finalizer,'_check_journal'))
