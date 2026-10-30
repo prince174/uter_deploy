@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import struct
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -48,7 +49,7 @@ class NamespaceFenceTests(unittest.TestCase):
         popen.assert_not_called()
 
     def test_rejects_every_host_or_daemon_namespace_and_changed_daemon(self):
-        self.adapter.fd=40;self.adapter.daemon_fd=41;self.adapter.daemon_pid=99
+        self.adapter.fd=40;self.adapter.daemon_fd=41;self.adapter.daemon_pidfd=42;self.adapter.daemon_pid=99
         def entry(ino):return SimpleNamespace(st_dev=1,st_ino=ino)
         for conflict in ('self','init','daemon'):
             with self.subTest(conflict=conflict):
@@ -56,11 +57,27 @@ class NamespaceFenceTests(unittest.TestCase):
                     return entry(7 if ((conflict=='self' and str(path)=='/proc/self/ns/net') or
                                        (conflict=='init' and str(path)=='/proc/1/ns/net')) else 2)
                 def fstat(fd):return entry(7 if fd==40 or conflict=='daemon' else 2)
-                with mock.patch.object(self.adapter,'_daemon_identity',return_value=99), \
+                with mock.patch.object(self.adapter,'_daemon_identity',return_value=99),mock.patch.object(ns.select,'select',return_value=([],[],[])), \
                      mock.patch.object(ns.os,'stat',side_effect=stat),mock.patch.object(ns.os,'fstat',side_effect=fstat):
                     with self.assertRaisesRegex(ns.NamespaceFenceError,'HOST_NAMESPACE_REJECTED'):self.adapter._fd_nonhost()
-        with mock.patch.object(self.adapter,'_daemon_identity',return_value=100):
+        with mock.patch.object(self.adapter,'_daemon_identity',return_value=100),mock.patch.object(ns.select,'select',return_value=([],[],[])):
             with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_UNVERIFIED'):self.adapter._fd_nonhost()
+        with mock.patch.object(ns.select,'select',return_value=([42],[],[])):
+            with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_UNVERIFIED'):self.adapter._fd_nonhost()
+
+    def test_daemon_socket_is_retained_and_dead_or_noisy_peer_is_rejected(self):
+        peer=mock.Mock();peer.getsockopt.return_value=struct.pack('3i',99,0,0)
+        self.adapter.daemon_socket=peer
+        with mock.patch.object(ns.Path,'read_text',return_value='dockerd\n'), \
+             mock.patch.object(ns.os,'stat',return_value=SimpleNamespace(st_dev=1,st_ino=4)), \
+             mock.patch.object(ns.select,'select',return_value=([],[],[])):
+            self.assertEqual(self.adapter._daemon_identity(),99)
+            peer.close.assert_not_called()
+        for content in (b'',b'unexpected'):
+            peer.recv.return_value=content
+            with self.subTest(content=content),mock.patch.object(ns.select,'select',return_value=([peer],[],[])):
+                with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_UNVERIFIED'):self.adapter._daemon_identity()
+        self.adapter.close();peer.close.assert_called_once()
 
     def test_extra_loopback_process_wrong_child_namespace_and_capabilities_are_rejected(self):
         self.adapter.net_identity=(1,7);self.adapter.redis_pid=42

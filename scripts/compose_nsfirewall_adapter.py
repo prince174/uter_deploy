@@ -30,19 +30,30 @@ class NamespaceFenceError(ValueError): pass
 class Adapter(compose.Adapter):
     def __init__(self, home, bundle, publisher_key, backup_key):
         super().__init__(home,bundle,publisher_key,backup_key)
-        self.fd=None;self.daemon_fd=None;self.daemon_pid=None;self.net_identity=None;self.initial_rules=None;self.initial_hash=None
+        self.fd=None;self.daemon_fd=None;self.daemon_pidfd=None;self.daemon_socket=None;self.daemon_pid=None;self.net_identity=None;self.initial_rules=None;self.initial_hash=None
         self.operation=None;self.redis_pid=None;self.installed=False;self.release_permit=None
 
     def close(self):
         """Close only the local FD; never silently remove or change firewall."""
         if self.fd is not None:os.close(self.fd);self.fd=None
         if self.daemon_fd is not None:os.close(self.daemon_fd);self.daemon_fd=None
+        if self.daemon_pidfd is not None:os.close(self.daemon_pidfd);self.daemon_pidfd=None
+        if self.daemon_socket is not None:self.daemon_socket.close();self.daemon_socket=None
 
     def _daemon_identity(self):
         """Require a visible root-owned dockerd peer for the local Unix socket."""
-        peer=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
         try:
-            peer.settimeout(3);peer.connect('/var/run/docker.sock')
+            if self.daemon_socket is None:
+                self.daemon_socket=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+                self.daemon_socket.settimeout(3);self.daemon_socket.connect('/var/run/docker.sock')
+            peer=self.daemon_socket
+            readable,_,exceptional=select.select([peer],[],[peer],0)
+            if exceptional:raise ValueError
+            if readable:
+                try:peek=peer.recv(1,socket.MSG_PEEK|socket.MSG_DONTWAIT)
+                except BlockingIOError:peek=None
+                # No protocol bytes are expected; EOF also means the peer died.
+                if peek is not None:raise ValueError
             pid,uid,_=struct.unpack('3i',peer.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
             if uid!=0 or pid<=1:raise ValueError
             proc=Path('/proc')/str(pid)
@@ -52,11 +63,12 @@ class Adapter(compose.Adapter):
             return pid
         except (OSError,ValueError,UnicodeError,struct.error):
             raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED') from None
-        finally:peer.close()
 
     def _fd_nonhost(self):
         if self.fd is None:raise NamespaceFenceError('NS_FENCE_FD_UNAVAILABLE')
-        if self.daemon_fd is None or self._daemon_identity()!=self.daemon_pid:
+        if (self.daemon_fd is None or self.daemon_pidfd is None
+                or select.select([self.daemon_pidfd],[],[],0)[0]
+                or self._daemon_identity()!=self.daemon_pid):
             raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED')
         value=os.fstat(self.fd)
         blocked=(os.stat('/proc/self/ns/net'),os.stat('/proc/1/ns/net'),os.fstat(self.daemon_fd))
@@ -201,6 +213,11 @@ class Adapter(compose.Adapter):
         self.redis_pid=state['pid'];self.operation=record['operation']
         try:
             self.daemon_pid=self._daemon_identity()
+            # A pidfd pins the checked process identity and detects exit even
+            # if its numeric PID is immediately recycled.
+            self.daemon_pidfd=os.pidfd_open(self.daemon_pid,0)
+            if select.select([self.daemon_pidfd],[],[],0)[0] or self._daemon_identity()!=self.daemon_pid:
+                raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED')
             self.daemon_fd=os.open('/proc/'+str(self.daemon_pid)+'/ns/net',os.O_RDONLY)
             self.fd=os.open('/proc/'+str(self.redis_pid)+'/ns/net',os.O_RDONLY)
             self.net_identity=self._fd_nonhost()
