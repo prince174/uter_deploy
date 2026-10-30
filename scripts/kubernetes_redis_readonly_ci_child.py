@@ -70,6 +70,10 @@ if __name__ == '__main__':
                  'KUBE_PREFLIGHT_INSTALLATION_UNVERIFIED','KUBE_PREFLIGHT_IDENTITY_UNVERIFIED',
                  'KUBE_FINALIZER_PLAN_MISMATCH','KUBE_FINALIZER_JOURNAL_MISMATCH'}
         code=str(error) if str(error) in allowed else 'UNCLASSIFIED'
+        stage=getattr(error,'stage',None)
+        stages={prefix+'_'+suffix for prefix in ('ARGUMENTS','SESSION','CREDENTIAL','BINARY','SPAWN','AUTH','IDENTITY')
+                for suffix in ('TIMEOUT','INVALID')}
+        if stage in stages: code='TRANSPORT_'+stage
         print('READONLY_TRANSPORT_DETAIL_'+code)
         print('READONLY_TRANSPORT_REFUSED_'+PHASE)
         raise SystemExit(1)

@@ -26,7 +26,8 @@ _ALLOWED=frozenset((('INFO','SERVER'),('INFO','REPLICATION'),('INFO','PERSISTENC
 
 
 class ReadonlyTransportError(ValueError):
-    pass
+    def __init__(self,code,stage='UNVERIFIED'):
+        super().__init__(code);self.stage=stage
 
 
 def _cleanup(process):
@@ -108,37 +109,40 @@ class Connection:
 @contextmanager
 def connect(session,operation,admin_user,credential_path,expected_run_id):
     """Open a newly authenticated fixed read-only session, never a recovery grant."""
-    process=None
+    process=None;stage='ARGUMENTS'
     try:
         if (type(session) is not coordinator.BoundSession or session._executor is None
                 or not isinstance(admin_user,str) or not re.fullmatch(r'uter-maint-[a-z0-9]{1,24}',admin_user)
                 or not isinstance(expected_run_id,str) or not re.fullmatch(r'[0-9a-f]{40}',expected_run_id)):
             raise ValueError
-        session._guard();session.reverify()
+        stage='SESSION';session._guard();session.reverify()
         plan=finalizer.read_plan(session.home)
         finalizer._check_journal(session.home,plan,operation,'prepared')
         redis_acl_operation_inspection._verify_plan_pod(session,plan)
-        secret_path=backup_installation.checked_existing_path(credential_path)
+        stage='CREDENTIAL';secret_path=backup_installation.checked_existing_path(credential_path)
         if secret_path.is_relative_to(Path(session.home).resolve()) or secret_path.is_relative_to(Path(session._inner.bundle).resolve()):
             raise ValueError
         secret=backup_installation.safe_file(secret_path,private=True,limit=128).decode('ascii').strip()
         if not re.fullmatch(r'[0-9a-f]{64}',secret): raise ValueError
-        api=session._inner.api;binary,config=api.binary_fd,session._inner.config_fd
+        stage='BINARY';api=session._inner.api;binary,config=api.binary_fd,session._inner.config_fd
         kubernetes_trusted_kubectl.verify(binary,session._record['kubectl_sha256'])
         kubernetes_sealed_config.verify_sealed(config,session.config_sha256)
         command=['/proc/self/fd/'+str(binary),'--kubeconfig=/proc/self/fd/'+str(config),
                  '--context='+api.context,'--namespace='+session.site,'--request-timeout=180s',
                  'exec','-i','pod/'+plan['pod'],'-c','redis','--','redis-cli','--json']
-        process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+        stage='SPAWN';process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
             env=dict(kubernetes_trusted_kubectl.ENV),pass_fds=(binary,config),start_new_session=True,bufsize=0)
         connection=Connection(process,session,plan,operation,expected_run_id)
+        stage='AUTH';
         if connection._exchange(('AUTH',admin_user,secret)) != 'OK': raise ValueError
         del secret
+        stage='IDENTITY'
         connection._scope();connection.client_id=connection._identity();connection._scope()
         yield connection
     except GeneratorExit:
         raise
-    except Exception:
-        raise ReadonlyTransportError('KUBE_REDIS_READONLY_UNVERIFIED') from None
+    except Exception as error:
+        category='TIMEOUT' if isinstance(error,TimeoutError) else 'INVALID'
+        raise ReadonlyTransportError('KUBE_REDIS_READONLY_UNVERIFIED',stage+'_'+category) from None
     finally:
         if process is not None: _cleanup(process)
