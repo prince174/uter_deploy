@@ -35,5 +35,11 @@ class ACLProductFixtureGuardTests(unittest.TestCase):
         with patch.object(image_integration.subprocess,'run',side_effect=[result(state),result(b'FATAL CONFIG FILE ERROR SECRET')]):
             self.assertEqual(image_integration.acl_startup_failure(['docker'],{}),'STARTUP_REDIS_CONFIG_INVALID')
 
+    def test_redis_health_diagnostic_classifies_without_exposing_output(self):
+        state=b'[{"Service":"redis","State":"running","Health":"unhealthy","ID":"aaaaaaaaaaaa"}]'
+        result=lambda value: type('Result',(),{'stdout':value})()
+        with patch.object(image_integration.subprocess,'run',side_effect=[result(state),result(b''),result(b'WRONGPASS secret')]):
+            self.assertEqual(image_integration.acl_startup_failure(['docker'],{}),'STARTUP_REDIS_HEALTH_AUTH_REJECTED')
+
 
 if __name__ == '__main__': unittest.main()

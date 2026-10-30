@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import subprocess
@@ -62,7 +63,18 @@ def acl_startup_failure(cmd, env):
             if not matches: return 'STARTUP_'+service.upper()+'_MISSING'
             if len(matches) != 1: return 'STARTUP_'+service.upper()+'_AMBIGUOUS'
             if matches[0].get('State') != 'running': return 'STARTUP_'+service.upper()+'_NOT_RUNNING'
-            if matches[0].get('Health') == 'unhealthy': return 'STARTUP_'+service.upper()+'_UNHEALTHY'
+            if matches[0].get('Health') == 'unhealthy':
+                if service == 'redis':
+                    ident=matches[0].get('ID','')
+                    if isinstance(ident,str) and re.fullmatch(r'[0-9a-f]{12,64}',ident):
+                        raw=subprocess.run(['docker','--context','default','inspect','--format',
+                            '{{json .State.Health}}',ident],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                            timeout=30,check=True).stdout.upper()
+                        for marker,code in ((b'WRONGPASS','AUTH_REJECTED'),(b'NOAUTH','AUTH_REQUIRED'),
+                                            (b'NOPERM','COMMAND_DENIED'),(b'COULD NOT CONNECT','CONNECT_FAILED'),
+                                            (b'NO SUCH FILE','FILE_MISSING'),(b'PERMISSION DENIED','FILE_DENIED')):
+                            if marker in raw: return 'STARTUP_REDIS_HEALTH_'+code
+                return 'STARTUP_'+service.upper()+'_UNHEALTHY'
         return 'STARTUP_NOT_READY'
     except Exception:
         return 'STARTUP_STATUS_UNAVAILABLE'
