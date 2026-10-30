@@ -29,6 +29,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 ROOT=Path(__file__).resolve().parents[1]
 PHASE='GUARD'
 PHASES=frozenset(('GUARD','ASSETS','PAIR','PREPARE','INSTALL','ADOPT','SEED','APPLY','FINISH','VERIFY','CRASH'))
+INSTALL_CODES=frozenset({'INSTALL_IMAGES_MISSING','INSTALL_INSPECTION_UNCERTAIN','INSTALL_DOCKER_OTHER'} |
+    {'INSTALL_'+service+'_'+kind for service in ('REDIS','AGENT','GUARDRAIL')
+     for kind in ('MISSING','STOPPED','OOM','UNHEALTHY','STARTING')})
 
 
 class Failure(ValueError): pass
@@ -94,6 +97,35 @@ def redis_command(identifier,*args):
     return run(['docker','--context','default','exec',identifier,'sh','-ec',command,'ci',*args]).strip()
 
 
+def install_failure_category(home,cfg):
+    """Read only exact fixture resources and emit only a fixed failure code."""
+    try:
+        if cfg.get('name')!='uter-fenced-synthetic-ci' or cfg.get('backend')!='compose':
+            return 'INSTALL_INSPECTION_UNCERTAIN'
+        for image in cfg['images'].values():
+            result=subprocess.run(['docker','--context','default','image','inspect',image],
+                                  stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+            if result.returncode:return 'INSTALL_IMAGES_MISSING'
+        cmd,env=install.commands(home,cfg)
+        for service in ('redis','agent','guardrail'):
+            ident=run(cmd+['ps','--all','-q',service],env=env,timeout=30).decode().strip()
+            prefix='INSTALL_'+service.upper()+'_'
+            if not ident:return prefix+'MISSING'
+            if not re.fullmatch(r'[0-9a-f]{12,64}',ident):return 'INSTALL_INSPECTION_UNCERTAIN'
+            fmt=('{"running":{{json .State.Running}},"oom":{{json .State.OOMKilled}},'
+                 '"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}')
+            state=json.loads(run(['docker','--context','default','inspect','--format',fmt,ident],timeout=30))
+            if not isinstance(state,dict) or type(state.get('oom')) is not bool or type(state.get('running')) is not bool:
+                return 'INSTALL_INSPECTION_UNCERTAIN'
+            if state['oom']:return prefix+'OOM'
+            if not state['running']:return prefix+'STOPPED'
+            if state.get('health')=='unhealthy':return prefix+'UNHEALTHY'
+            if state.get('health')=='starting':return prefix+'STARTING'
+            if state.get('health') not in (None,'healthy'):return 'INSTALL_INSPECTION_UNCERTAIN'
+        return 'INSTALL_DOCKER_OTHER'
+    except Exception:return 'INSTALL_INSPECTION_UNCERTAIN'
+
+
 def exercise(mode):
     global PHASE
     if mode not in ('normal','kill-target','fail-state'):raise Failure('MODE_INVALID')
@@ -124,7 +156,10 @@ def exercise(mode):
               '--inputs',work/'input/published-old','--llm-url',f'http://{gateway}:8080',
               '--llm-model','test-model','--llm-key-file',llm_key,'--allow-http-llm','--guardrail-cpus','2']
         PHASE='PREPARE';run(args);run([sys.executable,installer,'check','--home',home])
-        PHASE='INSTALL';run([sys.executable,installer,'install','--home',home])
+        PHASE='INSTALL'
+        try:run([sys.executable,installer,'install','--home',home])
+        except Failure:
+            PHASE=install_failure_category(home,uterctl.read(home/'install.json'));raise
         PHASE='ADOPT';adopt_managed.adopt(home,old,product_key)
         PHASE='SEED'
         cfg=uterctl.read(home/'install.json');cmd,env=install.commands(home,cfg)
@@ -167,6 +202,10 @@ def exercise(mode):
                 raise Failure('REDIS_CHANGED')
             with urllib.request.urlopen('http://127.0.0.1:18000/ready',timeout=30) as response:
                 if response.status!=200:raise Failure('HEALTH_FAILED')
+            # Existing runtime-owned acceptance exercises auth, health and chat
+            # with the local synthetic upstream; its output is never exposed.
+            run([sys.executable,home/'runtime/uter_managed_smoke.py'],timeout=300)
+            if redis_command(redis,'GET','uter:ci:synthetic-update')!=b'retained':raise Failure('REDIS_CHANGED')
         else:
             PHASE='CRASH'
             process=subprocess.Popen([str(x) for x in command],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -184,6 +223,10 @@ def exercise(mode):
                 if not journal.blocks_mutation(home) or not (home/journal.UPDATE_START).is_file():
                     raise Failure('CRASH_BARRIER_INVALID')
                 backup_store.verify_set(backup,backup_crypto.read_key(key),home=home,site=uterctl.site_config(home),version=before['version'])
+                # Observation only: Docker may still be finishing the request;
+                # this does not authorize retry or restoration over new writes.
+                if redis_identity(redis)!=identity or redis_command(redis,'GET','uter:ci:synthetic-update')!=b'retained':
+                    raise Failure('CRASH_REDIS_CHANGED')
             finally:
                 if process.poll() is None:process.kill();process.wait(timeout=30)
         print('SYNTHETIC_SAME_IMAGE_'+mode.upper().replace('-','_')+'_PASS',flush=True)
@@ -213,8 +256,8 @@ def main():
         child=subprocess.run([str(python),'-I','-B',str(stage/'scripts/compose_fenced_update_e2e_ci.py'),'--staged'],
                              env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=3300)
         if child.returncode:
-            match=re.fullmatch(rb'SYNTHETIC_FENCED_UPDATE_CI_([A-Z]+)_FAILED\r?\n',child.stderr)
-            phase=match.group(1).decode('ascii') if match and match.group(1).decode('ascii') in PHASES else 'GUARD'
+            match=re.fullmatch(rb'SYNTHETIC_FENCED_UPDATE_CI_([A-Z_]+)_FAILED\r?\n',child.stderr)
+            phase=match.group(1).decode('ascii') if match and match.group(1).decode('ascii') in PHASES|INSTALL_CODES else 'GUARD'
             raise Failure(phase)
     print('Synthetic same-image CI passed; no product-image upgrade or migration was tested.')
 
@@ -222,5 +265,5 @@ def main():
 if __name__=='__main__':
     try:main()
     except Exception as error:
-        phase=str(error) if str(error) in PHASES else PHASE
+        phase=str(error) if str(error) in PHASES|INSTALL_CODES else PHASE
         print('SYNTHETIC_FENCED_UPDATE_CI_'+phase+'_FAILED',file=sys.stderr);sys.exit(1)

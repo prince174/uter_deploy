@@ -45,6 +45,20 @@ class SyntheticUpdateCITests(unittest.TestCase):
         self.assertEqual(inspect(original),inspect(reordered))
         self.assertNotEqual(inspect(original),inspect(changed))
 
+    def test_install_diagnostic_rejects_untrusted_state_without_exposing_it(self):
+        cfg={'name':'uter-fenced-synthetic-ci','backend':'compose',
+             'images':{name:'example/'+name+'@sha256:'+'a'*64 for name in ('redis','agent','guardrail')}}
+        success=mock.Mock(returncode=0)
+        with mock.patch.object(ci.subprocess,'run',return_value=success), \
+             mock.patch.object(ci.install,'commands',return_value=(['docker','compose','-p',cfg['name']],{})), \
+             mock.patch.object(ci,'run',side_effect=[b'a'*64,b'{"running":true,"oom":false,"health":"secret-canary"}']):
+            code=ci.install_failure_category(self.root,cfg)
+        self.assertEqual(code,'INSTALL_INSPECTION_UNCERTAIN')
+        self.assertIn(code,ci.INSTALL_CODES);self.assertNotIn('secret',code.lower())
+        with mock.patch.object(ci.subprocess,'run') as docker:
+            self.assertEqual(ci.install_failure_category(self.root,dict(cfg,name='wrong')),'INSTALL_INSPECTION_UNCERTAIN')
+            docker.assert_not_called()
+
     @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('cc'), 'LD_PRELOAD fault requires Linux and C compiler')
     def test_fault_injection_is_scoped_to_state_in_selected_directory(self):
         shim=self.root/'fault.so'
