@@ -50,7 +50,7 @@ def source_snapshot(root, expected, normalize_crlf=False):
     return baseline, patch, hashlib.sha256(patch).hexdigest()
 
 
-def run(root, baseline, normalize_crlf=False):
+def run(root, baseline, normalize_crlf=False, maintenance_files=False):
     # A random name separates concurrent runs. Never overwrite even on a
     # practically impossible collision with a pre-existing secret.
     secret = SECRET_PREFIX + secrets.token_hex(16).upper()
@@ -69,7 +69,7 @@ def run(root, baseline, normalize_crlf=False):
         del patch
         out = command([GH, 'workflow', 'run', WORKFLOW, '--repo', REPO, '--ref', 'main',
                        '-f', 'baseline_sha='+baseline, '-f', 'patch_sha256='+digest,
-                       '-f', 'secret_name='+secret]).decode('utf-8')
+                       '-f', 'secret_name='+secret, '-f', 'maintenance_files='+str(maintenance_files).lower()]).decode('utf-8')
         match = re.search(r'https://github\.com/prince174/uter_deploy/actions/runs/([0-9]+)', out)
         if not match:
             raise RuntimeError('Workflow dispatched but its run ID was not returned')
@@ -97,8 +97,9 @@ def main():
     p.add_argument('--source-root', type=Path, required=True)
     p.add_argument('--baseline', required=True)
     p.add_argument('--normalize-crlf', action='store_true', help='Use Git core.autocrlf=true when matching a Windows checkout')
+    p.add_argument('--maintenance-files', action='store_true', help='Allow the reviewed maintenance protocol files in isolated CI')
     args = p.parse_args()
-    run(args.source_root, args.baseline, args.normalize_crlf)
+    run(args.source_root, args.baseline, args.normalize_crlf, args.maintenance_files)
 
 
 if __name__ == '__main__':

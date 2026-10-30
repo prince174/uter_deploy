@@ -14,6 +14,11 @@ on:
         description: Dedicated randomly named temporary snapshot secret
         required: true
         type: string
+      maintenance_files:
+        description: Permit only the four reviewed maintenance protocol files
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -54,6 +59,7 @@ jobs:
           SNAPSHOT_BASE_SHA: ${{ inputs.baseline_sha }}
           SNAPSHOT_PATCH_SHA256: ${{ inputs.patch_sha256 }}
           SOURCE_SNAPSHOT_PATCH_B64: ${{ secrets[inputs.secret_name] }}
+          SNAPSHOT_MAINTENANCE_FILES: ${{ inputs.maintenance_files }}
         run: python scripts/snapshot_source.py > /dev/null
       - name: Scan source checkout for embedded secrets without publishing report
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
@@ -116,6 +122,7 @@ jobs:
           SNAPSHOT_BASE_SHA: ${{ inputs.baseline_sha }}
           SNAPSHOT_PATCH_SHA256: ${{ inputs.patch_sha256 }}
           SOURCE_SNAPSHOT_PATCH_B64: ${{ secrets[inputs.secret_name] }}
+          SNAPSHOT_MAINTENANCE_FILES: ${{ inputs.maintenance_files }}
         run: |
           mkdir -p work/evidence
           python scripts/snapshot_source.py > work/evidence/source-state.json

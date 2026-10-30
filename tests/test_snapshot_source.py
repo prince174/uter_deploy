@@ -39,6 +39,33 @@ class SnapshotTests(unittest.TestCase):
         with self.assertRaises(ValueError): snapshot_source.apply(self.root, 'a'*40, self.digest, self.encoded)
         with self.assertRaises(ValueError): snapshot_source.apply(self.root, self.sha, self.digest, '!secret!')
 
+    def new_file_patch(self, name):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture\n', encoding='utf-8')
+        self.git('add', '-N', '--', name)
+        patch = self.git('diff', '--binary', '--no-ext-diff', '--no-renames', 'HEAD', '--')
+        self.git('reset', '--', name)
+        path.unlink()
+        return patch
+
+    def test_reviewed_maintenance_file_requires_opt_in_and_exact_diff(self):
+        patch = self.new_file_patch('agent/maintenance.py')
+        digest = hashlib.sha256(patch).hexdigest()
+        encoded = base64.b64encode(patch).decode('ascii')
+        with self.assertRaises(ValueError):
+            snapshot_source.apply(self.root, self.sha, digest, encoded)
+        (self.root/'agent/maintenance.py').unlink()
+        state = snapshot_source.apply(self.root, self.sha, digest, encoded, allow_maintenance_files=True)
+        self.assertEqual(state['patch_sha256'], digest)
+        self.assertEqual((self.root/'agent/maintenance.py').read_text(), 'fixture\n')
+
+    def test_unexpected_new_file_is_rejected_even_when_opted_in(self):
+        patch = self.new_file_patch('agent/other.py')
+        with self.assertRaises(ValueError):
+            snapshot_source.apply(self.root, self.sha, hashlib.sha256(patch).hexdigest(),
+                                  base64.b64encode(patch).decode('ascii'), allow_maintenance_files=True)
+
     def test_extra_or_mismatched_provenance_rejected(self):
         valid = {'kind':'uncommitted_patch', 'baseline_commit':self.sha, 'patch_sha256':self.digest}
         self.assertEqual(source_provenance.validate(valid, self.sha), valid)
