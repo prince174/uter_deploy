@@ -11,7 +11,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-from scripts import experimental_operation_lock as lock
+if sys.platform.startswith('linux'):
+    from scripts import experimental_operation_lock as lock
+else:
+    lock = None
 
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'requires local Linux flock and procfs')
