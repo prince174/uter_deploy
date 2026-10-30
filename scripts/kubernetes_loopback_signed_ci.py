@@ -18,6 +18,7 @@ import time
 import uterctl
 from scripts import (adopt_backup_ci, kubernetes_fence_finalizer as finalizer,
                      kubernetes_loopback_intent as loopback_intent,
+                     kubernetes_loopback_recovery as loopback_recovery,
                      kubernetes_redis_identity as identity,
                      kubernetes_redis_identity_ci as snapshot,
                      kubernetes_redis_shutdown as shutdown,
@@ -426,15 +427,26 @@ def _verify(home,bundle,key,manifest):
         # Test-only reconnect: guarded by exact Deployment UID, current RV and
         # loopback args, after which synthetic data is verified and removed.
         PHASE='RECONNECT_PATCH'
-        dep=snapshot._query(['-n',SITE,'get','deployment',DEPLOYMENT]);meta=dep['metadata']
-        if not isinstance(meta.get('resourceVersion'),str) or not re.fullmatch(r'[0-9]{1,32}',meta['resourceVersion']):
+        loopback_recovery.prepare(home,plan,operation,api)
+        real_patch=api.patch_deployment
+        calls={'attempted':0,'succeeded':0}
+        def timeout_after_reconnect(name,ops):
+            calls['attempted']+=1;real_patch(name,ops);calls['succeeded']+=1
+            raise TimeoutError('synthetic after-success fault')
+        api.patch_deployment=timeout_after_reconnect
+        try:
+            try:loopback_recovery.request(home,plan,operation,api)
+            except loopback_recovery.RecoveryError:pass
+            else:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
+            if calls!={'attempted':1,'succeeded':1}:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
+            try:loopback_recovery.request(home,plan,operation,api)
+            except loopback_recovery.RecoveryError:pass
+            else:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
+            if calls!={'attempted':1,'succeeded':1}:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
+        finally:api.patch_deployment=real_patch
+        if loopback_recovery.classify(home,plan,operation,api)!= {
+                'state':'original_spec_observed','redis_healthy':False,'safe_to_resume':False}:
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
-        ops=[{'op':'test','path':'/metadata/uid','value':meta['uid']},
-             {'op':'test','path':'/metadata/resourceVersion','value':meta['resourceVersion']},
-             {'op':'test','path':'/spec/template/spec/containers/0/args','value':[LOOPBACK_COMMAND]},
-             {'op':'replace','path':'/spec/template/spec/containers/0/args','value':[identity.COMMAND]}]
-        api._call(['--request-timeout=20s','patch','deployment/'+DEPLOYMENT,'--type=json',
-                   '-p',json.dumps(ops,separators=(',',':'))])
         PHASE='RECONNECT_ROLLOUT'
         rollout()
         PHASE='RECONNECT_DATA'
@@ -461,6 +473,11 @@ def _verify(home,bundle,key,manifest):
         recorded=loopback_intent._read(home)
         if recorded['operation']!=operation:
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+        recovered,_=loopback_recovery._record(home,plan,operation,api)
+        if recovered['operation']!=operation:
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+        (home/loopback_recovery.ATTEMPT_NAME).unlink()
+        (home/loopback_recovery.NAME).unlink()
         (home/loopback_intent.ATTEMPT_NAME).unlink()
         (home/loopback_intent.NAME).unlink()
         (home/journal.NAME).unlink();(home/finalizer.PLAN_NAME).unlink()
