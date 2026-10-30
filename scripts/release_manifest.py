@@ -13,7 +13,7 @@ from uterctl import validate
 from scripts import source_provenance
 
 
-def make_manifest(inputs, version, data_epoch, upgrade_from):
+def make_manifest(inputs, version, data_epoch, upgrade_from, *, session_identity_gate=False):
     inputs = Path(inputs)
     images = json.loads((inputs / 'images.json').read_text(encoding='utf-8'))
     publication = json.loads((inputs / 'publication.json').read_text(encoding='utf-8'))
@@ -30,6 +30,11 @@ def make_manifest(inputs, version, data_epoch, upgrade_from):
     manifest = {'schema': 1, 'config_schema': 1, 'tooling_schema': 1, 'status': 'released',
                 'version': version, 'source_commit': sha, 'data_epoch': data_epoch,
                 'upgrade_from': upgrade_from, 'images': images, 'image_config_ids': ids}
+    if session_identity_gate:
+        if data_epoch != 2 or not upgrade_from:
+            raise ValueError('Session identity gate requires epoch 2 and an explicit upgrade source')
+        manifest['session_identity_gate'] = {'schema': 1, 'from_epoch': 1, 'to_epoch': 2,
+                                             'policy': 'block_unverified_sessions'}
     states = [records[service].get('source_state') for service in ('guardrail', 'agent', 'redis')]
     if any(state is not None for state in states):
         if any(state is None for state in states):

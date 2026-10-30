@@ -65,6 +65,14 @@ def validate(m):
         raise ValueError("Optional image_config_ids must cover all images with sha256 IDs")
     if type(m.get("data_epoch")) is not int or m["data_epoch"] < 1:
         raise ValueError("Positive data_epoch required")
+    if 'session_identity_gate' in m:
+        gate = m['session_identity_gate']
+        if (not isinstance(gate, dict) or set(gate) != {'schema', 'from_epoch', 'to_epoch', 'policy'}
+                or type(gate.get('schema')) is not int or gate['schema'] != 1
+                or type(gate.get('from_epoch')) is not int or gate['from_epoch'] != 1
+                or type(gate.get('to_epoch')) is not int or gate['to_epoch'] != 2
+                or gate.get('policy') != 'block_unverified_sessions' or m['data_epoch'] != 2):
+            raise ValueError('Invalid signed session identity gate')
     if not isinstance(m.get("upgrade_from"), list) or any(not VERSION.fullmatch(v) for v in m["upgrade_from"]):
         raise ValueError("Explicit upgrade_from version list required")
     return m
@@ -91,6 +99,8 @@ def verify(folder, key_path):
         raise ValueError("Bundle inventory mismatch (changed, extra or missing file)")
     required=["manifest.json", "compose/compose.yaml", "charts/uter/Chart.yaml"]
     manifest=validate(read(folder / "manifest.json"))
+    if 'session_identity_gate' in manifest:
+        required.append('scripts/session_migration_guard.py')
     if manifest.get('tooling_schema') == 1:
         required += ['uterctl.py','requirements.txt','examples/redis.conf.example','scripts/install.py','scripts/adopt_installation.py',
                      'scripts/backup_crypto.py','scripts/backup_store.py','scripts/backup_snapshot.py',
@@ -110,10 +120,17 @@ def verify(folder, key_path):
 
 
 def transition(old, new):
-    if old and old["version"] != new["version"]:
-        if old["version"] not in new["upgrade_from"]:
-            raise ValueError("Unsupported upgrade path")
-        if old["data_epoch"] != new["data_epoch"]:
+    if not old:
+        return
+    changed = old['version'] != new['version']
+    if changed and old['version'] not in new['upgrade_from']:
+        raise ValueError("Unsupported upgrade path")
+    if old['data_epoch'] != new['data_epoch']:
+        validate(new)
+        expected = {'schema': 1, 'from_epoch': 1, 'to_epoch': 2,
+                    'policy': 'block_unverified_sessions'}
+        if not (changed and old['data_epoch'] == 1 and new['data_epoch'] == 2
+                and new.get('session_identity_gate') == expected):
             raise ValueError("Data migration required; this controller refuses automatic migration")
 
 
@@ -241,7 +258,14 @@ def main(argv=None):
         raise ValueError("Resume requires exactly the pending release")
     if args.command != "rollback":
         transition(state["current"], m)
+    identity_transition = bool(state.get('current') and args.command != 'rollback'
+                               and state['current'].get('data_epoch') == 1
+                               and m.get('data_epoch') == 2
+                               and m.get('session_identity_gate'))
     if args.command == "check":
+        if identity_transition:
+            print('Signed transition checked; session and external-writer checks have not run.')
+            return
         deploy(home, bundle, m, site, check=True)
         print("Bundle and configuration checked; workloads unchanged.")
         return
@@ -257,6 +281,10 @@ def main(argv=None):
             if active["data_epoch"] != m["data_epoch"]:
                 raise ValueError("Rollback requires data restoration; refused")
         adopted = state.get("adopted_installer") is True
+        if identity_transition and (not adopted or args.command != 'apply' or state.get('pending')):
+            raise ValueError('SESSION_MIGRATION_REQUIRES_ADOPTED_IDLE_INSTALLATION')
+        if identity_transition and os.path.lexists(home/'session-migration-block.json'):
+            raise ValueError('SESSION_MIGRATION_BLOCK_MARKER_EXISTS')
         if adopted and state.get("pending") and args.command == "rollback":
             raise ValueError("Adopted pending update requires verified data restoration; automatic rollback is unavailable")
         if (state["current"] or state.get("pending")) and not adopted:
@@ -266,18 +294,22 @@ def main(argv=None):
             if receipt.get("version") != (state.get("pending") or state["current"])["version"] or not receipt.get("backup_id"):
                 raise ValueError("Backup receipt must name active/pending version and backup_id")
         destination = home / "releases" / m["version"]
-        destination.parent.mkdir(exist_ok=True)
-        if destination.exists():
-            verify(destination, args.key)
-            if (destination / "checksums.json").read_bytes() != (bundle / "checksums.json").read_bytes():
-                raise ValueError("Version already exists with different content")
-        else:
-            with tempfile.TemporaryDirectory(dir=destination.parent) as tmp:
-                stage = Path(tmp) / "bundle"
-                shutil.copytree(bundle, stage)
-                verify(stage, args.key)
-                stage.rename(destination)
-        deploy(home, destination, m, site, check=True)
+        # Cross-epoch session migration is currently always fail-closed. Do not
+        # copy a target release or overwrite generated Helm values before the
+        # mandatory backup and guard have made their decision.
+        if not identity_transition:
+            destination.parent.mkdir(exist_ok=True)
+            if destination.exists():
+                verify(destination, args.key)
+                if (destination / "checksums.json").read_bytes() != (bundle / "checksums.json").read_bytes():
+                    raise ValueError("Version already exists with different content")
+            else:
+                with tempfile.TemporaryDirectory(dir=destination.parent) as tmp:
+                    stage = Path(tmp) / "bundle"
+                    shutil.copytree(bundle, stage)
+                    verify(stage, args.key)
+                    stage.rename(destination)
+            deploy(home, destination, m, site, check=True)
         backup_meta = None
         if adopted and state["current"]:
             from scripts import backup_crypto, backup_snapshot, backup_store
@@ -309,6 +341,39 @@ def main(argv=None):
                                                       backup_key, leave_stopped=True)
                 state["last_backup"] = {"id": backup_meta["id"], "path": str(args.backup_dir.resolve()),
                                         "version": backup_meta["version"]}
+                if identity_transition:
+                    from scripts import session_migration_guard
+                    try:
+                        session_migration_guard.classify(home, cfg, site, state['current'])
+                        # There is no approved external-writer fence yet. Even an
+                        # unexpected success must never authorise this transition.
+                        raise session_migration_guard.SessionMigrationBlocked(
+                            session_migration_guard.FENCE_UNVERIFIED)
+                    except BaseException as error:
+                        reason = (str(error) if isinstance(error, session_migration_guard.SessionMigrationBlocked)
+                                  and str(error) in session_migration_guard.REASONS
+                                  else session_migration_guard.SCAN_FAILED)
+                        try:
+                            backup_snapshot.resume_writers(home, cfg, site, current_state['current'])
+                        except BaseException:
+                            # Keep the operation journal for inspection. The
+                            # encrypted backup remains untouched and recoverable.
+                            raise RuntimeError('SESSION_MIGRATION_RESUME_FAILED') from None
+                        (home/'backup-operation.json').unlink(missing_ok=True)
+                        marker = home/'session-migration-block.json'
+                        record = {'schema': 1, 'reason': reason,
+                                  'old_version': current_state['current']['version'], 'new_version': m['version'],
+                                  'backup_id': backup_meta['id'], 'backup_path': str(args.backup_dir.resolve())}
+                        try:
+                            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
+                            fd = os.open(marker, flags, 0o600)
+                            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                                os.fchmod(stream.fileno(), 0o600)
+                                json.dump(record, stream, sort_keys=True)
+                                stream.write('\n')
+                        except OSError:
+                            raise RuntimeError('SESSION_MIGRATION_MARKER_FAILED') from None
+                        raise ValueError(reason) from None
         state["pending"] = m
         try:
             write(state_path, state)

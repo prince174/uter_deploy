@@ -40,7 +40,7 @@ def export_git_snapshot(destination):
     return commit
 
 
-def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expected_fingerprint,output, installation_archive=None):
+def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expected_fingerprint,output, installation_archive=None, *, session_identity_gate=False):
     private=Path(private_key)
     if private.is_symlink() or not private.is_file():raise ValueError('Publisher private key must be a regular file')
     if private.resolve().is_relative_to(Path(__file__).resolve().parents[1]):
@@ -52,7 +52,7 @@ def package(inputs,version,data_epoch,upgrade_from,private_key,public_key,expect
     if actual!=expected_fingerprint.lower():raise ValueError('Publisher public-key fingerprint does not match trusted value')
     output=Path(output)
     if output.exists() or output.is_symlink():raise ValueError('Release output already exists')
-    manifest=release_manifest.make_manifest(inputs,version,data_epoch,upgrade_from)
+    manifest=release_manifest.make_manifest(inputs,version,data_epoch,upgrade_from,session_identity_gate=session_identity_gate)
     if installation_archive is not None:
         archive_path=Path(installation_archive)
         # Compare every archive member with the data used to construct the manifest.
@@ -100,7 +100,8 @@ def main():
     p.add_argument('--installation-archive',type=Path,required=True)
     p.add_argument('--version',required=True);p.add_argument('--data-epoch',type=int,required=True)
     p.add_argument('--upgrade-from',action='append',default=[]);p.add_argument('--expected-fingerprint',required=True)
-    a=p.parse_args();print(json.dumps(package(a.inputs,a.version,a.data_epoch,a.upgrade_from,a.private_key,a.public_key,a.expected_fingerprint,a.output,a.installation_archive),indent=2))
+    p.add_argument('--session-identity-gate', action='store_true', help='Sign the mandatory epoch 1 to 2 session-identity safety barrier')
+    a=p.parse_args();print(json.dumps(package(a.inputs,a.version,a.data_epoch,a.upgrade_from,a.private_key,a.public_key,a.expected_fingerprint,a.output,a.installation_archive,session_identity_gate=a.session_identity_gate),indent=2))
 
 
 if __name__=='__main__':

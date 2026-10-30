@@ -26,6 +26,17 @@ class ReleaseManifestTests(unittest.TestCase):
         self.assertEqual((m['data_epoch'], m['upgrade_from']), (4, ['1.2.2']))
         self.assertEqual(m['images'], self.images)
 
+    def test_session_identity_gate_must_be_an_explicit_epoch_two_release(self):
+        m = make_manifest(self.root, '0.1.7', 2, ['0.1.6'], session_identity_gate=True)
+        self.assertEqual(m['session_identity_gate'], {
+            'schema': 1, 'from_epoch': 1, 'to_epoch': 2, 'policy': 'block_unverified_sessions',
+        })
+        self.assertNotIn('session_identity_gate', make_manifest(self.root, '0.1.6', 1, []))
+        with self.assertRaisesRegex(ValueError, 'requires epoch 2'):
+            make_manifest(self.root, '0.1.7', 1, ['0.1.6'], session_identity_gate=True)
+        with self.assertRaisesRegex(ValueError, 'explicit upgrade source'):
+            make_manifest(self.root, '0.1.7', 2, [], session_identity_gate=True)
+
     def test_refuses_different_source_commits(self):
         self.records['agent']['source_commit'] = 'd'*40
         self.write()
