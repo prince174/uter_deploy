@@ -1,0 +1,24 @@
+name: Probe NGINX graceful drain in disposable namespaces
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Check guard and shell syntax without privileges
+        run: python3 -m unittest tests.test_compose_proxy_drain_probe_ci -v
+      - name: Install network tools and NGINX
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends iproute2 nginx
+          nginx -v
+          dpkg-query -W nginx nginx-common
+          sha256sum /usr/sbin/nginx
+      - name: Probe isolated Linux network namespaces
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,RUNNER_ENVIRONMENT,RUNNER_OS \
+            bash scripts/compose_proxy_drain_probe_ci.sh
