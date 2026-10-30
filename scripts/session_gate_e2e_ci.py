@@ -226,6 +226,14 @@ def run_scenario():
     def capture(cmd, env, action):
         result = old_audit(cmd, env, action)
         if action == 'write':
+            if os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true':
+                from scripts import compose_fence_signed_ci
+                try:
+                    compose_fence_signed_ci.verify(ROOT/'work/managed', source, public, old)
+                except compose_fence_signed_ci.SignedComposeFenceCheckFailure:
+                    stages={'GUARD','DOCKER_SCOPE','INSPECTION','STOP_WRITERS','WRITER','ISOLATE','SNAPSHOT','CI_RECONNECT'}
+                    stage=compose_fence_signed_ci.PHASE
+                    raise CheckFailure('COMPOSE_SIGNED_CI_'+stage if stage in stages else 'COMPOSE_SIGNED_CI_UNVERIFIED') from None
             if os.environ.get('UTER_CI_VERIFY_REDIS_IDENTITY') == 'true':
                 from scripts import kubernetes_redis_identity_ci
                 try:
@@ -319,7 +327,7 @@ def main():
         python = stage_tools.prepare_private_python(stage)
         keep = ('GITHUB_ACTIONS','GITHUB_SHA','RUNNER_ENVIRONMENT','RUNNER_OS','BACKEND',
                 'UTER_CI_RELEASE_MODE','UTER_CI_STRICT_RUNNER','UTER_CI_OLD_VERSION','UTER_CI_NEW_VERSION',
-                'UTER_CI_OLD_TAG','UTER_CI_NEW_TAG','UTER_CI_VERIFY_REDIS_IDENTITY','LANG','HOME')
+                'UTER_CI_OLD_TAG','UTER_CI_NEW_TAG','UTER_CI_VERIFY_REDIS_IDENTITY','UTER_CI_VERIFY_COMPOSE_FENCE','LANG','HOME')
         env = {name:os.environ[name] for name in keep if name in os.environ}
         env.update({'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                     'GITHUB_WORKSPACE':str(stage), 'SOURCE_GIT_WORKSPACE':str(ROOT),
@@ -330,7 +338,10 @@ def main():
             status, output = run_checked([str(python), '-I', '-B', str(stage/'scripts/session_gate_e2e_ci.py'),
                                           '--staged'], env=env, timeout=3300, limit=1024*1024)
             if status:
-                allowed = {'EXPECTED_SIGNED_GATE_MISSING','KUBE_IDENTITY_CI_UNVERIFIED','KUBE_IDENTITY_CI_INPUT',
+                allowed = {'EXPECTED_SIGNED_GATE_MISSING','COMPOSE_SIGNED_CI_UNVERIFIED','COMPOSE_SIGNED_CI_GUARD',
+                           'COMPOSE_SIGNED_CI_DOCKER_SCOPE','COMPOSE_SIGNED_CI_INSPECTION','COMPOSE_SIGNED_CI_STOP_WRITERS',
+                           'COMPOSE_SIGNED_CI_WRITER','COMPOSE_SIGNED_CI_ISOLATE','COMPOSE_SIGNED_CI_SNAPSHOT',
+                           'COMPOSE_SIGNED_CI_CI_RECONNECT','KUBE_IDENTITY_CI_UNVERIFIED','KUBE_IDENTITY_CI_INPUT',
                            'KUBE_IDENTITY_CI_DEPLOYMENT','KUBE_IDENTITY_CI_REPLICASET','KUBE_IDENTITY_CI_POD',
                            'KUBE_IDENTITY_CI_PVC','FIXTURE_ACTION_INVALID','FIXTURE_PROBE_FAILED',
                            'FIXTURE_CAPTURE_REPEATED','SIGNED_FIXTURE_INVALID','FIXTURE_SEED_FAILED',
