@@ -1,5 +1,7 @@
 import json
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -106,6 +108,38 @@ class KubernetesLoopbackTests(unittest.TestCase):
         for code in ('CI_CLIENT_MISSING_ENV','CI_CLIENT_CONNECT','CI_CLIENT_AUTH','CI_CLIENT_PING'):
             self.assertEqual(experiment._client_failure(('private '+code).encode()),code.removeprefix('CI_'))
         self.assertEqual(experiment._client_failure(b'private details'), 'CLIENT_EXEC')
+
+    def test_probe_policy_selects_only_redis_and_one_random_client_label(self):
+        token='b'*32
+        policy=experiment._ci_probe_policy(token)
+        spec=policy['spec']
+        self.assertEqual(spec['podSelector']['matchLabels'],{
+            'app.kubernetes.io/instance':experiment.SITE,'app.kubernetes.io/name':'redis'})
+        self.assertEqual(spec['ingress'],[{'from':[{'podSelector':{'matchLabels':{'uter.io/ci-redis-probe':token}}}],
+                                           'ports':[{'protocol':'TCP','port':6379}]}])
+        for bad in ('', 'b'*31, '../foreign', None):
+            with self.subTest(bad=bad),self.assertRaises(experiment.KubernetesLoopbackCIError):
+                experiment._ci_probe_policy(bad)
+
+    def test_cleanup_uses_server_enforced_uid_precondition(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'work').mkdir()
+            observed=[]
+            def fake(args,timeout=30):
+                options=json.loads(Path(args[-1]).read_text())
+                observed.append((args,options))
+                return '{"kind":"Status","status":"Success"}'
+            with patch.object(experiment,'ROOT',root),patch.object(experiment,'_ci_kube_command',side_effect=fake):
+                experiment._ci_delete_uid('policy','uter-ci-loopback-policy-'+'a'*16,self.uid)
+                experiment._ci_delete_uid('pod','uter-ci-loopback-probe',self.uid)
+                for item in ('foreign','../../prod'):
+                    with self.assertRaises(experiment.KubernetesLoopbackCIError):
+                        experiment._ci_delete_uid('pod',item,self.uid)
+            self.assertEqual(len(observed),2)
+            for args,options in observed:
+                self.assertEqual(options,{'apiVersion':'v1','kind':'DeleteOptions','preconditions':{'uid':self.uid}})
+                self.assertEqual(args[0],'delete')
+                self.assertTrue(args[1].startswith('--raw=/'))
 
 
 if __name__=='__main__':unittest.main()

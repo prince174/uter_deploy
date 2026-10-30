@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import selectors
 import signal
 import subprocess
@@ -79,6 +80,40 @@ def _ci_kube_command(args, *, timeout=30):
         return install_recovery.run_readonly(command,timeout=timeout).strip()
     except Exception:
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_COMMAND') from None
+
+
+def _ci_delete_uid(kind,name,uid):
+    """Delete only one observed synthetic object with a server UID precondition."""
+    patterns={'pod':r'uter-ci-loopback-probe', 'policy':r'uter-ci-loopback-policy-[0-9a-f]{16}'}
+    if (kind not in patterns or not isinstance(name,str) or not re.fullmatch(patterns[kind],name)
+            or not isinstance(uid,str) or not identity.UUID.fullmatch(uid)):
+        raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_ARGUMENT')
+    resource=('api/v1/namespaces/'+SITE+'/pods/' if kind=='pod' else
+              'apis/networking.k8s.io/v1/namespaces/'+SITE+'/networkpolicies/')+name
+    options={'apiVersion':'v1','kind':'DeleteOptions','preconditions':{'uid':uid}}
+    try:
+        with tempfile.NamedTemporaryFile(mode='w',prefix='kube-delete-options-',dir=ROOT/'work',encoding='utf-8') as fp:
+            json.dump(options,fp,separators=(',',':'));fp.flush();os.fsync(fp.fileno())
+            raw=_ci_kube_command(['delete','--raw=/'+resource,'-f',fp.name])
+        response=json.loads(raw)
+        if not isinstance(response,dict) or response.get('kind')!='Status' or response.get('status')!='Success':
+            raise ValueError
+    except Exception:
+        raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLEANUP_UNCERTAIN') from None
+
+
+def _ci_probe_policy(operation_label):
+    if not isinstance(operation_label,str) or not re.fullmatch(r'[0-9a-f]{32}',operation_label):
+        raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_ARGUMENT')
+    name='uter-ci-loopback-policy-'+operation_label[:16]
+    label={'uter.io/ci-redis-probe':operation_label}
+    policy={'apiVersion':'networking.k8s.io/v1','kind':'NetworkPolicy',
+            'metadata':{'name':name,'namespace':SITE,'labels':label},
+            'spec':{'podSelector':{'matchLabels':{'app.kubernetes.io/instance':SITE,
+                                                   'app.kubernetes.io/name':'redis'}},
+                    'policyTypes':['Ingress'],'ingress':[{'from':[{'podSelector':{'matchLabels':label}}],
+                                                          'ports':[{'protocol':'TCP','port':6379}]}]}}
+    return policy
 
 
 def guard(home,bundle,key,manifest):
@@ -207,13 +242,32 @@ def _verify(home,bundle,key,manifest):
         ip=pod['status']['podIP']
         if not re.fullmatch(r'[0-9.]{7,15}',ip): raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_POD')
         PHASE='CLIENT_CREATE'
+        operation_label=secrets.token_hex(16)
+        policy=_ci_probe_policy(operation_label)
+        policy_name=policy['metadata']['name']
+        probe_label={'uter.io/ci-redis-probe':operation_label}
+        with tempfile.NamedTemporaryFile(mode='w',prefix='kube-probe-policy-',dir=ROOT/'work',encoding='utf-8') as fp:
+            json.dump(policy,fp,separators=(',',':'));fp.flush();os.fsync(fp.fileno())
+            k('create','-f',fp.name)
+        actual=snapshot._query(['-n',SITE,'get','networkpolicy',policy_name])
+        pm=actual['metadata'];policy_uid=pm['uid']
+        if (pm.get('name')!=policy_name or pm.get('namespace')!=SITE or pm.get('labels')!=probe_label
+                or not isinstance(policy_uid,str) or not identity.UUID.fullmatch(policy_uid)):
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_POLICY')
         probe_spec={'spec':{'automountServiceAccountToken':False,'containers':[{'name':'uter-ci-loopback-probe',
                     'image':PYTHON_IMAGE,'command':['python','-c','import time;time.sleep(600)'],
-                    'env':[{'name':'REDIS_PASSWORD','valueFrom':{'secretKeyRef':{'name':SITE+'-redis-secret','key':'password'}}}]}]}}
+                    'env':[{'name':'REDIS_PASSWORD','valueFrom':{'secretKeyRef':{'name':SITE+'-redis-secret','key':'password'}}}]}]},
+                    'metadata':{'labels':probe_label}}
         k('run','uter-ci-loopback-probe','--image='+PYTHON_IMAGE,'--restart=Never',
           '--overrides='+json.dumps(probe_spec,separators=(',',':')))
         PHASE='CLIENT_READY'
         k('wait','--for=condition=Ready','pod/uter-ci-loopback-probe','--timeout=180s',timeout=210)
+        probe=snapshot._query(['-n',SITE,'get','pod','uter-ci-loopback-probe'])
+        probe_meta=probe['metadata'];probe_uid=probe_meta['uid']
+        if (probe_meta.get('name')!='uter-ci-loopback-probe' or probe_meta.get('namespace')!=SITE
+                or probe_meta.get('labels',{}).get('uter.io/ci-redis-probe')!=operation_label
+                or not isinstance(probe_uid,str) or not identity.UUID.fullmatch(probe_uid)):
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT')
         PHASE='CLIENT_EXEC'
         CLIENT_PROCESS=subprocess.Popen(['kubectl','--context',CONTEXT,'-n',SITE,'exec','-i',
                          'pod/uter-ci-loopback-probe','--','python','-u','-c',CLIENT_PROGRAM,ip],
@@ -315,7 +369,8 @@ def _verify(home,bundle,key,manifest):
         if redis('read')!=CI_VALUE or redis('delete')!='1':
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_DATA')
         PHASE='RECONNECT_PROBE'
-        k('delete','pod/uter-ci-loopback-probe','--wait=true','--timeout=120s',timeout=150)
+        _ci_delete_uid('policy',policy_name,policy_uid)
+        _ci_delete_uid('pod','uter-ci-loopback-probe',probe_uid)
         PHASE='RECONNECT_JOURNAL'
         saved=journal.read(home)
         if saved['operation']!=operation or saved['phase']!='isolating':
