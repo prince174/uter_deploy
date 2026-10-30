@@ -4,11 +4,11 @@ import subprocess
 import unittest
 
 
-SCRIPT=Path(__file__).resolve().parents[1]/'scripts'/'compose_conntrack_loose_probe_ci.sh'
+SCRIPT=Path(__file__).resolve().parents[1]/'scripts'/'compose_keepalive_probe_ci.sh'
 
 
 @unittest.skipUnless(os.name=='posix','bash CI guard')
-class ConntrackProbeGuardTests(unittest.TestCase):
+class KeepaliveProbeGuardTests(unittest.TestCase):
     def test_refuses_before_touching_host_outside_hosted_runner(self):
         env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','GITHUB_ACTIONS':'false',
              'RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux','GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'1'}
