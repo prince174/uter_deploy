@@ -53,5 +53,9 @@ def verify(manifest):
         if result.get('result')!='matching_snapshot_observed' or any(result.get(x) is not False for x in
                 ('redis_isolated','cluster_authenticated','writers_excluded','safe_to_upgrade')):
             raise ValueError
-    except (KeyError,TypeError,ValueError,identity.KubernetesRedisIdentityError):
+    except identity.KubernetesRedisIdentityError as error:
+        if error.stage in ('INPUT','DEPLOYMENT','REPLICASET','POD','PVC'):
+            raise IdentityCheckFailure('KUBE_IDENTITY_CI_'+error.stage) from None
+        raise IdentityCheckFailure('KUBE_IDENTITY_CI_UNVERIFIED') from None
+    except (KeyError,TypeError,ValueError):
         raise IdentityCheckFailure('KUBE_IDENTITY_CI_UNVERIFIED') from None

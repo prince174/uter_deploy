@@ -10,6 +10,9 @@ import re
 
 class KubernetesRedisIdentityError(ValueError):
     """Fixed diagnostic; no Kubernetes objects or secrets in error messages."""
+    def __init__(self,stage):
+        super().__init__('KUBE_REDIS_IDENTITY_UNVERIFIED')
+        self.stage=stage
 
 
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
@@ -90,6 +93,7 @@ def verify_snapshot(*, site, manifest, cluster_uid, expected_cluster_uid, expect
     their consistency across time, verify RBAC/admission/GitOps, exclude other
     Pods with PVC access, authenticate the API endpoint, or inspect Redis AOF.
     """
+    stage='INPUT'
     try:
         if (not isinstance(site,str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,40}',site)
                 or not _uid(cluster_uid) or not _uid(expected_cluster_uid) or cluster_uid != expected_cluster_uid
@@ -98,6 +102,7 @@ def verify_snapshot(*, site, manifest, cluster_uid, expected_cluster_uid, expect
         image = manifest['images']['redis']
         if not isinstance(image,str) or not IMAGE.fullmatch(image):
             raise ValueError
+        stage='DEPLOYMENT'
         deploy_name=site+'-redis'
         dmeta=_meta(deployment,'Deployment',deploy_name,site)
         dspec=deployment['spec']
@@ -110,6 +115,7 @@ def verify_snapshot(*, site, manifest, cluster_uid, expected_cluster_uid, expect
         labels={'app.kubernetes.io/instance':site,'app.kubernetes.io/name':'redis'}
         if any(dspec['template'].get('metadata',{}).get('labels',{}).get(k)!=v for k,v in labels.items()):
             raise ValueError
+        stage='REPLICASET'
         rsmeta=replicaset['metadata']
         rsname=rsmeta['name']
         if not isinstance(rsname,str) or not rsname.startswith(deploy_name+'-'):
@@ -119,6 +125,7 @@ def verify_snapshot(*, site, manifest, cluster_uid, expected_cluster_uid, expect
         if type(replicaset['spec'].get('replicas')) is not int or replicaset['spec']['replicas']!=1:
             raise ValueError
         _pod_spec(replicaset['spec']['template']['spec'],site,image)
+        stage='POD'
         pmeta=pod['metadata']; pname=pmeta['name']
         if not isinstance(pname,str) or not pname.startswith(rsname+'-'):
             raise ValueError
@@ -140,10 +147,11 @@ def verify_snapshot(*, site, manifest, cluster_uid, expected_cluster_uid, expect
                 or not isinstance(status.get('imageID'),str)
                 or not any(status['imageID'].endswith(x) for x in image_ids)):
             raise ValueError
+        stage='PVC'
         pvc_meta=_meta(pvc,'PersistentVolumeClaim',deploy_name,site)
         if pvc_meta['uid']!=expected_pvc_uid or pvc.get('status',{}).get('phase')!='Bound':
             raise ValueError
     except (KeyError,ValueError,TypeError,AttributeError):
-        raise KubernetesRedisIdentityError('KUBE_REDIS_IDENTITY_UNVERIFIED') from None
+        raise KubernetesRedisIdentityError(stage) from None
     return {'result':'matching_snapshot_observed','redis_isolated':False,
             'cluster_authenticated':False,'writers_excluded':False,'safe_to_upgrade':False}

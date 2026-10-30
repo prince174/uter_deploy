@@ -230,8 +230,10 @@ def run_scenario():
                 from scripts import kubernetes_redis_identity_ci
                 try:
                     kubernetes_redis_identity_ci.verify(old)
-                except kubernetes_redis_identity_ci.IdentityCheckFailure:
-                    raise CheckFailure('KUBE_IDENTITY_CI_UNVERIFIED') from None
+                except kubernetes_redis_identity_ci.IdentityCheckFailure as error:
+                    allowed={'KUBE_IDENTITY_CI_INPUT','KUBE_IDENTITY_CI_DEPLOYMENT','KUBE_IDENTITY_CI_REPLICASET',
+                             'KUBE_IDENTITY_CI_POD','KUBE_IDENTITY_CI_PVC','KUBE_IDENTITY_CI_UNVERIFIED'}
+                    raise CheckFailure(str(error) if str(error) in allowed else 'KUBE_IDENTITY_CI_UNVERIFIED') from None
             if saved:
                 raise CheckFailure('FIXTURE_CAPTURE_REPEATED')
             saved.append((cmd, env, result))
@@ -328,7 +330,9 @@ def main():
             status, output = run_checked([str(python), '-I', '-B', str(stage/'scripts/session_gate_e2e_ci.py'),
                                           '--staged'], env=env, timeout=3300, limit=1024*1024)
             if status:
-                allowed = {'EXPECTED_SIGNED_GATE_MISSING','KUBE_IDENTITY_CI_UNVERIFIED','FIXTURE_ACTION_INVALID','FIXTURE_PROBE_FAILED',
+                allowed = {'EXPECTED_SIGNED_GATE_MISSING','KUBE_IDENTITY_CI_UNVERIFIED','KUBE_IDENTITY_CI_INPUT',
+                           'KUBE_IDENTITY_CI_DEPLOYMENT','KUBE_IDENTITY_CI_REPLICASET','KUBE_IDENTITY_CI_POD',
+                           'KUBE_IDENTITY_CI_PVC','FIXTURE_ACTION_INVALID','FIXTURE_PROBE_FAILED',
                            'FIXTURE_CAPTURE_REPEATED','SIGNED_FIXTURE_INVALID','FIXTURE_SEED_FAILED',
                            'SIGNED_UPDATE_BLOCK_INVALID','OLD_STATE_NOT_PRESERVED','OLD_SIGNATURE_NOT_PRESERVED',
                            'OLD_SERVICE_NOT_READY','OLD_AUTHENTICATED_SMOKE_FAILED','FIXTURE_DATA_CHANGED','OLD_CONTROLLER_ACCEPTED_EPOCH_CHANGE',
