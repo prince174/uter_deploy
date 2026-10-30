@@ -11,6 +11,7 @@ import re
 import secrets
 import selectors
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -135,6 +136,82 @@ def _ci_delete_uid(kind,name,uid):
             time.sleep(0.5)
     except Exception:
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLEANUP_UNCERTAIN') from None
+
+
+def _ci_clear_killed_child_lock(home,pid):
+    """Only for this hosted fixture after the parent reaped its own child.
+
+    This is not an algorithm for recovering an installation's stale lock.
+    The CI fixture is exclusively controlled by the parent process.
+    """
+    adopt_backup_ci.runner_guard(os.environ,ROOT)
+    if (os.environ.get('UTER_CI_STRICT_RUNNER')!='true'
+            or os.environ.get('UTER_CI_VERIFY_KUBE_LOOPBACK')!='true'
+            or os.environ.get('BACKEND')!='kubernetes' or type(pid) is not int or pid<=1
+            or not Path(home).resolve(strict=True).is_relative_to(ROOT/'work')):
+        raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_STALE_LOCK')
+    directory=os.open(home,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        fd=os.open('operation.lock',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
+        try:
+            info=os.fstat(fd);data=os.read(fd,64)
+            current=os.stat('operation.lock',dir_fd=directory,follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_nlink!=1
+                    or info.st_mode&0o077 or data!=str(pid).encode()
+                    or (info.st_dev,info.st_ino)!=(current.st_dev,current.st_ino)):
+                raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_STALE_LOCK')
+            os.unlink('operation.lock',dir_fd=directory);os.fsync(directory)
+        finally:os.close(fd)
+    except OSError:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_STALE_LOCK') from None
+    finally:os.close(directory)
+
+
+def _ci_crash_recovery_after_patch(home,plan,operation,api):
+    """SIGKILL a locked fixture controller after API success, before response.
+
+    The child alone owns the fixture lock. Parent only clears that lock after
+    waitpid of its child; neither this clearance nor parent recovery is a
+    production stale-lock protocol. No user-controlled callbacks are accepted.
+    """
+    global PHASE
+    adopt_backup_ci.runner_guard(os.environ,ROOT)
+    if (os.environ.get('UTER_CI_STRICT_RUNNER')!='true'
+            or os.environ.get('UTER_CI_VERIFY_KUBE_LOOPBACK')!='true'
+            or os.environ.get('BACKEND')!='kubernetes'
+            or not Path(home).resolve(strict=True).is_relative_to(ROOT/'work')):
+        raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_GUARD')
+    readfd,writefd=os.pipe();pid=os.fork()
+    if pid==0:
+        os.close(readfd)
+        try:
+            with uterctl.locked(home):
+                real_patch=api.patch_deployment
+                def patch_and_pause(name,ops):
+                    real_patch(name,ops)
+                    os.write(writefd,b'R')
+                    while True:signal.pause()
+                api.patch_deployment=patch_and_pause
+                loopback_recovery.request(home,plan,operation,api)
+            os._exit(12)
+        except BaseException:os._exit(13)
+    os.close(writefd);reaped=False
+    try:
+        import select
+        if not select.select([readfd],[],[],120)[0] or os.read(readfd,1)!=b'R':
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CRASH_NOT_READY')
+        os.kill(pid,signal.SIGKILL)
+        waited,status=os.waitpid(pid,0);reaped=True
+        if waited!=pid or not os.WIFSIGNALED(status) or os.WTERMSIG(status)!=signal.SIGKILL:
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CRASH_NOT_KILLED')
+    finally:
+        os.close(readfd)
+        if not reaped:
+            try:os.kill(pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            try:os.waitpid(pid,0)
+            except ChildProcessError:pass
+    PHASE='CRASH_STALE_LOCK'
+    _ci_clear_killed_child_lock(home,pid)
 
 
 def _ci_probe_policy(operation_label):
@@ -424,28 +501,29 @@ def _verify(home,bundle,key,manifest):
                    '-c','redis','--','redis-check-rdb','/dev/stdin']
             backup_snapshot.process_component(writer,'redis',cmd,prefix=b'REDIS')
             backup_snapshot.verify_redis_snapshot(writer,check)
-        # Test-only reconnect: guarded by exact Deployment UID, current RV and
-        # loopback args, after which synthetic data is verified and removed.
+        # Persist a reverse intent while still holding the fixture lock.
         PHASE='RECONNECT_PATCH'
         loopback_recovery.prepare(home,plan,operation,api)
-        real_patch=api.patch_deployment
-        calls={'attempted':0,'succeeded':0}
-        def timeout_after_reconnect(name,ops):
-            calls['attempted']+=1;real_patch(name,ops);calls['succeeded']+=1
-            raise TimeoutError('synthetic after-success fault')
-        api.patch_deployment=timeout_after_reconnect
+    # The child acquires its own lock and is killed after the API confirms the
+    # reverse PATCH but before its controller sees the response. Fixture-only
+    # stale lock cleanup follows waitpid; this is not production recovery.
+    PHASE='CRASH_PATCH'
+    _ci_crash_recovery_after_patch(home,plan,operation,api)
+    with uterctl.locked(home):
+        PHASE='CRASH_CLASSIFY'
+        if loopback_recovery.classify(home,plan,operation,api)!= {
+                'state':'original_spec_observed','redis_healthy':False,'safe_to_resume':False}:
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
+        # A possibly in-flight API request must never be replayed.
+        calls=[];real_patch=api.patch_deployment
+        def reject_retry(name,ops):calls.append(1);raise ValueError
+        api.patch_deployment=reject_retry
         try:
             try:loopback_recovery.request(home,plan,operation,api)
             except loopback_recovery.RecoveryError:pass
             else:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
-            if calls!={'attempted':1,'succeeded':1}:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
-            try:loopback_recovery.request(home,plan,operation,api)
-            except loopback_recovery.RecoveryError:pass
-            else:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
-            if calls!={'attempted':1,'succeeded':1}:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
         finally:api.patch_deployment=real_patch
-        if loopback_recovery.classify(home,plan,operation,api)!= {
-                'state':'original_spec_observed','redis_healthy':False,'safe_to_resume':False}:
+        if calls:
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
         PHASE='RECONNECT_ROLLOUT'
         rollout()

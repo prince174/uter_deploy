@@ -8,6 +8,7 @@ from unittest.mock import patch
 from scripts import kubernetes_fence_finalizer as finalizer
 from scripts import kubernetes_loopback_intent as forward
 from scripts import kubernetes_loopback_recovery as recovery
+from scripts import kubernetes_loopback_signed_ci as ci
 from scripts import kubernetes_redis_identity as identity
 from scripts import redis_fence_journal as journal
 from tests.test_kubernetes_fence_finalizer import FakeAPI
@@ -29,7 +30,8 @@ class API(FakeAPI):
 @unittest.skipUnless(os.name=='posix','private journal requires POSIX')
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.home=Path(self.temp.name)
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.home=self.root/'work'/'fixture';self.home.mkdir(mode=0o700,parents=True)
         pod={'metadata':{'name':'redis-123','namespace':'test','uid':'7a1ae129-82a8-490f-86e3-84dfd735d330','resourceVersion':'77'},
              'spec':{'containers':[{'name':'redis'}]},'status':{'phase':'Running','containerStatuses':[{'name':'redis',
              'containerID':'containerd://'+'b'*64,'restartCount':0,'state':{'running':{'startedAt':'now'}}}]}}
@@ -89,5 +91,19 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(recovery.os,'fsync',side_effect=OSError('disk')):
             with self.assertRaises(recovery.RecoveryError):self.request()
         self.assertTrue((self.home/recovery.ATTEMPT_NAME).exists())
+        with self.assertRaises(recovery.RecoveryError):self.request()
+        self.assertEqual(self.api.patches,[])
+
+    @unittest.skipUnless(hasattr(os,'fork'),'requires fork and SIGKILL')
+    def test_disposable_ci_kills_patch_controller_and_keeps_attempt_marker(self):
+        self.prepare()
+        env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux',
+             'UTER_CI_STRICT_RUNNER':'true','UTER_CI_VERIFY_KUBE_LOOPBACK':'true','BACKEND':'kubernetes'}
+        with patch.object(ci,'ROOT',self.root),patch.object(ci.adopt_backup_ci,'runner_guard'), \
+             patch.dict(os.environ,env,clear=True):
+            ci._ci_crash_recovery_after_patch(self.home,self.plan,self.operation,self.api)
+        self.assertFalse((self.home/'operation.lock').exists())
+        self.assertTrue((self.home/recovery.ATTEMPT_NAME).exists())
+        self.assertEqual(journal.read(self.home)['phase'],'isolating')
         with self.assertRaises(recovery.RecoveryError):self.request()
         self.assertEqual(self.api.patches,[])
