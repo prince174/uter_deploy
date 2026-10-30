@@ -28,10 +28,14 @@ class ProductProbeTests(unittest.TestCase):
         images = {'agent': 'sha256:'+'a'*64, 'guardrail': 'sha256:'+'b'*64, 'redis': 'sha256:'+'c'*64}
         states = {'agent': 'running', 'guardrail': 'running'}
         events = []
+        stopped = set()
         def docker(*args):
+            if args[0] == 'stop':
+                stopped.add(args[-1])
+                return args[-1]
             if args[0] == 'ps':
                 service = next(x.rsplit('=', 1)[1] for x in args if x.startswith('label=com.docker.compose.service='))
-                return ids[service]
+                return '' if ids[service] in stopped else ids[service]
             if args[0] == 'image':
                 return images[args[-1].split('-')[1]]
             service = next(name for name, ident in ids.items() if ident == args[-1])
@@ -59,6 +63,9 @@ class ProductProbeTests(unittest.TestCase):
                  mock.patch.object(probe.maintenance_transport, 'request', side_effect=request):
                 probe.exercise(home)
             self.assertLess(events.index(('agent', 'POST')), events.index(('guardrail', 'POST')))
+            self.assertEqual(stopped, {ids['agent']})
+            self.assertIn('Stopping the receipted Agent invalidated the inventory',
+                          (work/'integration-evidence'/'maintenance.txt').read_text())
             self.assertIn('Redis fence, backup, update and recovery were not tested',
                           (work/'integration-evidence'/'maintenance.txt').read_text())
             self.assertEqual(len(list((home/'maintenance-ci-proof').glob('maintenance-receipt-*'))), 2)
