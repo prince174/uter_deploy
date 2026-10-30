@@ -70,6 +70,11 @@ class SignedNamespaceCITests(unittest.TestCase):
                 code='FENCE_START_WRITER_STOP_'+service+'_'+category
                 line=('uterctl: StartError: '+code+'\n').encode('ascii')
                 self.assertEqual(ci._start_diagnostic(line),'COMPOSE_START_CI_'+code)
+            for exit_kind in ('TERM_LIKE','KILL_LIKE','OTHER'):
+                for oom in ('TRUE','FALSE','UNKNOWN'):
+                    code='FENCE_START_WRITER_STOP_'+service+'_EXIT_'+exit_kind+'_OOM_'+oom
+                    line=('uterctl: StartError: '+code+'\n').encode('ascii')
+                    self.assertEqual(ci._start_diagnostic(line),'COMPOSE_START_CI_'+code)
         self.assertIsNone(ci._start_diagnostic(b'uterctl: StartError: FENCE_START_WRITER_STOP_AGENT_SECRET\n'))
 
     def test_recovery_diagnostic_only_exposes_fixed_category(self):

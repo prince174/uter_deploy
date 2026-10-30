@@ -71,6 +71,10 @@ for _service in ('GUARDRAIL','AGENT'):
                       'STARTED','RESTART_COUNT','PROJECT','SERVICE','IMAGE_REF','IMAGE_ID','FINISHED'):
         _name='FENCE_START_WRITER_STOP_'+_service+'_'+_category
         START_DIAGNOSTICS[_name]='COMPOSE_START_CI_'+_name
+    for _exit in ('TERM_LIKE','KILL_LIKE','OTHER'):
+        for _oom in ('TRUE','FALSE','UNKNOWN'):
+            _name='FENCE_START_WRITER_STOP_'+_service+'_EXIT_'+_exit+'_OOM_'+_oom
+            START_DIAGNOSTICS[_name]='COMPOSE_START_CI_'+_name
 for _stage in ('SIGNED_LIVE','WRITER_IDENTITIES','REDIS_INSPECT','PLAN_VALIDATE','CONFIG',
                'STATE','NETWORK','PEERS','REINSPECT','BUNDLE_HASH'):
     for _code in ('ERROR','KEY_ERROR','TYPE_ERROR',*compose_fence_start._OBSERVE_DIAGNOSTIC_CODES,
