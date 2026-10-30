@@ -28,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         backend: [compose]
-        mode: [normal, kill-target, fail-state]
+        mode: [normal, kill-prepared, kill-target, fail-state]
     env:
       OLD_TAG: ${{ inputs.old_tag }}
       NEW_TAG: ${{ inputs.new_tag }}

@@ -87,6 +87,26 @@ class SyntheticUpdateCITests(unittest.TestCase):
             self.assertEqual(ci.apply_error(b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_INCOMPLETE\n',self.root),
                              'APPLY_FENCED_UPDATE_CAPTURE_INCOMPLETE_PHASE_ISOLATING')
 
+    @unittest.skipUnless(os.name=='posix','managed sentinel hardlinks require POSIX')
+    def test_reclaim_probe_requires_exact_refusal_and_preserves_sentinel(self):
+        sentinel=self.root/'operation.lock';sentinel.write_text('123')
+        os.link(sentinel,self.root/'anchor')
+        def invoke(*args,**kwargs):
+            kwargs['stderr'].write(b'uterctl: FencedUpdateError: FENCED_UPDATE_RECLAIM_UNVERIFIED\n')
+            return mock.Mock(returncode=1)
+        with mock.patch.object(ci.subprocess,'run',side_effect=invoke), \
+             mock.patch.object(ci.journal,'read',return_value={'phase':'prepared'}):
+            ci.verify_reclaim_refused(['signed-cli'],self.root,'prepared')
+        self.assertTrue(sentinel.exists());self.assertEqual(sentinel.stat().st_nlink,2)
+        def canary(*args,**kwargs):
+            kwargs['stderr'].write(b'uterctl: FencedUpdateError: FENCED_UPDATE_RECLAIM_UNVERIFIED secret\n')
+            return mock.Mock(returncode=1)
+        with mock.patch.object(ci.subprocess,'run',side_effect=canary), \
+             mock.patch.object(ci.journal,'read',return_value={'phase':'prepared'}):
+            with self.assertRaisesRegex(ci.Failure,'CRASH_RECLAIM_NOT_BLOCKED'):
+                ci.verify_reclaim_refused(['signed-cli'],self.root,'prepared')
+        self.assertTrue(sentinel.exists())
+
     @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('cc'), 'LD_PRELOAD fault requires Linux and C compiler')
     def test_fault_injection_is_scoped_to_state_in_selected_directory(self):
         shim=self.root/'fault.so'

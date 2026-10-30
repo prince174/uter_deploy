@@ -108,30 +108,5 @@ class SignedNamespaceCITests(unittest.TestCase):
                     ci._verify(home,bundle,publisher,manifest)
                 inspected.assert_called_once_with('a'*64)
 
-    @unittest.skipUnless(os.name=='posix','POSIX lock check')
-    def test_ci_stale_lock_requires_exact_fixture_and_killed_child_pid(self):
-        env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','UTER_CI_STRICT_RUNNER':'true'}
-        with tempfile.TemporaryDirectory() as folder:
-            root=Path(folder);home=root/'work'/'fixture';home.mkdir(parents=True)
-            lock=home/'operation.lock';lock.write_text('1234');lock.chmod(0o600)
-            with mock.patch.object(ci,'ROOT',root),mock.patch.dict(os.environ,env,clear=True):
-                with self.assertRaises(ci.SignedComposeFenceCheckFailure):ci._ci_clear_killed_child_lock(home,1235)
-                self.assertTrue(lock.exists())
-                ci._ci_clear_killed_child_lock(home,1234)
-                self.assertFalse(lock.exists())
-                lock.symlink_to(root/'victim')
-                with self.assertRaises(ci.SignedComposeFenceCheckFailure):ci._ci_clear_killed_child_lock(home,1234)
-                self.assertTrue(lock.is_symlink())
-
-    @unittest.skipUnless(os.name=='posix','POSIX child status')
-    def test_recovery_timeout_kills_and_reaps_ci_child(self):
-        with mock.patch.object(ci.time,'monotonic',side_effect=[0,301]), \
-             mock.patch.object(ci.os,'waitpid',side_effect=[(0,0),(1234,9)]) as wait, \
-             mock.patch.object(ci.os,'kill') as kill:
-            with self.assertRaisesRegex(ci.SignedComposeFenceCheckFailure,'RECOVERY_TIMEOUT'):
-                ci._ci_wait_recovery_child(1234)
-            kill.assert_called_once_with(1234,ci.signal.SIGKILL)
-            self.assertEqual(wait.call_args_list,[mock.call(1234,ci.os.WNOHANG),mock.call(1234,0)])
-
 
 if __name__=='__main__':unittest.main()

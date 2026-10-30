@@ -73,6 +73,19 @@ def run_apply(command,home):
         except (OSError,subprocess.TimeoutExpired):raise Failure('APPLY_UNCERTAIN') from None
 
 
+def verify_reclaim_refused(command,home,phase):
+    """Require the signed CLI's exact refusal and unchanged managed sentinel."""
+    sentinel=Path(home)/'operation.lock';before=sentinel.stat()
+    if before.st_nlink!=2 or not sentinel.is_file() or sentinel.is_symlink():raise Failure('CRASH_LOCK_INVALID')
+    with tempfile.TemporaryFile() as errors:
+        refused=subprocess.run([str(x) for x in command],stdout=subprocess.DEVNULL,stderr=errors,timeout=120)
+        errors.seek(0);safe=errors.read(4097)
+    after=sentinel.lstat() if os.path.lexists(sentinel) else None
+    if (refused.returncode==0 or safe!=b'uterctl: FencedUpdateError: FENCED_UPDATE_RECLAIM_UNVERIFIED\n'
+            or after is None or (after.st_dev,after.st_ino,after.st_nlink)!=(before.st_dev,before.st_ino,before.st_nlink)
+            or journal.read(home)['phase']!=phase):raise Failure('CRASH_RECLAIM_NOT_BLOCKED')
+
+
 def run(args, *, env=None, timeout=600):
     try:
         result=subprocess.run([str(x) for x in args],env=env,stdout=subprocess.PIPE,
@@ -173,7 +186,7 @@ def install_failure_category(home,cfg):
 
 def exercise(mode):
     global PHASE
-    if mode not in ('normal','kill-target','fail-state','shutdown'):raise Failure('MODE_INVALID')
+    if mode not in ('normal','kill-target','kill-prepared','fail-state','shutdown'):raise Failure('MODE_INVALID')
     PHASE='ASSETS'
     source=ROOT/'work/pair/old/bundle';public=ROOT/'work/pair/old/publisher-public.pem'
     workspace=Path(os.environ['SOURCE_GIT_WORKSPACE'])
@@ -249,13 +262,15 @@ def exercise(mode):
                 if journal.read(home)['phase']!='update_finalizing':raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
                 if uterctl.read(home/'state.json').get('current')!=before or not journal.blocks_mutation(home):
                     raise Failure('FAULT_STATE_INVALID')
-                # This is test-only after waiting for our own dead child on a
-                # fresh hosted runner, not a stale-lock recovery feature.
-                compose_nsfirewall_signed_ci._ci_clear_killed_child_lock(home,process.pid)
+                # The real signed command must reclaim its authenticated dead
+                # managed owner; do not remove or edit its sentinel in CI.
+                sentinel=home/'operation.lock'
+                if not sentinel.is_file() or sentinel.stat().st_nlink!=2:raise Failure('FAULT_LOCK_MISSING')
                 finish=[sys.executable,'-I','-B',executor/'uterctl.py','fence-finish-update','--home',home,
                         '--bundle',home/'releases'/after['version'],'--key',product_key,'--executor-key',executor_key,
                         '--backup-key',key,'--backup-dir',backup]
                 PHASE='FINISH';run(finish,timeout=600)
+                if os.path.lexists(sentinel):raise Failure('FAULT_RECLAIM_INCOMPLETE')
             else:run_apply(command,home)
             PHASE='VERIFY'
             state=uterctl.read(home/'state.json')
@@ -272,6 +287,7 @@ def exercise(mode):
             if redis_command(redis,'GET','uter:ci:synthetic-update')!=b'retained':raise Failure('REDIS_CHANGED')
         else:
             PHASE='CRASH'
+            crash_phase='prepared' if mode=='kill-prepared' else 'target_starting'
             errors=tempfile.TemporaryFile()
             process=subprocess.Popen([str(x) for x in command],stdout=subprocess.DEVNULL,stderr=errors)
             deadline=time.monotonic()+1200
@@ -279,18 +295,26 @@ def exercise(mode):
                 while time.monotonic()<deadline and process.poll() is None:
                     try:record=journal.read(home)
                     except Exception:record=None
-                    if isinstance(record,dict) and record.get('phase')=='target_starting':
+                    if isinstance(record,dict) and record.get('phase')==crash_phase:
                         process.send_signal(signal.SIGKILL);process.wait(timeout=30);break
                     time.sleep(0.005)
                 else:
                     if process.poll() is not None:
                         errors.seek(0);PHASE=apply_error(errors.read(4097),home)
                     raise Failure('CRASH_BOUNDARY_NOT_OBSERVED')
-                if process.returncode!=-signal.SIGKILL or journal.read(home)['phase']!='target_starting':
+                if process.returncode!=-signal.SIGKILL or journal.read(home)['phase']!=crash_phase:
                     raise Failure('CRASH_STATE_INVALID')
-                if not journal.blocks_mutation(home) or not (home/journal.UPDATE_START).is_file():
+                if not journal.blocks_mutation(home) or (mode=='kill-target' and not (home/journal.UPDATE_START).is_file()):
                     raise Failure('CRASH_BARRIER_INVALID')
-                backup_store.verify_set(backup,backup_crypto.read_key(key),home=home,site=uterctl.site_config(home),version=before['version'])
+                if mode=='kill-prepared':
+                    if os.path.lexists(backup):raise Failure('CRASH_UNEXPECTED_BACKUP')
+                    backup.mkdir(mode=0o700)
+                finish=[sys.executable,'-I','-B',executor/'uterctl.py','fence-finish-update','--home',home,
+                        '--bundle',home/'releases'/after['version'],'--key',product_key,'--executor-key',executor_key,
+                        '--backup-key',key,'--backup-dir',backup]
+                verify_reclaim_refused(finish,home,crash_phase)
+                if mode=='kill-target':
+                    backup_store.verify_set(backup,backup_crypto.read_key(key),home=home,site=uterctl.site_config(home),version=before['version'])
                 # Observation only: Docker may still be finishing the request;
                 # this does not authorize retry or restoration over new writes.
                 if redis_identity(redis)!=identity or redis_command(redis,'GET','uter:ci:synthetic-update')!=b'retained':

@@ -128,52 +128,6 @@ def _ci_signed_executor(source,root):
     return bundle,public
 
 
-def _ci_clear_killed_child_lock(home,pid):
-    """CI only: parent has already waitpid-reaped its own killed child.
-
-    This is deliberately not an installation stale-lock recovery protocol.
-    No other controller may run on the disposable hosted fixture.
-    """
-    if (os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted'
-            or os.environ.get('UTER_CI_STRICT_RUNNER')!='true' or not isinstance(pid,int) or pid<=1
-            or not Path(home).resolve(strict=True).is_relative_to(ROOT/'work')):
-        raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_STALE_LOCK')
-    directory=os.open(home,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-    try:
-        fd=os.open('operation.lock',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
-        try:
-            info=os.fstat(fd);data=os.read(fd,64);now=os.stat('operation.lock',dir_fd=directory,follow_symlinks=False)
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_nlink!=1
-                    or info.st_mode&0o077 or data!=str(pid).encode()
-                    or (info.st_dev,info.st_ino)!=(now.st_dev,now.st_ino)):
-                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_STALE_LOCK')
-            os.unlink('operation.lock',dir_fd=directory);os.fsync(directory)
-        finally:os.close(fd)
-    except OSError:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_STALE_LOCK') from None
-    finally:os.close(directory)
-
-
-def _ci_wait_recovery_child(pid,timeout=300):
-    """Bound a CI child; timeout leaves fixture state unknown and stops test."""
-    reaped=False;deadline=time.monotonic()+timeout
-    try:
-        while True:
-            waited,status=os.waitpid(pid,os.WNOHANG)
-            if waited:
-                reaped=True;break
-            if time.monotonic()>=deadline:
-                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CRASH_RECOVERY_TIMEOUT')
-            time.sleep(.1)
-        if waited!=pid or not os.WIFEXITED(status) or os.WEXITSTATUS(status)!=0:
-            raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CRASH_RECOVERY')
-    finally:
-        if not reaped:
-            try:os.kill(pid,signal.SIGKILL)
-            except ProcessLookupError:pass
-            try:os.waitpid(pid,0)
-            except ChildProcessError:pass
-
-
 CLIENT = r'''
 import socket,sys
 secret=sys.stdin.readline().strip()
@@ -262,7 +216,7 @@ def _verify(home, bundle, publisher, manifest):
     client=None;adapter=None;key=os.urandom(32)
     endpoint_before=docker_json('inspect','--format','{{json .NetworkSettings.Networks}}',redis_id)
     try:
-        with uterctl.locked(home):
+        with uterctl.fenced_locked(home):
             PHASE='STOP_WRITERS'
             checked(cmd+['stop','guardrail','agent'],supplied_env=runenv)
             exists=docker('exec',redis_id,'sh','-ec',
@@ -368,220 +322,17 @@ def _verify(home, bundle, publisher, manifest):
             adapter._run('update','--restart=unless-stopped',redis_id)
             adapter._state(plan,detached=False,restart='unless-stopped',original_endpoint=True)
             verify_closed(selector);remove_ci_marker('captured');adapter.close();adapter=None
-            PHASE='CI_RESUME'
-            backup_snapshot.resume_writers(home,cfg,site,manifest)
     finally:
         if adapter is not None:adapter.close()
         if client is not None:
             try:os.killpg(client.pid,signal.SIGKILL)
             except ProcessLookupError:pass
             client.wait(timeout=5)
-
-    # Force a real controller-process crash at a known pre-capture boundary.
-    # The parent owns this disposable fixture exclusively; CI-only stale-lock
-    # cleanup below is NOT an algorithm for recovering user installations.
-    PHASE='CRASH_SETUP'
-    crash_key=os.urandom(32);crash_operation=plans.new_operation()
-    crash_plan=dict(plan,operation=crash_operation)
-    with uterctl.locked(home):
-        checked(cmd+['stop','guardrail','agent'],supplied_env=runenv)
-    readfd,writefd=os.pipe();pid=os.fork()
-    if pid==0:
-        os.close(readfd)
-        child_adapter=None
-        try:
-            with uterctl.locked(home):
-                digest=plans.create(home,crash_plan,crash_key)
-                record=journal.create(home,backend='compose',site=cfg['name'],resource=redis_id,
-                                      plan_sha256=digest,operation=crash_operation)
-                child_adapter=fence.Adapter(home,bundle,publisher,crash_key)
-                if child_adapter._redis(crash_plan,'SET',KEY,VALUE)!='OK':raise ValueError
-                protocol.isolate(home,crash_operation,child_adapter)
-                os.write(writefd,b'R')
-                while True:signal.pause()
-        except BaseException:
-            os._exit(12)
-    os.close(writefd);reaped=False
-    try:
-        PHASE='CRASH_WAIT'
-        import select
-        if not select.select([readfd],[],[],300)[0] or os.read(readfd,1)!=b'R':
-            raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CRASH_NOT_READY')
-        os.kill(pid,signal.SIGKILL)
-        waited,status=os.waitpid(pid,0);reaped=True
-        if waited!=pid or not os.WIFSIGNALED(status) or os.WTERMSIG(status)!=signal.SIGKILL:
-            raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CRASH_NOT_KILLED')
-    finally:
-        os.close(readfd)
-        if not reaped:
-            try:os.kill(pid,signal.SIGKILL)
-            except ProcessLookupError:pass
-            try:os.waitpid(pid,0)
-            except ChildProcessError:pass
-    PHASE='CRASH_STALE_LOCK'
-    record=journal.read(home)
-    if record['operation']!=crash_operation or record['phase']!='isolated':
-        raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CRASH_JOURNAL')
-    _ci_clear_killed_child_lock(home,pid)
-    PHASE='CRASH_RECOVERY'
-    fd,keyfile=tempfile.mkstemp(prefix='fence-recovery-key-',dir=ROOT/'work')
-    with os.fdopen(fd,'wb') as output:
-        os.fchmod(output.fileno(),0o600);output.write(crash_key);output.flush();os.fsync(output.fileno())
-    pre_executor_dir=tempfile.mkdtemp(prefix='fence-executor-',dir=ROOT/'work')
-    pre_executor,pre_executor_public=_ci_signed_executor(bundle,pre_executor_dir)
-    diagnostic_r,diagnostic_w=os.pipe()
-    recovery_pid=os.fork()
-    if recovery_pid==0:
-        os.close(diagnostic_r);recovery=None;failure=CRASH_DIAGNOSTICS['COMMAND']
-        try:
-            # Call the real controller entry point. It must obtain the normal
-            # operation lock itself and must never resume application writers.
-            with tempfile.TemporaryFile() as error_file:
-                try:
-                    process=subprocess.run([sys.executable,'-I','-B',str(pre_executor/'uterctl.py'),'fence-recover-redis',
-                                            '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
-                                            '--backup-key',keyfile,'--executor-key',str(pre_executor_public)],
-                                           cwd=pre_executor,env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-                                                                'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
-                                           stdout=subprocess.DEVNULL,stderr=error_file,timeout=240)
-                except subprocess.TimeoutExpired:
-                    failure=CRASH_DIAGNOSTICS['COMMAND_TIMEOUT'];raise
-                if process.returncode:
-                    error_file.seek(0);failure=_recovery_diagnostic(error_file.read(4097)) or failure
-                    raise ValueError
-            failure=CRASH_DIAGNOSTICS['LOCK']
-            with uterctl.locked(home):
-                recovery=fence.Adapter(home,bundle,publisher,crash_key)
-                failure=CRASH_DIAGNOSTICS['JOURNAL']
-                record=journal.read(home)
-                if record['phase']!='redis_released':raise ValueError
-                # _signed verifies both application writers remain stopped.
-                failure=CRASH_DIAGNOSTICS['SIGNED']
-                recovery._signed(crash_plan)
-                failure=CRASH_DIAGNOSTICS['READ']
-                if recovery._redis(crash_plan,'GET',KEY)!=VALUE:raise ValueError
-                failure=CRASH_DIAGNOSTICS['ENDPOINT']
-                if docker_json('inspect','--format','{{json .NetworkSettings.Networks}}',redis_id)!=endpoint_before:raise ValueError
-                failure=CRASH_DIAGNOSTICS['DELETE']
-                if recovery._redis(crash_plan,'DEL',KEY)!='1':raise ValueError
-                failure=CRASH_DIAGNOSTICS['PLAN']
-                plans.read(home,crash_key,record['plan_sha256'],operation=crash_operation,site=cfg['name'],resource=redis_id)
-                failure=CRASH_DIAGNOSTICS['CHECKPOINT']
-                checkpoint.read(home,record,crash_key)
-                failure=CRASH_DIAGNOSTICS['ORIGIN']
-                released=origin.read(home,crash_key,record)
-                if released['origin']!='pre_capture' or released['receipt_sha256']!='0'*64:raise ValueError
-                failure=CRASH_DIAGNOSTICS['CLEANUP']
-                for name in (origin.NAME,journal.NAME,plans.NAME,checkpoint.NAME):(home/name).unlink()
-                recovery.close();recovery=None
-            os.close(diagnostic_w)
-            os._exit(0)
-        except BaseException:
-            if recovery is not None:recovery.close()
-            try:os.write(diagnostic_w,failure.encode('ascii'))
-            except OSError:pass
-            os.close(diagnostic_w)
-            os._exit(13)
-    os.close(diagnostic_w)
-    try:
-        try:_ci_wait_recovery_child(recovery_pid)
-        except SignedComposeFenceCheckFailure:
-            diagnostic_code=os.read(diagnostic_r,256).decode('ascii',errors='ignore')
-            if diagnostic_code in CRASH_DIAGNOSTICS.values():raise SignedComposeFenceCheckFailure(diagnostic_code) from None
-            raise
-    finally:
-        os.close(diagnostic_r)
-        Path(keyfile).unlink(missing_ok=True)
-        shutil.rmtree(pre_executor_dir)
-    PHASE='CRASH_RESUME'
+    PHASE='CI_RESUME'
     with uterctl.locked(home):backup_snapshot.resume_writers(home,cfg,site,manifest)
-    # Snapshot-only transaction: signed current executor, actual encrypted
-    # runtime/Redis/audit backup, real process death after durable receipt,
-    # then a fresh process verifies the complete backup before Redis release.
-    # Stale-lock cleanup remains exclusively for this disposable fixture.
-    PHASE='SNAPSHOT_CRASH_SETUP'
-    with tempfile.TemporaryDirectory(prefix='snapshot-only-ci-',dir=ROOT/'work') as temp:
-        executor,executor_public=_ci_signed_executor(bundle,temp)
-        destination=Path(temp)/'backup';snap_key=os.urandom(32);snap_operation=plans.new_operation()
-        snap_plan=dict(plan,operation=snap_operation)
-        keyfile=Path(temp)/'backup.key'
-        fd=os.open(keyfile,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-        with os.fdopen(fd,'wb') as output:
-            os.fchmod(output.fileno(),0o600);output.write(snap_key);output.flush();os.fsync(output.fileno())
-        with uterctl.locked(home):checked(cmd+['stop','guardrail','agent'],supplied_env=runenv)
-        readfd,writefd=os.pipe();pid=os.fork()
-        if pid==0:
-            os.close(readfd);owned=None
-            try:
-                with uterctl.locked(home):
-                    digest=plans.create(home,snap_plan,snap_key)
-                    entry=journal.create(home,backend='compose',site=cfg['name'],resource=redis_id,
-                                         plan_sha256=digest,operation=snap_operation)
-                    owned=fence.Adapter(home,bundle,publisher,snap_key)
-                    if owned._redis(snap_plan,'SET',KEY,VALUE)!='OK':raise ValueError
-                    protocol.isolate(home,snap_operation,owned)
-                    entry=journal.read(home)
-                    snapshot_only.capture(owned,entry,executor,executor_public,destination)
-                    os.write(writefd,b'R')
-                    while True:signal.pause()
-            except BaseException:os._exit(21)
-        os.close(writefd);reaped=False
-        try:
-            PHASE='SNAPSHOT_CRASH_WAIT'
-            import select
-            if not select.select([readfd],[],[],600)[0] or os.read(readfd,1)!=b'R':
-                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_SNAPSHOT_NOT_READY')
-            os.kill(pid,signal.SIGKILL);waited,status=os.waitpid(pid,0);reaped=True
-            if waited!=pid or not os.WIFSIGNALED(status) or os.WTERMSIG(status)!=signal.SIGKILL:
-                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_SNAPSHOT_NOT_KILLED')
-        finally:
-            os.close(readfd)
-            if not reaped:
-                try:os.kill(pid,signal.SIGKILL)
-                except ProcessLookupError:pass
-                try:os.waitpid(pid,0)
-                except ChildProcessError:pass
-        PHASE='SNAPSHOT_CRASH_LOCK'
-        entry=journal.read(home)
-        if entry['operation']!=snap_operation or entry['phase']!='captured':raise ValueError
-        _ci_clear_killed_child_lock(home,pid)
-        PHASE='SNAPSHOT_CRASH_RECOVERY'
-        recovery_pid=os.fork()
-        if recovery_pid==0:
-            owned=None
-            try:
-                process=subprocess.run([sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-recover-snapshot-redis',
-                                        '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
-                                        '--backup-key',str(keyfile),'--backup-dir',str(destination),
-                                        '--executor-key',str(executor_public)],cwd=executor,
-                                       env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-                                            'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
-                                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=240)
-                if process.returncode:raise ValueError
-                with uterctl.locked(home):
-                    owned=fence.Adapter(home,bundle,publisher,snap_key)
-                    entry=journal.read(home)
-                    if entry['phase']!='redis_released':raise ValueError
-                    owned._signed(snap_plan)
-                    if owned._redis(snap_plan,'GET',KEY)!=VALUE:raise ValueError
-                    if docker_json('inspect','--format','{{json .NetworkSettings.Networks}}',redis_id)!=endpoint_before:raise ValueError
-                    if owned._redis(snap_plan,'DEL',KEY)!='1':raise ValueError
-                    plans.read(home,snap_key,entry['plan_sha256'],operation=snap_operation,site=cfg['name'],resource=redis_id)
-                    checkpoint.read(home,entry,snap_key)
-                    snapshot_receipts.read_decision(home,snap_key)
-                    _,receipt_hash=snapshot_receipts.read_receipt(home,snap_key)
-                    released=origin.read(home,snap_key,entry)
-                    if released['origin']!='snapshot' or released['receipt_sha256']!=receipt_hash:raise ValueError
-                    for name in (journal.NAME,plans.NAME,checkpoint.NAME,snapshot_receipts.DECISION,
-                                 snapshot_receipts.RECEIPT,snapshot_receipts.DESCRIPTOR,origin.NAME):(home/name).unlink()
-                    owned.close();owned=None
-                os._exit(0)
-            except BaseException:
-                if owned is not None:owned.close()
-                os._exit(23)
-        _ci_wait_recovery_child(recovery_pid)
-        PHASE='SNAPSHOT_CRASH_RESUME'
-        with uterctl.locked(home):backup_snapshot.resume_writers(home,cfg,site,manifest)
+
+    # Crash at prepared/captured is tested in separate disposable fixtures.
+    # Do not delete a managed sentinel or bypass the user-facing reclaim gate.
     # Separate CLI round: capture must execute from the ephemeral signed
     # controller, not from a caller-supplied Python callback. The forced-death
     # test above remains separate, because this CLI is allowed to exit normally.
@@ -592,7 +343,7 @@ def _verify(home, bundle, publisher, manifest):
         fd=os.open(keyfile,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'wb') as output:
             os.fchmod(output.fileno(),0o600);output.write(snap_key);output.flush();os.fsync(output.fileno())
-        with uterctl.locked(home):
+        with uterctl.fenced_locked(home):
             owned=fence.Adapter(home,bundle,publisher,snap_key)
             try:
                 # Synthetic data is inserted before the command stops writers.
@@ -609,7 +360,7 @@ def _verify(home, bundle, publisher, manifest):
             if process.returncode:
                 error_file.seek(0);safe=_start_diagnostic(error_file.read(4097))
                 raise SignedComposeFenceCheckFailure(safe or 'COMPOSE_SIGNED_CI_START_COMMAND')
-        with uterctl.locked(home):
+        with uterctl.fenced_locked(home):
             entry=journal.read(home)
             if entry['phase']!='isolated' or entry['site']!=cfg['name'] or entry['resource']!=redis_id:raise ValueError
             snap_operation=entry['operation']
@@ -634,7 +385,7 @@ def _verify(home, bundle, publisher, manifest):
                                     'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
                                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
         if process.returncode:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_RECOVERY_COMMAND')
-        with uterctl.locked(home):
+        with uterctl.fenced_locked(home):
             entry=journal.read(home)
             if entry['operation']!=snap_operation or entry['phase']!='redis_released':raise ValueError
             owned=fence.Adapter(home,bundle,publisher,snap_key)
@@ -658,7 +409,7 @@ def _verify(home, bundle, publisher, manifest):
                                     'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
                                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
         if process.returncode:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_WRITERS_COMMAND')
-        with uterctl.locked(home):
+        with uterctl.fenced_locked(home):
             entry=journal.read(home)
             if entry['operation']!=snap_operation or entry['phase']!='writers_resumed':raise ValueError
             resume.read_intent(home,snap_key,entry)
@@ -686,7 +437,7 @@ def _verify(home, bundle, publisher, manifest):
         again=subprocess.run(finalize_command,cwd=executor,env=clean_env,stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
         if again.returncode==0 or any(os.path.lexists(home/name) for name in cleared):raise ValueError
-        with uterctl.locked(home):
+        with uterctl.fenced_locked(home):
             backup_snapshot.adopt_installation.verify_live(home,cfg,manifest)
             owned=fence.Adapter(home,bundle,publisher,snap_key)
             try:
@@ -696,7 +447,6 @@ def _verify(home, bundle, publisher, manifest):
     return {'signed_016_firewall_fence':'pass','no_capture_release':'pass',
             'snapshot_under_firewall':'pass','release_after_capture_blocked':'pass',
             'unchanged_endpoint':'pass','ci_only_cleanup':'pass',
-            'pre_capture_sigkill_recovery':'pass','snapshot_sigkill_recovery':'pass',
             'signed_fence_start_cli':'pass','signed_snapshot_cli':'pass','signed_writer_resume_finalize':'pass',
             'production_recovery_available':False}
 
