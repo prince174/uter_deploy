@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import subprocess
 import tarfile
 import threading
@@ -205,21 +206,50 @@ def audit_pod(kube, site, manifest, guardrail_pod):
     return podname
 
 
+def _require_legacy_operation_lock(home):
+    """Check the current PID sentinel; caller must still hold the operation lock.
+
+    This is a fail-closed sanity check under the trusted installation-directory
+    boundary, not a kernel proof against hostile same-UID processes. Hardlinked
+    experimental Lease sentinels require a separate authenticated contract.
+    """
+    if os.name != 'posix' or not hasattr(os, 'O_NOFOLLOW') or not hasattr(os, 'geteuid'):
+        raise ValueError('BACKUP_LOCK_UNVERIFIED')
+    path=Path(home)/'operation.lock'
+    try:
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+        with os.fdopen(fd,'rb') as source:
+            info=os.fstat(source.fileno())
+            raw=source.read(33)
+            observed=os.stat(path,follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid()
+                    or info.st_mode&0o077 or info.st_nlink!=1
+                    or raw!=str(os.getpid()).encode('ascii') or info.st_size!=len(raw)
+                    or (info.st_dev,info.st_ino)!=(observed.st_dev,observed.st_ino)):
+                raise ValueError
+    except (OSError,ValueError):
+        raise ValueError('BACKUP_LOCK_UNVERIFIED') from None
+
+
 def resume_writers(home, cfg, site, current):
     # Do not restart writers while a Redis isolation operation is unresolved.
     # The caller must hold the same controller lock as fence operations.
     if os.path.lexists(Path(home)/'redis-fence-operation.json'):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+    _require_legacy_operation_lock(home)
     from scripts import install as installer
     cfg=dict(cfg,images=current['images'])
     cmd,env=installer.commands(home,cfg)
     if site['backend']=='compose':
         cmd[cmd.index('-f')+1]=str(Path(home)/'releases'/current['version']/'compose/compose.yaml')
+        _require_legacy_operation_lock(home)
         checked(cmd+['up','-d','--no-build','--pull','never','--wait','--wait-timeout','300','redis','agent','guardrail'],env=env)
     else:
         kube=['kubectl','--context',cfg['context'],'-n',site['namespace']]
+        _require_legacy_operation_lock(home)
         checked(kube+['scale','deployment/'+site['name']+'-guardrail','deployment/'+site['name']+'-agent','--replicas=1'])
         for svc in ('agent','guardrail'):
+            _require_legacy_operation_lock(home)
             checked(kube+['rollout','status','deployment/'+site['name']+'-'+svc,'--timeout=300s'])
 
 
@@ -233,6 +263,7 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
     home=Path(home);journal=home/'backup-operation.json'
     if os.path.lexists(home/'redis-fence-operation.json'):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+    _require_legacy_operation_lock(home)
     if journal.exists(): raise ValueError('Previous backup operation requires inspection')
     cfg = dict(cfg, images=current['images'])
     adopt_installation.verify_live(home,cfg,current)

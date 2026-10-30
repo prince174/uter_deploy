@@ -12,6 +12,7 @@ from scripts import backup_crypto, backup_snapshot, backup_store, recover_kubern
 import uterctl
 
 
+@unittest.skipUnless(os.name=='posix' and hasattr(os,'O_NOFOLLOW'), 'requires POSIX operation lock')
 class SnapshotTests(unittest.TestCase):
     def setUp(self):
         self.t=tempfile.TemporaryDirectory();self.addCleanup(self.t.cleanup);self.root=Path(self.t.name)
@@ -27,6 +28,9 @@ class SnapshotTests(unittest.TestCase):
         self.images={s:f'registry.example/{s}@sha256:'+'a'*64 for s in ('guardrail','agent','redis')}
         self.cfg={'backend':'compose','name':'uter-test','context':'default','port':18000,'guardrail_cpus':2,'images':self.images}
         self.current={'version':'1.0.0','images':self.images};self.key=b'k'*32
+        # All real callers hold this lock while capture or resume mutates workloads.
+        self.lock=uterctl.locked(self.home);self.lock.__enter__()
+        self.addCleanup(self.lock.__exit__,None,None,None)
 
     def fake_checked(self,args,**kwargs):
         if 'ps' in args:return b'container-id\n'
@@ -58,6 +62,42 @@ class SnapshotTests(unittest.TestCase):
         self.assertTrue((self.home/'backup-operation.json').exists())
         self.assertTrue(marker.exists())
         self.assertFalse(any('up' in call.args[0] for call in checked.call_args_list))
+
+    def test_unowned_or_unsafe_lock_blocks_capture_and_resume_before_workloads(self):
+        for scenario in ('absent','other_pid','dangling_symlink','hardlink','unsafe_mode'):
+            with self.subTest(scenario=scenario),tempfile.TemporaryDirectory() as folder:
+                home=Path(folder);sentinel=home/'operation.lock'
+                if scenario=='other_pid':sentinel.write_text(str(os.getpid()+1))
+                elif scenario=='dangling_symlink':sentinel.symlink_to(home/'missing')
+                elif scenario=='hardlink':
+                    sentinel.write_text(str(os.getpid()));os.link(sentinel,home/'anchor')
+                elif scenario=='unsafe_mode':sentinel.write_text(str(os.getpid()))
+                if scenario in ('other_pid','hardlink'):sentinel.chmod(0o600)
+                if scenario=='unsafe_mode':sentinel.chmod(0o644)
+                with patch.object(backup_snapshot.adopt_installation,'verify_live') as live, \
+                     patch.object(backup_snapshot,'checked') as checked:
+                    with self.assertRaisesRegex(ValueError,'^BACKUP_LOCK_UNVERIFIED$'):
+                        backup_snapshot.capture(home,self.cfg,self.site,self.current,home/'backup',self.key)
+                    with self.assertRaisesRegex(ValueError,'^BACKUP_LOCK_UNVERIFIED$'):
+                        backup_snapshot.resume_writers(home,self.cfg,self.site,self.current)
+                live.assert_not_called();checked.assert_not_called()
+                self.assertFalse((home/'backup').exists())
+
+    def test_lost_lock_during_snapshot_preserves_journal_and_stopped_writers(self):
+        sentinel=self.home/'operation.lock'
+        def fail_after_losing_lock(*args,**kwargs):
+            sentinel.write_text(str(os.getpid()+1),encoding='ascii')
+            raise RuntimeError('snapshot interrupted')
+        try:
+            with patch.object(backup_snapshot.adopt_installation,'verify_live'), \
+                 patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as checked, \
+                 patch.object(backup_snapshot,'process_component',side_effect=fail_after_losing_lock):
+                with self.assertRaisesRegex(ValueError,'^BACKUP_LOCK_UNVERIFIED$'):
+                    backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key)
+            self.assertTrue((self.home/'backup-operation.json').exists())
+            self.assertFalse(any('up' in call.args[0] for call in checked.call_args_list))
+        finally:
+            sentinel.write_text(str(os.getpid()),encoding='ascii')
 
     def fake_component(self,writer,label,command,**kwargs):
         if label=='redis': data=b'REDIS-snapshot'
