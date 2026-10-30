@@ -14,6 +14,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -32,9 +33,39 @@ PHASES=frozenset(('GUARD','ASSETS','PAIR','PREPARE','INSTALL','ADOPT','SEED','AP
 INSTALL_CODES=frozenset({'INSTALL_IMAGES_MISSING','INSTALL_INSPECTION_UNCERTAIN','INSTALL_DOCKER_OTHER'} |
     {'INSTALL_'+service+'_'+kind for service in ('REDIS','AGENT','GUARDRAIL')
      for kind in ('MISSING','STOPPED','OOM','UNHEALTHY','STARTING')})
+APPLY_CODES=frozenset('FENCED_UPDATE_'+suffix for suffix in (
+    'PREFLIGHT_UNVERIFIED','TARGET_STAGE_UNCERTAIN','PULL_UNCERTAIN','PRIOR_OPERATION',
+    'DESTINATION_INVALID','CAPTURE_INCOMPLETE','BINDING_UNVERIFIED','RELEASE_INCOMPLETE',
+    'START_STATE_UNVERIFIED','START_INCOMPLETE','FINALIZE_STATE_UNVERIFIED','FINALIZE_INCOMPLETE'))
+JOURNAL_PHASES=frozenset(('NONE','INVALID','PREPARED','ISOLATING','ISOLATED','CAPTURING','CAPTURED',
+                          'SNAPSHOT_RELEASING','REDIS_RELEASED','TARGET_STARTING','TARGET_RUNNING','UPDATE_FINALIZING'))
+APPLY_PHASES=frozenset('APPLY_'+code+'_PHASE_'+phase for code in APPLY_CODES|{'UNKNOWN'} for phase in JOURNAL_PHASES)
 
 
 class Failure(ValueError): pass
+
+
+def apply_error(raw,home):
+    """Only the fixed exception code survives; discard all other stderr."""
+    match=re.fullmatch(rb'uterctl: FencedUpdateError: ([A-Z_]+)\r?\n',raw)
+    code=match.group(1).decode('ascii') if match else ''
+    if code not in APPLY_CODES:code='UNKNOWN'
+    try:
+        phase=journal.read(home)['phase'].upper() if os.path.lexists(Path(home)/journal.NAME) else 'NONE'
+        if phase not in JOURNAL_PHASES:phase='INVALID'
+    except Exception:phase='INVALID'
+    return 'APPLY_'+code+'_PHASE_'+phase
+
+
+def run_apply(command,home):
+    global PHASE
+    with tempfile.TemporaryFile() as errors:
+        try:
+            process=subprocess.run([str(x) for x in command],stdout=subprocess.DEVNULL,
+                                   stderr=errors,timeout=1200)
+            if process.returncode:
+                errors.seek(0);PHASE=apply_error(errors.read(4097),home);raise Failure('APPLY_FAILED')
+        except (OSError,subprocess.TimeoutExpired):raise Failure('APPLY_UNCERTAIN') from None
 
 
 def run(args, *, env=None, timeout=600):
@@ -194,13 +225,16 @@ def exercise(mode):
                 shim=private/'fault.so'
                 run(['cc','-shared','-fPIC','-o',shim,fault_fixture,'-ldl'])
                 injected=dict(os.environ,LD_PRELOAD=str(shim),UTER_CI_FAULT_HOME=str(home))
-                process=subprocess.Popen([str(x) for x in command],env=injected,
-                                         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-                try:status=process.wait(timeout=1200)
-                except subprocess.TimeoutExpired:
-                    process.kill();process.wait(timeout=30);raise Failure('FAULT_TIMEOUT') from None
-                if status!=88 or journal.read(home)['phase']!='update_finalizing':
-                    raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
+                with tempfile.TemporaryFile() as errors:
+                    process=subprocess.Popen([str(x) for x in command],env=injected,
+                                             stdout=subprocess.DEVNULL,stderr=errors)
+                    try:status=process.wait(timeout=1200)
+                    except subprocess.TimeoutExpired:
+                        process.kill();process.wait(timeout=30);raise Failure('FAULT_TIMEOUT') from None
+                    if status!=88:
+                        errors.seek(0);PHASE=apply_error(errors.read(4097),home)
+                        raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
+                if journal.read(home)['phase']!='update_finalizing':raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
                 if uterctl.read(home/'state.json').get('current')!=before or not journal.blocks_mutation(home):
                     raise Failure('FAULT_STATE_INVALID')
                 # This is test-only after waiting for our own dead child on a
@@ -210,7 +244,7 @@ def exercise(mode):
                         '--bundle',home/'releases'/after['version'],'--key',product_key,'--executor-key',executor_key,
                         '--backup-key',key,'--backup-dir',backup]
                 PHASE='FINISH';run(finish,timeout=600)
-            else:run(command,timeout=1200)
+            else:run_apply(command,home)
             PHASE='VERIFY'
             state=uterctl.read(home/'state.json')
             if state.get('current')!=after or state.get('previous')!=before or journal.blocks_mutation(home):
@@ -226,7 +260,8 @@ def exercise(mode):
             if redis_command(redis,'GET','uter:ci:synthetic-update')!=b'retained':raise Failure('REDIS_CHANGED')
         else:
             PHASE='CRASH'
-            process=subprocess.Popen([str(x) for x in command],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            errors=tempfile.TemporaryFile()
+            process=subprocess.Popen([str(x) for x in command],stdout=subprocess.DEVNULL,stderr=errors)
             deadline=time.monotonic()+1200
             try:
                 while time.monotonic()<deadline and process.poll() is None:
@@ -235,7 +270,10 @@ def exercise(mode):
                     if isinstance(record,dict) and record.get('phase')=='target_starting':
                         process.send_signal(signal.SIGKILL);process.wait(timeout=30);break
                     time.sleep(0.005)
-                else:raise Failure('CRASH_BOUNDARY_NOT_OBSERVED')
+                else:
+                    if process.poll() is not None:
+                        errors.seek(0);PHASE=apply_error(errors.read(4097),home)
+                    raise Failure('CRASH_BOUNDARY_NOT_OBSERVED')
                 if process.returncode!=-signal.SIGKILL or journal.read(home)['phase']!='target_starting':
                     raise Failure('CRASH_STATE_INVALID')
                 if not journal.blocks_mutation(home) or not (home/journal.UPDATE_START).is_file():
@@ -247,6 +285,7 @@ def exercise(mode):
                     raise Failure('CRASH_REDIS_CHANGED')
             finally:
                 if process.poll() is None:process.kill();process.wait(timeout=30)
+                errors.close()
         print('SYNTHETIC_SAME_IMAGE_'+mode.upper().replace('-','_')+'_PASS',flush=True)
     finally:
         fixture.terminate()
@@ -275,7 +314,7 @@ def main():
                              env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=3300)
         if child.returncode:
             match=re.fullmatch(rb'SYNTHETIC_FENCED_UPDATE_CI_([A-Z_]+)_FAILED\r?\n',child.stderr)
-            phase=match.group(1).decode('ascii') if match and match.group(1).decode('ascii') in PHASES|INSTALL_CODES else 'GUARD'
+            phase=match.group(1).decode('ascii') if match and match.group(1).decode('ascii') in PHASES|INSTALL_CODES|APPLY_PHASES else 'GUARD'
             raise Failure(phase)
     print('Synthetic same-image CI passed; no product-image upgrade or migration was tested.')
 
@@ -283,5 +322,5 @@ def main():
 if __name__=='__main__':
     try:main()
     except Exception as error:
-        phase=str(error) if str(error) in PHASES|INSTALL_CODES else PHASE
+        phase=str(error) if str(error) in PHASES|INSTALL_CODES|APPLY_PHASES else PHASE
         print('SYNTHETIC_FENCED_UPDATE_CI_'+phase+'_FAILED',file=sys.stderr);sys.exit(1)

@@ -67,6 +67,19 @@ class SyntheticUpdateCITests(unittest.TestCase):
         (folder/'ci_fault_before_state_replace.c').write_text('fixture')
         self.assertEqual(ci.staged_fixtures(self.root),(folder/'ci_upstream_fixture.py',folder/'ci_fault_before_state_replace.c'))
 
+    def test_apply_error_reports_only_exact_allowlisted_code(self):
+        self.assertEqual(ci.apply_error(b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_INCOMPLETE\n',self.root),
+                         'APPLY_FENCED_UPDATE_CAPTURE_INCOMPLETE_PHASE_NONE')
+        for bad in (b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_INCOMPLETE secret\n',
+                    b'uterctl: ValueError: FENCED_UPDATE_CAPTURE_INCOMPLETE\n',
+                    b'uterctl: FencedUpdateError: FENCED_UPDATE_SECRET\n',
+                    b'secret\nuterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_INCOMPLETE\n'):
+            self.assertEqual(ci.apply_error(bad,self.root),'APPLY_UNKNOWN_PHASE_NONE')
+        with mock.patch.object(ci.os.path,'lexists',return_value=True), \
+             mock.patch.object(ci.journal,'read',return_value={'phase':'isolating'}):
+            self.assertEqual(ci.apply_error(b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_INCOMPLETE\n',self.root),
+                             'APPLY_FENCED_UPDATE_CAPTURE_INCOMPLETE_PHASE_ISOLATING')
+
     @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('cc'), 'LD_PRELOAD fault requires Linux and C compiler')
     def test_fault_injection_is_scoped_to_state_in_selected_directory(self):
         shim=self.root/'fault.so'
