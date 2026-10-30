@@ -41,3 +41,22 @@ restoration of an actual Uter installation, crash recovery, backup-key custody,
 or data surviving a cutover. The preparation helper assumes a trusted caller
 and a locally controlled backup directory protected from concurrent changes and
 denial of service. No production path calls this helper.
+
+## Combined fixture evidence
+
+The later [run 41137654093](https://github.com/prince174/uter_deploy/actions/runs/41137654093)
+at commit `e8e2179` exercised the experimental evidence combiner against one
+synthetic operation and one authenticated backup manifest. It bound the Redis
+observation and the audit comparison to the same operation, plan, installation,
+backup ID, manifest and component hashes. It also checked the fixture Guardrail
+receipt, boot and image/bundle identity. Separate HMAC purposes protect the
+records, and mismatch or damaged backup tests refuse the combination. The result
+still reports `safe_to_update: false` and `safe_to_resume: false`.
+
+This run restored the synthetic RDB to a real disposable Redis and compared
+data and expiry as described above. **Its audit verifier, publisher trust and
+operation lock were mocked.** It did not validate an actual signed bundle or
+an actual audit chain alongside that Redis restore. The separate
+[audit comparison experiment](audit-backup-comparison-experiment.md) did
+exercise strict verification in a protected Guardrail image, but combining
+the results of separate runs does not prove an integrated recovery.
