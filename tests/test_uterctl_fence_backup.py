@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import uterctl
-from scripts import compose_fence_resume, compose_nsfirewall_adapter, compose_snapshot_only, redis_fence_journal as journal
+from scripts import compose_fence_finalize, compose_fence_resume, compose_nsfirewall_adapter, compose_snapshot_only, redis_fence_journal as journal
 from tests import test_controller as fixtures
 
 
@@ -159,3 +159,32 @@ class FenceBackupCLITests(unittest.TestCase):
                 uterctl.main(['fence-resume-writers','--home',str(self.fx.home),'--bundle',str(self.bundle),
                               '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key)])
         run_call.assert_not_called();self.assertEqual(journal.read(self.fx.home)['phase'],'writers_resuming')
+
+    def test_finalize_cli_holds_lock_and_never_deletes_backup(self):
+        for old,new in (('isolated','pre_capture_aborting'),('pre_capture_aborting','redis_released'),
+                        ('redis_released','writers_resuming'),('writers_resuming','writers_resumed')):
+            journal.advance(self.fx.home,operation=self.record['operation'],expected=old,next_phase=new)
+        def finish(adapter,record,executor,destination):
+            self.assertEqual((self.fx.home/'operation.lock').read_text(),str(os.getpid()))
+            self.assertIsNone(destination)
+            (self.fx.home/journal.NAME).unlink()
+        output=io.StringIO()
+        with patch.object(compose_fence_finalize,'finalize',side_effect=finish) as finalized, \
+             patch.object(compose_nsfirewall_adapter.Adapter,'close') as close, \
+             patch.object(uterctl,'deploy') as deploy,contextlib.redirect_stdout(output):
+            uterctl.main(['fence-finalize','--home',str(self.fx.home),'--bundle',str(self.bundle),
+                          '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key)])
+        finalized.assert_called_once();close.assert_called_once();deploy.assert_not_called()
+        self.assertFalse((self.fx.home/journal.NAME).exists());self.assertFalse((self.fx.home/'operation.lock').exists())
+        self.assertIn('backup was not restored or deleted',output.getvalue())
+
+    def test_finalize_cli_never_retries_partial_cleanup(self):
+        for old,new in (('isolated','pre_capture_aborting'),('pre_capture_aborting','redis_released'),
+                        ('redis_released','writers_resuming'),('writers_resuming','writers_resumed'),
+                        ('writers_resumed','finalizing')):
+            journal.advance(self.fx.home,operation=self.record['operation'],expected=old,next_phase=new)
+        with patch.object(compose_fence_finalize,'finalize') as finalized:
+            with self.assertRaisesRegex(ValueError,'^FENCE_RECOVERY_STATE_UNSUPPORTED$'):
+                uterctl.main(['fence-finalize','--home',str(self.fx.home),'--bundle',str(self.bundle),
+                              '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key)])
+        finalized.assert_not_called();self.assertEqual(journal.read(self.fx.home)['phase'],'finalizing')

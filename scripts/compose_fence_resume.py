@@ -93,7 +93,7 @@ def read_intent(home,key,record):
     finally:os.close(directory)
 
 
-def _backup_evidence(adapter,record,executor_key,destination,release_origin):
+def _backup_evidence(adapter,record,executor_key,destination,release_origin,*,binding=None):
     """Verify a prior snapshot if any receipt exists; return its receipt hash."""
     paths=[adapter.home/name for name in (receipts.DESCRIPTOR,receipts.RECEIPT,receipts.DECISION)]
     present=[os.path.lexists(path) for path in paths]
@@ -102,7 +102,8 @@ def _backup_evidence(adapter,record,executor_key,destination,release_origin):
         return '0'*64
     if release_origin['origin']!='snapshot' or not all(present) or destination is None:
         raise ResumeError('FENCE_RESUME_BACKUP_UNVERIFIED')
-    binding=snapshot._bound(adapter,record,uterctl.ROOT,executor_key,destination)
+    if binding is None:
+        binding=snapshot._bound(adapter,record,uterctl.ROOT,executor_key,destination)
     descriptor,_=receipts.read_descriptor(adapter.home,adapter.backup_key)
     receipt,receipt_hash=receipts.read_receipt(adapter.home,adapter.backup_key)
     decision,_=receipts.read_decision(adapter.home,adapter.backup_key)

@@ -235,6 +235,7 @@ _FENCE_EXECUTOR_MODULES = (
     'compose_nsfirewall_checkpoint', 'compose_fence_adapter', 'compose_fence_recovery_plan',
     'compose_redis_diagnostic', 'compose_systemd_activation', 'experimental_docker_activation_ci',
     'compose_snapshot_only', 'snapshot_only_receipts', 'compose_fence_start', 'compose_fence_resume', 'compose_fence_origin',
+    'compose_fence_finalize',
 )
 
 
@@ -265,7 +266,7 @@ def _load_signed_fence_executor(executor_key):
     sys.modules['scripts']=package
     sys.path.insert(0,str(ROOT))
     for name in ('backup_installation','compose_nsfirewall_adapter','compose_nsfirewall_protocol',
-                 'redis_fence_journal','compose_snapshot_only','compose_fence_start','compose_fence_resume'):
+                 'redis_fence_journal','compose_snapshot_only','compose_fence_start','compose_fence_resume','compose_fence_finalize'):
         importlib.import_module('scripts.'+name)
     for name,module in tuple(sys.modules.items()):
         if name.startswith('scripts.'):
@@ -443,9 +444,31 @@ def resume_compose_writers_after_fence(home,bundle,publisher_key,executor_key,ba
           'Traffic may have started before health checks; do not restore an older backup over new data.')
 
 
+def finalize_compose_fence(home,bundle,publisher_key,executor_key,backup_key_path,destination):
+    """Recheck running identity/evidence and delete the journal last, never data."""
+    from scripts import backup_installation, compose_fence_finalize, compose_nsfirewall_adapter, redis_fence_journal
+    home,key_path,secret=_fence_secret_inputs(home,backup_key_path)
+    if destination is not None:
+        if not Path(destination).is_absolute() or '..' in Path(destination).parts:
+            raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
+        try:destination=backup_installation.private_directory(destination)
+        except backup_installation.BackupError:raise ValueError('FENCE_BACKUP_DESTINATION_INVALID') from None
+        if (destination==home or destination.is_relative_to(home) or key_path==destination
+                or key_path.is_relative_to(destination)):
+            raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
+    with locked(home):
+        record=_fence_current_record(home,bundle,publisher_key,('writers_resumed',))
+        adapter=compose_nsfirewall_adapter.Adapter(home,bundle,publisher_key,secret)
+        try:compose_fence_finalize.finalize(adapter,record,executor_key,destination)
+        finally:adapter.close()
+        if os.path.lexists(home/redis_fence_journal.NAME):
+            raise ValueError('FENCE_FINALIZE_RESULT_UNVERIFIED')
+    print('Compose fence finalized after identity and health checks; backup was not restored or deleted.')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
@@ -456,7 +479,7 @@ def main(argv=None):
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args(argv)
     home = args.home.resolve()
-    if args.command in ("fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers"):
+    if args.command in ("fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize"):
         if args.key is None or args.bundle is None or args.executor_key is None:
             raise ValueError('FENCE_RECOVERY_SIGNED_BUNDLE_REQUIRED')
         if any(not path.is_absolute() for path in (args.home,args.bundle,args.key,args.executor_key)):
@@ -470,6 +493,8 @@ def main(argv=None):
             recover_compose_redis_after_snapshot(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir)
         elif args.command == "fence-resume-writers":
             resume_compose_writers_after_fence(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir)
+        elif args.command == "fence-finalize":
+            finalize_compose_fence(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir)
         else:
             start_compose_fence(args.home,args.bundle,args.key,args.backup_key)
         return
