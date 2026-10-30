@@ -354,6 +354,23 @@ def run_scenario():
         old_audit(cmd, env, 'check')
         if second['backup_id'] == first['backup_id']:
             raise CheckFailure('BACKUP_NOT_NEW')
+        if os.environ.get('UTER_CI_VERIFY_KUBE_LOOPBACK')=='true':
+            # Disposable runner only. The two blocked-update/restore checks
+            # above have already completed; this final stage deliberately
+            # leaves its isolated namespace to runner teardown.
+            clear_own_marker(home,second)
+            from scripts import kubernetes_coordinator_signed_ci
+            try:
+                result=kubernetes_coordinator_signed_ci.verify(Path(home),source,public,old)
+                if result!={'synthetic_signed_executor_backup_receipt_verified':True,
+                           'production_stale_lock_recovery':False,'audit_integrity':'structure_only',
+                           'safe_to_update':False}:raise ValueError
+            except Exception:
+                stages={'GUARD','INPUT','SIGN_EXECUTOR','START_CHILD','STALE_LOCK_CI_ONLY','RECOVERY_CHILD',
+                        'CHILD_PREFLIGHT','CHILD_REDIS_PLAN','CHILD_START','CHILD_RECOVERY_SESSION',
+                        'CHILD_NEW_REDIS','CHILD_BACKUP','CHILD_RECEIPT'}
+                phase=kubernetes_coordinator_signed_ci.PHASE
+                raise CheckFailure('KUBE_COORDINATOR_CI_'+phase if phase in stages else 'KUBE_COORDINATOR_CI_UNVERIFIED') from None
         saved.append({'ambiguous_session_blocked':'pass', 'fixture_data_and_ttl_preserved':'pass',
                       'empty_database_without_external_fence_blocked':'pass',
                       'old_controller_epoch_change_blocked':'pass',
@@ -437,6 +454,13 @@ def main():
                            'KUBE_LOOPBACK_CI_PIN_BINARY_SESSION','KUBE_LOOPBACK_CI_PIN_BINARY_REVERIFY','KUBE_LOOPBACK_CI_PIN_OPERATOR_PROFILE',
                            'KUBE_LOOPBACK_CI_PIN_BINARY_READ','KUBE_LOOPBACK_CI_PIN_BINARY_OWNER','KUBE_LOOPBACK_CI_PIN_BINARY_MODE',
                            'KUBE_LOOPBACK_CI_PIN_BINARY_SYMLINK','KUBE_LOOPBACK_CI_PIN_BINARY_CONTENT',
+                           'KUBE_COORDINATOR_CI_GUARD','KUBE_COORDINATOR_CI_INPUT','KUBE_COORDINATOR_CI_SIGN_EXECUTOR',
+                           'KUBE_COORDINATOR_CI_START_CHILD','KUBE_COORDINATOR_CI_STALE_LOCK_CI_ONLY',
+                           'KUBE_COORDINATOR_CI_RECOVERY_CHILD','KUBE_COORDINATOR_CI_UNVERIFIED',
+                           'KUBE_COORDINATOR_CI_CHILD_PREFLIGHT','KUBE_COORDINATOR_CI_CHILD_REDIS_PLAN',
+                           'KUBE_COORDINATOR_CI_CHILD_START','KUBE_COORDINATOR_CI_CHILD_RECOVERY_SESSION',
+                           'KUBE_COORDINATOR_CI_CHILD_NEW_REDIS','KUBE_COORDINATOR_CI_CHILD_BACKUP',
+                           'KUBE_COORDINATOR_CI_CHILD_RECEIPT',
                            'KUBE_LOOPBACK_CI_WRITER_TERMINATION_POD_FETCH','KUBE_LOOPBACK_CI_WRITER_TERMINATION_IDENTITY',
                            'KUBE_LOOPBACK_CI_WRITER_TERMINATION_CONTAINER','KUBE_LOOPBACK_CI_WRITER_TERMINATION_TERMINATED_STATE',
                            'KUBE_LOOPBACK_CI_WRITER_TERMINATION_EXIT_CODE','KUBE_LOOPBACK_CI_WRITER_TERMINATION_SIGNAL',
