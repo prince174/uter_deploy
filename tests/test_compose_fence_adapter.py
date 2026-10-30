@@ -66,7 +66,7 @@ class ComposeFenceAdapterTests(unittest.TestCase):
         with self.assertRaises(fence.ComposeFenceAdapterError):self.adapter._config(install)
 
     def test_detached_state_requires_same_process_image_volume_and_no_network(self):
-        with mock.patch.object(self.adapter,'_json',return_value=['docker-entrypoint.sh']), \
+        with mock.patch.object(self.adapter,'_verify_process'), mock.patch.object(self.adapter,'_json',return_value=['docker-entrypoint.sh']), \
              mock.patch.object(self.adapter, '_inspect_redis', return_value=self.state):
             self.assertEqual(self.adapter._state(self.plan,detached=True,restart='no'),self.state)
         for change in ({'restart':'unless-stopped'}, {'started':'different'}, {'restart_count':1},
@@ -75,9 +75,20 @@ class ComposeFenceAdapterTests(unittest.TestCase):
                        {'runtime_ports':{'6379/tcp':[{'HostPort':'6379'}]}}, {'readonly':False},
                        {'user':'0:0'}, {'command':['/bin/sh']}, {'tmpfs':{'/tmp':'rw','/bin':'rw'}},
                        {'mounts':self.state['mounts']+[{'Type':'bind','Destination':'/usr/local/bin/redis-cli','RW':True}]}):
-            with self.subTest(change=change), mock.patch.object(self.adapter,'_json',return_value=['docker-entrypoint.sh']), \
+            with self.subTest(change=change), mock.patch.object(self.adapter,'_verify_process'), \
+                 mock.patch.object(self.adapter,'_json',return_value=['docker-entrypoint.sh']), \
                  mock.patch.object(self.adapter, '_inspect_redis', return_value=dict(self.state,**change)):
                 with self.assertRaises(fence.ComposeFenceAdapterError): self.adapter._state(self.plan,detached=True,restart='no')
+
+    def test_process_identity_queries_only_names_and_executable_links(self):
+        with mock.patch.object(self.adapter,'_run',return_value='OK') as run:
+            self.adapter._verify_process(self.plan)
+        command=run.call_args.args
+        self.assertEqual(command[:5],('exec','--user','999:1000',self.plan['container_id'],'/bin/sh'))
+        self.assertNotIn('cmdline',command[-1]);self.assertNotIn('/environ',command[-1])
+        with mock.patch.object(self.adapter,'_run',return_value='unexpected'):
+            with self.assertRaisesRegex(fence.ComposeFenceAdapterError,'EXECUTABLE_UNVERIFIED'):
+                self.adapter._verify_process(self.plan)
 
     def test_peer_network_namespace_and_volume_are_rejected(self):
         peer='f'*64

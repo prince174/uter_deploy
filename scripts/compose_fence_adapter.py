@@ -141,7 +141,19 @@ class Adapter:
                '"networks":{{json .NetworkSettings.Networks}}}')
         return self._json('inspect', '--format', fmt, container)
 
-    def _state(self, plan, *, detached, restart):
+    def _verify_process(self, plan):
+        # Read only process names and executable links inside this container.
+        # Do not read command lines or environment: those may contain secrets.
+        script = ("n=0; for f in /proc/[0-9]*/comm; do "
+                  "IFS= read -r name < \"$f\" || exit 7; "
+                  "[ \"$name\" = redis-server ] || continue; "
+                  "p=${f%/comm}; target=$(/bin/readlink \"$p/exe\") || exit 8; "
+                  "[ \"$target\" = /usr/local/bin/redis-server ] || exit 9; "
+                  "n=$((n+1)); done; [ \"$n\" = 1 ] || exit 10; printf OK")
+        if self._run('exec', '--user', '999:1000', plan['container_id'], '/bin/sh', '-ec', script) != 'OK':
+            raise ComposeFenceAdapterError('COMPOSE_FENCE_EXECUTABLE_UNVERIFIED')
+
+    def _state(self, plan, *, detached, restart, original_endpoint=False):
         state = self._inspect_redis(plan['container_id'])
         networks = state.get('networks')
         if (state.get('id') != plan['container_id'] or state.get('running') is not True
@@ -185,8 +197,10 @@ class Adapter:
             endpoint = networks[plan['network_name']]
             if (endpoint.get('NetworkID') != plan['network_id'] or endpoint.get('IPAddress') != plan['endpoint_ipv4']
                     or endpoint.get('MacAddress', '').lower() != plan['endpoint_mac']
+                    or (original_endpoint and endpoint.get('EndpointID') != plan['endpoint_id'])
                     or set(endpoint.get('Aliases') or []) != set(plan['endpoint_aliases'])):
                 raise ComposeFenceAdapterError('COMPOSE_FENCE_NETWORK_CHANGED')
+        self._verify_process(plan)
         return state
 
     def _network_and_volume(self, plan):
@@ -261,7 +275,7 @@ class Adapter:
     def verify_preconditions(self, record):
         plan = self._plan(record)
         self._signed(plan)
-        self._state(plan, detached=False, restart='unless-stopped')
+        self._state(plan, detached=False, restart='unless-stopped', original_endpoint=True)
         self._network_and_volume(plan)
         self._peers(plan)
         self._redis_config(plan)
@@ -269,13 +283,13 @@ class Adapter:
 
     def disable_restart(self, record):
         plan = self._plan(record); self._lock()
-        self._state(plan, detached=False, restart='unless-stopped')
+        self._state(plan, detached=False, restart='unless-stopped', original_endpoint=True)
         self._run('update', '--restart=no', plan['container_id'])
-        self._state(plan, detached=False, restart='no')
+        self._state(plan, detached=False, restart='no', original_endpoint=True)
 
     def disconnect_network(self, record):
         plan = self._plan(record); self._lock()
-        self._state(plan, detached=False, restart='no')
+        self._state(plan, detached=False, restart='no', original_endpoint=True)
         self._run('network', 'disconnect', plan['network_id'], plan['container_id'])
         self._state(plan, detached=True, restart='no')
 
