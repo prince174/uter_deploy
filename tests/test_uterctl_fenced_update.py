@@ -79,5 +79,18 @@ class FencedUpdateCLITests(unittest.TestCase):
                               '--backup-key',str(self.key),'--backup-dir',str(self.destination)])
         finish.assert_not_called()
 
+    def test_fenced_commands_reject_relative_trust_paths_before_executor_load(self):
+        for command in ('apply','fence-finish-update'):
+            for option in ('--home','--bundle','--key','--executor-key'):
+                values={'--home':str(self.fx.home),'--bundle':str(self.target),
+                        '--key':str(self.fx.pub),'--executor-key':str(self.fx.pub)}
+                values[option]='relative-path'
+                argv=[command]+(['--fenced-update'] if command=='apply' else [])
+                for name,value in values.items():argv.extend((name,value))
+                with self.subTest(command=command,option=option),patch.object(uterctl,'_load_signed_fence_executor') as load:
+                    with self.assertRaisesRegex(ValueError,'^FENCED_UPDATE_PATH_NOT_ABSOLUTE$'):
+                        uterctl.main(argv)
+                    load.assert_not_called()
+
 
 if __name__=='__main__':unittest.main()

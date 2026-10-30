@@ -543,12 +543,16 @@ def main(argv=None):
     if args.fenced_update:
         if args.command!='apply' or args.key is None or args.bundle is None or args.executor_key is None:
             raise ValueError('FENCED_UPDATE_ARGUMENTS_REQUIRED')
+        if any(not path.is_absolute() for path in (args.home,args.bundle,args.key,args.executor_key)):
+            raise ValueError('FENCED_UPDATE_PATH_NOT_ABSOLUTE')
         _load_signed_fence_executor(args.executor_key)
         apply_compose_fenced_update(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir,offline=args.offline)
         return
     if args.command=='fence-finish-update':
         if args.key is None or args.bundle is None or args.executor_key is None:
             raise ValueError('FENCED_UPDATE_ARGUMENTS_REQUIRED')
+        if any(not path.is_absolute() for path in (args.home,args.bundle,args.key,args.executor_key)):
+            raise ValueError('FENCED_UPDATE_PATH_NOT_ABSOLUTE')
         _load_signed_fence_executor(args.executor_key)
         finish_compose_fenced_update(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir)
         return

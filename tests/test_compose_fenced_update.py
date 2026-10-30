@@ -213,15 +213,22 @@ class ComposeFencedUpdateTests(unittest.TestCase):
                  patch.object(update.compose_nsfirewall_adapter,'Adapter',return_value=adapter), \
                  patch.object(update.compose_fence_finalize.checkpoint,'read',return_value={}), \
                  patch.object(update.compose_fence_finalize,'_attach_running_redis'), \
+                 patch.object(update,'_released_binding',return_value={}), \
+                 patch.object(update,'_verify_mutation_backup') as verify_backup, \
                  patch.object(update.compose_fence_start,'read_intent',return_value=original), \
                  patch.object(update.compose_fence_start,'_writers_stopped'), \
                  patch.object(update.compose_fence_resume,'_current_writer_ids'), \
                  patch.object(update.subprocess,'run',side_effect=uncertain) as run:
+                verify_backup.side_effect=update.FencedUpdateError('FENCED_UPDATE_BACKUP_UNVERIFIED')
+                with self.assertRaisesRegex(update.FencedUpdateError,'^FENCED_UPDATE_BACKUP_UNVERIFIED$'):
+                    update.start_target(home,'source','target','publisher','executor',key,'backup')
+                run.assert_not_called();self.assertFalse(os.path.lexists(home/update.TARGET_START))
+                self.assertEqual(journal.read(home)['phase'],'redis_released');verify_backup.side_effect=None
                 with self.assertRaisesRegex(update.FencedUpdateError,'^FENCED_UPDATE_START_INCOMPLETE$'):
                     update.start_target(home,'source','target','publisher','executor',key,'backup')
                 with self.assertRaisesRegex(update.FencedUpdateError,'^FENCED_UPDATE_START_STATE_UNVERIFIED$'):
                     update.start_target(home,'source','target','publisher','executor',key,'backup')
-            run.assert_called_once();adapter.close.assert_called_once()
+            run.assert_called_once();self.assertEqual(adapter.close.call_count,2)
             self.assertTrue(os.path.lexists(home/journal.UPDATE_INTENT));self.assertTrue(os.path.lexists(home/update.TARGET_START))
 
     @unittest.skipUnless(os.name=='posix','private POSIX journal')
@@ -281,9 +288,16 @@ class ComposeFencedUpdateTests(unittest.TestCase):
                  patch.object(update.compose_nsfirewall_adapter,'Adapter',return_value=adapter), \
                  patch.object(update.compose_fence_finalize.checkpoint,'read',return_value={}), \
                  patch.object(update.compose_fence_finalize,'_attach_running_redis'), \
+                 patch.object(update.compose_fence_start,'read_intent') as start_intent, \
                  patch.object(update.uterctl,'site_config',return_value={'name':'test'}), \
                  patch.object(update.compose_fence_start,'_writers',return_value=writers), \
                  patch.object(update.compose_fence_resume,'_healthy'):
+                start_intent.side_effect=ValueError('tampered old writer intent')
+                with self.assertRaisesRegex(update.FencedUpdateError,'^FENCED_UPDATE_FINALIZE_INCOMPLETE$'):
+                    update.finalize_target(home,source,target,'publisher','executor',key,destination)
+                self.assertEqual(journal.read(home)['phase'],'target_running')
+                self.assertEqual(update.uterctl.read(home/'state.json')['current'],self.old)
+                start_intent.side_effect=None
                 durable=update._durable_json
                 def fail_after_install(directory,name,value):
                     if name=='state.json':raise OSError('injected state fsync failure')

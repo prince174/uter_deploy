@@ -380,6 +380,14 @@ def create_target_result(home,key,record,intent,writers):
     return value
 
 
+def _released_binding(home,old,site,intent,executor_key,destination):
+    """Reconstruct fixed snapshot binding after writers may be running."""
+    return {'current':old,'site':site,'bundle':intent['source_sha256'],
+            'checkpoint':hashlib.sha256(snapshot._file(Path(home)/compose_fence_finalize.checkpoint.NAME)).hexdigest(),
+            'executor':snapshot._executor(uterctl.ROOT,executor_key),
+            'destination':hashlib.sha256(str(Path(destination).resolve()).encode()).hexdigest()}
+
+
 def start_target(home,source,target,publisher,executor_key,key,destination):
     """Attempt target writers once, preserving all evidence on any uncertainty."""
     backup_snapshot._require_legacy_operation_lock(home)
@@ -396,6 +404,8 @@ def start_target(home,source,target,publisher,executor_key,key,destination):
             adapter._signed(plan);adapter._config(Path(source))
             saved=compose_fence_finalize.checkpoint.read(home,record,key)
             compose_fence_finalize._attach_running_redis(adapter,record,plan,saved)
+            binding=_released_binding(home,old,site,intent,executor_key,destination)
+            _verify_mutation_backup(adapter,record,executor_key,destination,intent,binding)
             original=compose_fence_start.read_intent(home,key,record,intent['source_sha256'])
             compose_fence_start._writers_stopped({name:original[name] for name in ('agent','guardrail')},site['name'])
             compose_fence_resume._current_writer_ids(adapter,plan,original)
@@ -507,16 +517,14 @@ def finalize_target(home,source,target,publisher,executor_key,key,destination):
             if Path(target)!=home/'releases'/new['version']:raise ValueError
             read_target_start(home,key,record,intent)
             result=read_target_result(home,key,record,intent)
+            compose_fence_start.read_intent(home,key,record,intent['source_sha256'])
             adapter=compose_nsfirewall_adapter.Adapter(home,source,publisher,key)
             plan=adapter._plan(record);site=uterctl.site_config(home)
             cfg=_verify_running_source(adapter,record,plan,source,publisher,old,new,site,
                                        allow_committed=record['phase']=='update_finalizing')
             saved=compose_fence_finalize.checkpoint.read(home,record,key)
             compose_fence_finalize._attach_running_redis(adapter,record,plan,saved)
-            binding={'current':old,'site':site,'bundle':intent['source_sha256'],
-                     'checkpoint':hashlib.sha256(snapshot._file(home/compose_fence_finalize.checkpoint.NAME)).hexdigest(),
-                     'executor':snapshot._executor(uterctl.ROOT,executor_key),
-                     'destination':hashlib.sha256(str(Path(destination).resolve()).encode()).hexdigest()}
+            binding=_released_binding(home,old,site,intent,executor_key,destination)
             verified=_verify_mutation_backup(adapter,record,executor_key,destination,intent,binding)
             with tempfile.TemporaryDirectory(prefix='uter-compose-verify-') as temporary:
                 command,env=_compose_command(home,target,new,site,temporary)
