@@ -75,7 +75,8 @@ class BundleProvenanceTests(unittest.TestCase):
                          (uterctl.ROOT / 'scripts/redis_fence_journal.py').read_bytes())
         for name in ('compose_nsfirewall_adapter.py','compose_nsfirewall_protocol.py',
                      'compose_nsfirewall_checkpoint.py','compose_fence_adapter.py','compose_fence_recovery_plan.py',
-                     'compose_redis_diagnostic.py','compose_systemd_activation.py','experimental_docker_activation_ci.py'):
+                     'compose_redis_diagnostic.py','compose_systemd_activation.py','experimental_docker_activation_ci.py',
+                     'compose_snapshot_only.py','snapshot_only_receipts.py'):
             with self.subTest(name=name):
                 path=result/'scripts'/name
                 self.assertEqual(path.read_bytes(),(uterctl.ROOT/'scripts'/name).read_bytes())

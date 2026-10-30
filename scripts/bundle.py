@@ -38,7 +38,8 @@ def build(manifest, output, key, *, source_root=ROOT):
                      'bootstrap_wizard.py','uter_wizard.py','install_wizard.py','update_wizard.py',
                      'redis_fence_journal.py','compose_nsfirewall_adapter.py','compose_nsfirewall_protocol.py',
                      'compose_nsfirewall_checkpoint.py','compose_fence_adapter.py','compose_fence_recovery_plan.py',
-                     'compose_redis_diagnostic.py','compose_systemd_activation.py','experimental_docker_activation_ci.py'):
+                     'compose_redis_diagnostic.py','compose_systemd_activation.py','experimental_docker_activation_ci.py',
+                     'compose_snapshot_only.py','snapshot_only_receipts.py'):
             shutil.copy2(source_root/'scripts'/name,scripts/name)
         if m.get('session_identity_gate'):
             shutil.copy2(source_root/'scripts/session_migration_guard.py', scripts/'session_migration_guard.py')

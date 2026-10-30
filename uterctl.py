@@ -234,6 +234,7 @@ _FENCE_EXECUTOR_MODULES = (
     'redis_fence_journal', 'compose_nsfirewall_adapter', 'compose_nsfirewall_protocol',
     'compose_nsfirewall_checkpoint', 'compose_fence_adapter', 'compose_fence_recovery_plan',
     'compose_redis_diagnostic', 'compose_systemd_activation', 'experimental_docker_activation_ci',
+    'compose_snapshot_only', 'snapshot_only_receipts',
 )
 
 
@@ -263,7 +264,8 @@ def _load_signed_fence_executor(executor_key):
     package.__spec__.submodule_search_locations=package.__path__
     sys.modules['scripts']=package
     sys.path.insert(0,str(ROOT))
-    for name in ('backup_installation','compose_nsfirewall_adapter','compose_nsfirewall_protocol','redis_fence_journal'):
+    for name in ('backup_installation','compose_nsfirewall_adapter','compose_nsfirewall_protocol',
+                 'redis_fence_journal','compose_snapshot_only'):
         importlib.import_module('scripts.'+name)
     for name,module in tuple(sys.modules.items()):
         if name.startswith('scripts.'):
@@ -277,15 +279,12 @@ def _load_signed_fence_executor(executor_key):
                 raise ValueError('FENCE_EXECUTOR_IMPORT_UNSAFE')
 
 
-def recover_compose_redis_before_snapshot(home, bundle, publisher_key, backup_key_path):
-    """Recover Redis only for an authenticated pre-snapshot fence operation.
-
-    This does not recover the installation or resume writers. Existing stale
-    operation locks are never deleted. Unknown results preserve the journals.
-    """
-    from scripts import backup_installation, compose_nsfirewall_adapter, compose_nsfirewall_protocol, redis_fence_journal
+def _fence_secret_inputs(home, backup_key_path):
+    from scripts import backup_installation
     if backup_key_path is None:
         raise ValueError('FENCE_RECOVERY_BACKUP_KEY_REQUIRED')
+    if not Path(home).is_absolute() or not Path(backup_key_path).is_absolute():
+        raise ValueError('FENCE_RECOVERY_PATH_NOT_ABSOLUTE')
     # Verify the original paths, not resolved paths, so a symlink or an unsafe
     # ancestor cannot silently redirect the operation or protected backup key.
     try:
@@ -301,30 +300,43 @@ def recover_compose_redis_before_snapshot(home, bundle, publisher_key, backup_ke
         raise ValueError('FENCE_RECOVERY_BACKUP_KEY_INVALID') from None
     if len(secret)!=32:
         raise ValueError('FENCE_RECOVERY_BACKUP_KEY_INVALID')
+    return home,key_path,secret
+
+
+def _fence_current_record(home, bundle, publisher_key, allowed_phases):
+    """Caller holds lock; bind journal to the exact signed installation."""
+    from scripts import backup_installation, redis_fence_journal
+    state=backup_installation.safe_json(home/'state.json')
+    if (state.get('adopted_installer') is not True or state.get('pending') is not None
+            or not isinstance(state.get('current'),dict)):
+        raise ValueError('FENCE_RECOVERY_INSTALLATION_UNSUPPORTED')
+    current=state['current']
+    signed=verify(bundle,publisher_key)
+    if signed != current:
+        raise ValueError('FENCE_RECOVERY_SIGNED_VERSION_MISMATCH')
+    installed=home/'releases'/signed['version']
+    if (verify(installed,publisher_key) != signed or
+            (installed/'checksums.json').read_bytes() != (Path(bundle)/'checksums.json').read_bytes()):
+        raise ValueError('FENCE_RECOVERY_SIGNED_VERSION_MISMATCH')
+    site=site_config(home)
+    cfg=backup_installation.safe_json(home/'install.json')
+    record=redis_fence_journal.read(home)
+    if (cfg.get('backend')!='compose' or cfg.get('context')!='default'
+            or cfg.get('name')!=site.get('name') or site.get('backend')!='compose'
+            or site.get('context')!='default' or site.get('namespace')!=site.get('name')
+            or record['backend']!='compose' or record['site']!=site['name']
+            or record['phase'] not in allowed_phases):
+        raise ValueError('FENCE_RECOVERY_STATE_UNSUPPORTED')
+    return record
+
+
+def recover_compose_redis_before_snapshot(home, bundle, publisher_key, backup_key_path):
+    """Recover Redis only before snapshot; never resume writers or clear marker."""
+    from scripts import compose_nsfirewall_adapter, compose_nsfirewall_protocol, redis_fence_journal
+    home,_,secret=_fence_secret_inputs(home,backup_key_path)
     with locked(home):
-        # Re-read under the lock. Never act on a pending deployment or an
-        # unadopted installation; the adapter verifies its identities again.
-        state=backup_installation.safe_json(home/'state.json')
-        if (state.get('adopted_installer') is not True or state.get('pending') is not None
-                or not isinstance(state.get('current'),dict)):
-            raise ValueError('FENCE_RECOVERY_INSTALLATION_UNSUPPORTED')
-        current=state['current']
-        signed=verify(bundle,publisher_key)
-        if signed != current:
-            raise ValueError('FENCE_RECOVERY_SIGNED_VERSION_MISMATCH')
-        installed=home/'releases'/signed['version']
-        if (verify(installed,publisher_key) != signed or
-                (installed/'checksums.json').read_bytes() != (Path(bundle)/'checksums.json').read_bytes()):
-            raise ValueError('FENCE_RECOVERY_SIGNED_VERSION_MISMATCH')
-        site=site_config(home)
-        cfg=backup_installation.safe_json(home/'install.json')
-        record=redis_fence_journal.read(home)
-        if (cfg.get('backend')!='compose' or cfg.get('context')!='default'
-                or cfg.get('name')!=site.get('name') or site.get('backend')!='compose'
-                or site.get('context')!='default' or site.get('namespace')!=site.get('name')
-                or record['backend']!='compose' or record['site']!=site['name']
-                or record['phase'] not in ('prepared','isolating','isolated','pre_capture_aborting')):
-            raise ValueError('FENCE_RECOVERY_STATE_UNSUPPORTED')
+        record=_fence_current_record(home,bundle,publisher_key,
+                                     ('prepared','isolating','isolated','pre_capture_aborting'))
         adapter=compose_nsfirewall_adapter.Adapter(home,bundle,publisher_key,secret)
         try:
             compose_nsfirewall_protocol.recover_before_capture(home,record['operation'],adapter)
@@ -337,9 +349,39 @@ def recover_compose_redis_before_snapshot(home, bundle, publisher_key, backup_ke
     print('Redis released before snapshot; writers remain stopped and the fence journal is retained.')
 
 
+def capture_compose_fenced_backup(home,bundle,publisher_key,executor_key,backup_key_path,destination):
+    """One fixed fenced backup only; no rollout, restart, or automatic cleanup."""
+    from scripts import backup_installation, compose_nsfirewall_adapter, compose_snapshot_only, redis_fence_journal
+    home,key_path,secret=_fence_secret_inputs(home,backup_key_path)
+    if destination is None or not Path(destination).is_absolute() or '..' in Path(destination).parts:
+        raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
+    destination=Path(destination)
+    try: parent=backup_installation.private_directory(destination.parent)
+    except backup_installation.BackupError:raise ValueError('FENCE_BACKUP_DESTINATION_INVALID') from None
+    destination=parent/destination.name
+    if (destination==home or destination.is_relative_to(home) or key_path==destination
+            or key_path.is_relative_to(destination) or os.path.lexists(destination)):
+        raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
+    with locked(home):
+        if os.path.lexists(home/'backup-operation.json'):
+            raise ValueError('FENCE_BACKUP_PRIOR_BACKUP_REQUIRES_INSPECTION')
+        record=_fence_current_record(home,bundle,publisher_key,('isolated',))
+        adapter=compose_nsfirewall_adapter.Adapter(home,bundle,publisher_key,secret)
+        try:
+            if adapter.attach_before_capture_recovery(record) is not True or adapter.verify_fenced(record) is not True:
+                raise ValueError('FENCE_BACKUP_ISOLATION_UNVERIFIED')
+            backup_id=compose_snapshot_only.capture(adapter,record,ROOT,executor_key,destination)
+        finally:
+            adapter.close()
+        final=redis_fence_journal.read(home)
+        if final['operation']!=record['operation'] or final['phase']!='captured':
+            raise ValueError('FENCE_BACKUP_RESULT_UNVERIFIED')
+    print('Fenced backup '+backup_id+' created; Redis remains isolated and writers remain stopped.')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
@@ -350,11 +392,16 @@ def main(argv=None):
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args(argv)
     home = args.home.resolve()
-    if args.command == "fence-recover-redis":
+    if args.command in ("fence-recover-redis", "fence-backup-redis"):
         if args.key is None or args.bundle is None or args.executor_key is None:
             raise ValueError('FENCE_RECOVERY_SIGNED_BUNDLE_REQUIRED')
+        if any(not path.is_absolute() for path in (args.home,args.bundle,args.key,args.executor_key)):
+            raise ValueError('FENCE_RECOVERY_PATH_NOT_ABSOLUTE')
         _load_signed_fence_executor(args.executor_key)
-        recover_compose_redis_before_snapshot(args.home, args.bundle, args.key, args.backup_key)
+        if args.command == "fence-recover-redis":
+            recover_compose_redis_before_snapshot(args.home, args.bundle, args.key, args.backup_key)
+        else:
+            capture_compose_fenced_backup(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir)
         return
     if args.command == "fence-status":
         # A journal is a recovery aid, never proof that a fence currently
