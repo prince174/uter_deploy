@@ -51,11 +51,16 @@ def _verify(home, bundle, publisher, manifest):
     global PHASE
     PHASE='GUARD'
     env=os.environ
-    if (env.get('GITHUB_ACTIONS')!='true' or env.get('RUNNER_ENVIRONMENT')!='github-hosted'
-            or env.get('RUNNER_OS')!='Linux' or env.get('UTER_CI_STRICT_RUNNER')!='true'
-            or env.get('BACKEND')!='compose' or env.get('DOCKER_HOST')
-            or env.get('DOCKER_CONTEXT','default') not in ('','default')):
-        raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_GUARD')
+    for variable, expected, code in (
+            ('GITHUB_ACTIONS','true','COMPOSE_SIGNED_CI_ACTIONS_GUARD'),
+            ('RUNNER_ENVIRONMENT','github-hosted','COMPOSE_SIGNED_CI_HOSTED_GUARD'),
+            ('RUNNER_OS','Linux','COMPOSE_SIGNED_CI_OS_GUARD'),
+            ('UTER_CI_STRICT_RUNNER','true','COMPOSE_SIGNED_CI_STRICT_GUARD'),
+            ('BACKEND','compose','COMPOSE_SIGNED_CI_BACKEND_GUARD')):
+        if env.get(variable)!=expected: raise SignedComposeFenceCheckFailure(code)
+    if env.get('DOCKER_HOST'): raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_HOST_GUARD')
+    if env.get('DOCKER_CONTEXT','default') not in ('','default'):
+        raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CONTEXT_GUARD')
     home=Path(home).resolve(strict=True);bundle=Path(bundle).resolve(strict=True);publisher=Path(publisher).resolve(strict=True)
     if not home.is_relative_to(ROOT/'work') or not bundle.is_relative_to(ROOT/'work') or not publisher.is_relative_to(ROOT/'work'):
         raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_PATH')

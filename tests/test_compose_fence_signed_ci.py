@@ -9,13 +9,15 @@ from scripts import compose_fence_signed_ci as ci
 
 class SignedComposeCITest(unittest.TestCase):
     def test_no_docker_or_installation_access_without_all_hosted_runner_guards(self):
-        for override in ({}, {'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'self-hosted','RUNNER_OS':'Linux',
-                             'UTER_CI_STRICT_RUNNER':'true','BACKEND':'compose'},
-                         {'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux',
-                          'UTER_CI_STRICT_RUNNER':'true','BACKEND':'compose','DOCKER_HOST':'unix:///tmp/other'}):
+        for override,code in (({},'COMPOSE_SIGNED_CI_ACTIONS_GUARD'),
+                              ({'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'self-hosted','RUNNER_OS':'Linux',
+                               'UTER_CI_STRICT_RUNNER':'true','BACKEND':'compose'},'COMPOSE_SIGNED_CI_HOSTED_GUARD'),
+                              ({'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux',
+                                'UTER_CI_STRICT_RUNNER':'true','BACKEND':'compose','DOCKER_HOST':'unix:///tmp/other'},
+                               'COMPOSE_SIGNED_CI_HOST_GUARD')):
             with self.subTest(override=override), mock.patch.dict(os.environ,override,clear=True), \
                  mock.patch.object(ci.uterctl,'verify') as verify, mock.patch.object(ci.subprocess,'Popen') as launch:
-                with self.assertRaisesRegex(ci.SignedComposeFenceCheckFailure,'COMPOSE_SIGNED_CI_GUARD'):
+                with self.assertRaisesRegex(ci.SignedComposeFenceCheckFailure,code):
                     ci.verify('/unknown','/unknown','/unknown',{})
                 verify.assert_not_called();launch.assert_not_called()
 
