@@ -15,6 +15,7 @@ from tool_models import ToolRequest
 import redis.asyncio as redis_async
 from redis.exceptions import NoPermissionError
 
+PHASE='IMPORTS'
 
 def request(path, data, *, form=False, token=None):
     payload = (urllib.parse.urlencode(data) if form else json.dumps(data)).encode()
@@ -26,7 +27,9 @@ def request(path, data, *, form=False, token=None):
 
 
 async def main():
+    global PHASE
     run_id=uuid.uuid4().hex
+    PHASE='RATE_LIMIT'
     if not await initialize_redis_pool(): raise ValueError
     allowed, remaining, _ = await _check_limit('ci:rate:'+run_id, limit=2, window=60)
     if not allowed or remaining != 1: raise ValueError
@@ -36,15 +39,18 @@ async def main():
     if allowed: raise ValueError
     connection=redis_async.Redis(**load_redis_connection_settings().client_kwargs())
     try:
+        PHASE='DENY_ADMIN_COMMAND'
         try: await connection.execute_command('ACL','USERS')
         except NoPermissionError: pass
         else: raise ValueError
+        PHASE='HISTORY'
         history=SessionStore(connection)
         await history.append('ci:'+run_id,'user','fixture')
         stored=await history.get_history('ci:'+run_id)
         if len(stored) != 1 or stored[0].get('content') != 'fixture': raise ValueError
         await history.clear('ci:'+run_id)
         if await history.get_history('ci:'+run_id): raise ValueError
+        PHASE='RULES'
         rules=RuleStore(connection)
         pattern='ci'+run_id
         if not await rules.add_rule(KEY_INPUT_INJECTION,pattern): raise ValueError
@@ -56,6 +62,7 @@ async def main():
     finally:
         await connection.aclose()
         await close_redis_pool()
+    PHASE='APPROVAL'
     login=request('/auth/token',{'username':'admin','password':os.environ['CI_ADMIN_PASSWORD']},form=True)
     request_data={'tool_name':'ci-tool','arguments':{'id':run_id},'end_user_id':'ci-user',
                   'ticket_id':'ci-ticket','ttl_seconds':60}
@@ -65,4 +72,8 @@ async def main():
     print('REDIS_ACL_PRODUCT_PROBE_PASS')
 
 
-asyncio.run(main())
+try:
+    asyncio.run(main())
+except Exception:
+    print('REDIS_ACL_PRODUCT_'+PHASE+'_FAILED')
+    raise SystemExit(1)

@@ -69,5 +69,6 @@ jobs:
           name: redis-acl-product-evidence
           path: |
             work/integration-evidence/redis-acl-product.txt
+            work/integration-evidence/redis-acl-product-failure.txt
           retention-days: 7
           if-no-files-found: warn

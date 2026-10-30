@@ -114,18 +114,26 @@ def main():
     project = 'uter-acl-'+secrets.token_hex(16) if acl_test else 'uter-compiled-ci'
     if acl_test: ensure_unused_project(project)
     cmd = ["docker", "--context", "default", "compose", "--project-name", project, "--env-file", home / "empty.env", "-f", ROOT / "compose/compose.yaml", "-f", home / "override.json"]
+    phase='STARTUP'
     try:
         run(cmd + ["up", "-d", "--no-build", "--wait", "--wait-timeout", "300"], env=env)
+        phase='ACCEPTANCE'
         check = (ROOT / "scripts/container_acceptance.py").read_bytes()
         result = run(cmd + ["exec", "-T", "guardrail", "python", "-"], input=check, stdout=subprocess.PIPE, env=env)
         (evidence / "acceptance.json").write_bytes(result.stdout)
         if acl_test:
+            phase='ACL_PROBE'
             acl_check = (ROOT/'scripts/redis_acl_product_probe.py').read_bytes()
-            result = run(cmd + ['exec','-T','guardrail','python','-'], input=acl_check, stdout=subprocess.PIPE,
-                         stderr=subprocess.DEVNULL, env=env)
+            result = subprocess.run([str(x) for x in cmd + ['exec','-T','guardrail','python','-']],input=acl_check,
+                         stdout=subprocess.PIPE,stderr=subprocess.DEVNULL, env=env)
+            allowed={b'REDIS_ACL_PRODUCT_'+name+b'_FAILED' for name in
+                     (b'IMPORTS',b'RATE_LIMIT',b'DENY_ADMIN_COMMAND',b'HISTORY',b'RULES',b'APPROVAL')}
+            if result.returncode and result.stdout.strip() in allowed:
+                phase=result.stdout.strip().decode('ascii')
             if result.stdout.strip() != b'REDIS_ACL_PRODUCT_PROBE_PASS': raise ValueError('ACL_PRODUCT_PROBE_FAILED')
             (evidence/'redis-acl-product.txt').write_text('Selected Redis paths passed with a test-only ACL.\n'
                 'This is not production ACL coverage, Redis fencing, backup or recovery.\n',encoding='ascii')
+        phase='RESTART'
         run(cmd + ["restart", "guardrail"], env=env)
         run(cmd + ["up", "-d", "--no-build", "--wait", "--wait-timeout", "180"], env=env)
         run(cmd + ["exec", "-T", "guardrail", "python", "-"], input=check, stdout=subprocess.PIPE, env=env)
@@ -147,14 +155,21 @@ def main():
                 code = str(exc) if str(exc) in allowed else 'MAINTENANCE_CI_UNCLASSIFIED'
                 (evidence/'maintenance-failure.txt').write_text(code+'\n', encoding='ascii')
                 raise
+    except Exception:
+        if acl_test: (evidence/'redis-acl-product-failure.txt').write_text(phase+'\n',encoding='ascii')
+        raise
     finally:
-        if acl_test: ensure_owned_project(project)
-        if not acl_test:
-            logs = subprocess.run(cmd + ["logs", "--no-color", "--tail", "150"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.decode(errors="replace")
-            for secret in [admin, service, shared, redis_password, jwt, hmac, admin_hash, service_hash]:
-                logs = logs.replace(secret, "[REDACTED]")
-            (evidence / "service-logs.txt").write_text(logs)
-        subprocess.run(cmd + ["down", "--volumes", "--remove-orphans"], env=env, check=True)
+        try:
+            if acl_test: ensure_owned_project(project)
+            if not acl_test:
+                logs = subprocess.run(cmd + ["logs", "--no-color", "--tail", "150"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.decode(errors="replace")
+                for secret in [admin, service, shared, redis_password, jwt, hmac, admin_hash, service_hash]:
+                    logs = logs.replace(secret, "[REDACTED]")
+                (evidence / "service-logs.txt").write_text(logs)
+            subprocess.run(cmd + ["down", "--volumes", "--remove-orphans"], env=env, check=True)
+        except Exception:
+            if acl_test: (evidence/'redis-acl-product-failure.txt').write_text('CLEANUP_UNCERTAIN\n',encoding='ascii')
+            raise
 
 
 if __name__ == "__main__":
