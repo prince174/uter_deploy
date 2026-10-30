@@ -6,6 +6,7 @@ The result is a momentary diagnostic, not evidence that writers are stopped or
 that a later operation is safe. Never automatically called by the update gate.
 """
 import argparse
+from collections import Counter
 import json
 import os
 import re
@@ -58,6 +59,44 @@ def _redis_inspect(container):
            '"cap_add":{{json .HostConfig.CapAdd}},"mounts":{{json .Mounts}},'
            '"networks":{{json .NetworkSettings.Networks}}}')
     return _json(_docker('inspect','--format',fmt,container))
+
+
+def _changed_state_class(before,after):
+    """Classify a changed inspection without exposing any observed value.
+
+    This is diagnostic only. It must not make two different inspections equal
+    or authorize a mutation, including when a list has merely changed order.
+    """
+    if not isinstance(before,dict) or not isinstance(after,dict) or set(before)!=set(after):return 'OTHER'
+    groups=(('PROCESS',('id','running','pid','started','restart_count','restart')),
+            ('IMAGE',('image','image_id')),('SECURITY',('privileged','pid_mode','cap_add')),
+            ('MOUNTS',('mounts',)),('NETWORK_MODE',('network_mode',)),
+            ('PORTS',('ports','publish_all','runtime_ports')))
+    for name,fields in groups:
+        if any(before.get(key)!=after.get(key) for key in fields):return name
+    left,right=before.get('networks'),after.get('networks')
+    if left!=right:
+        if not isinstance(left,dict) or not isinstance(right,dict) or set(left)!=set(right):return 'NETWORK_SET'
+        for network in left:
+            a,b=left[network],right[network]
+            if not isinstance(a,dict) or not isinstance(b,dict) or set(a)!=set(b):return 'NETWORK_FIELDS'
+            for key,label in (('NetworkID','NETWORK_ID'),('EndpointID','ENDPOINT_ID'),
+                              ('IPAddress','ENDPOINT_ADDRESS'),('IPPrefixLen','ENDPOINT_ADDRESS'),
+                              ('Gateway','ENDPOINT_GATEWAY'),('MacAddress','ENDPOINT_MAC'),
+                              ('IPAMConfig','ENDPOINT_IPAM'),('DriverOpts','ENDPOINT_OPTIONS'),
+                              ('IPv6Gateway','ENDPOINT_IPV6'),('GlobalIPv6Address','ENDPOINT_IPV6'),
+                              ('GlobalIPv6PrefixLen','ENDPOINT_IPV6')):
+                if a.get(key)!=b.get(key):return label
+            for key,label in (('Aliases','ALIASES'),('DNSNames','DNSNAMES')):
+                x,y=a.get(key),b.get(key)
+                if x!=y:
+                    try:
+                        if isinstance(x,list) and isinstance(y,list) and Counter(x)==Counter(y):return label+'_ORDER'
+                    except TypeError:pass
+                    return label+'_CONTENT'
+            if a!=b:return 'NETWORK_OTHER'
+        return 'NETWORK_OTHER'
+    return 'OTHER'
 
 
 def _require_redis(state, project, expected_id, image):
@@ -156,7 +195,7 @@ def inspect_installation(home, bundle, publisher_key):
         _require_volume(vol,name,volume)
         # Reinspection catches some races; it does not stop further changes.
         second=_redis_inspect(full)
-        if first!=second: raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_STATE_CHANGED')
+        if first!=second: raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_STATE_CHANGED_'+_changed_state_class(first,second))
         return {'result':'supported_shape_observed','backend':'compose','isolation_established':False,
                 'writers_stopped':False,'safe_to_upgrade':False}
     except ComposeDiagnosticError:

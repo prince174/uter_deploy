@@ -111,6 +111,25 @@ class ComposeDiagnosticTests(unittest.TestCase):
                 diag._read(['synthetic'])
             self.assertNotIn('secret',str(error.exception))
 
+    def test_redis_inspection_difference_is_classified_without_weakening_equality(self):
+        base=copy.deepcopy(self.resource)
+        base['networks']['uter-test_backend'].update({'Aliases':['redis','uter-test-redis'],
+                                                      'DNSNames':['redis','uter-test-redis'],
+                                                      'EndpointID':'x'*64,'MacAddress':'02:42:00:00:00:01'})
+        cases=(('PROCESS',lambda x:x.update(pid=13)),
+               ('MOUNTS',lambda x:x['mounts'].append({'Name':'secret-volume'})),
+               ('ENDPOINT_ID',lambda x:x['networks']['uter-test_backend'].update(EndpointID='z'*64)),
+               ('ALIASES_ORDER',lambda x:x['networks']['uter-test_backend']['Aliases'].reverse()),
+               ('ALIASES_CONTENT',lambda x:x['networks']['uter-test_backend']['Aliases'].append('other')),
+               ('DNSNAMES_ORDER',lambda x:x['networks']['uter-test_backend']['DNSNames'].reverse()),
+               ('NETWORK_FIELDS',lambda x:x['networks']['uter-test_backend'].update(Unexpected='secret')))
+        for name,mutate in cases:
+            with self.subTest(name=name):
+                changed=copy.deepcopy(base);mutate(changed)
+                with self.assertRaisesRegex(diag.ComposeDiagnosticError,'^COMPOSE_DIAGNOSTIC_STATE_CHANGED_'+name+'$') as error:
+                    self.run_diagnostic(resource=base,second=changed)
+                self.assertNotIn('secret',str(error.exception))
+
     def test_runtime_queries_are_readonly_and_do_not_inspect_config_or_environment(self):
         with mock.patch.object(diag,'_json',return_value={}) as read:
             diag._redis_inspect(self.redis)

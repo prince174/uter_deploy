@@ -48,6 +48,20 @@ class SignedNamespaceCITests(unittest.TestCase):
                     b'secret\n'+valid,valid+b'secret\n',b'\xff'):
             self.assertIsNone(ci._start_diagnostic(raw))
 
+    def test_all_state_change_categories_pass_both_fixed_allowlists(self):
+        suffixes=('PROCESS','IMAGE','SECURITY','MOUNTS','NETWORK_MODE','PORTS','NETWORK_SET','NETWORK_FIELDS',
+                  'NETWORK_ID','ENDPOINT_ID','ENDPOINT_ADDRESS','ENDPOINT_GATEWAY','ENDPOINT_MAC','ENDPOINT_IPAM',
+                  'ENDPOINT_OPTIONS','ENDPOINT_IPV6','ALIASES_ORDER','ALIASES_CONTENT','DNSNAMES_ORDER',
+                  'DNSNAMES_CONTENT','NETWORK_OTHER','OTHER')
+        for suffix in suffixes:
+            with self.subTest(suffix=suffix):
+                code='COMPOSE_DIAGNOSTIC_STATE_CHANGED_'+suffix
+                self.assertIn(code,ci.compose_fence_start._OBSERVE_DIAGNOSTIC_CODES)
+                combined='FENCE_START_OBSERVE_SIGNED_LIVE_'+code
+                self.assertIn(combined,ci.START_DIAGNOSTICS)
+                line=('uterctl: StartError: '+combined+'\n').encode('ascii')
+                self.assertEqual(ci._start_diagnostic(line),ci.START_DIAGNOSTICS[combined])
+
     def test_recovery_diagnostic_only_exposes_fixed_category(self):
         raw=b'uterctl: NamespaceProtocolError: NS_RECOVERY_INCOMPLETE\n'
         self.assertEqual(ci._recovery_diagnostic(raw),ci.CRASH_DIAGNOSTICS['NS_RECOVERY_INCOMPLETE'])

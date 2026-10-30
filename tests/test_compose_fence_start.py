@@ -19,6 +19,8 @@ class ObserveStageCategoryTests(unittest.TestCase):
     def test_only_fixed_exception_categories_are_exposed(self):
         cases=[(start.diagnostic.ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_QUERY_FAILED'),
                 'COMPOSE_DIAGNOSTIC_QUERY_FAILED'),
+               (start.diagnostic.ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_STATE_CHANGED_ALIASES_ORDER'),
+                'COMPOSE_DIAGNOSTIC_STATE_CHANGED_ALIASES_ORDER'),
                (start.fence.compose.ComposeFenceAdapterError('COMPOSE_FENCE_REDIS_CHANGED'),
                 'COMPOSE_FENCE_REDIS_CHANGED'),
                (start.diagnostic.ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_TOKEN_secret'),'ERROR'),
