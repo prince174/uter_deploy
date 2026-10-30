@@ -16,6 +16,12 @@ from scripts import experimental_netns_probe as common
 REDIS = 'ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc'
 PYTHON = common.PYTHON
 LABEL = 'io.uter-deploy.synthetic-compose-fence'
+BLOCKED = r'''import errno,socket,sys
+s=socket.socket();s.settimeout(3)
+code=s.connect_ex((sys.argv[1],6379))
+if code not in (errno.ECONNREFUSED,errno.ENETUNREACH,errno.EHOSTUNREACH,errno.ETIMEDOUT):
+ raise SystemExit(1)
+print("BLOCKED")'''
 PASSWORD = common.OLD
 CLIENT = common.OLD_CLIENT.replace("except (OSError,ConnectionError): pass", "except TimeoutError: raise\nexcept (OSError,ConnectionError): pass")
 
@@ -87,6 +93,7 @@ def main():
         process=subprocess.Popen(['sudo','-n','-u','nobody','python3','-u','-c',CLIENT,oldip], stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
         selector=selectors.DefaultSelector();selector.register(process.stdout,selectors.EVENT_READ)
         if not selector.select(10) or process.stdout.readline().strip()!='READY': raise RuntimeError('old client fixture failed')
+        print('Synthetic phase: disconnect and drop old clients',flush=True)
         docker('update','--restart=no',old)
         docker('network','disconnect',net,old)
         assert_detached(inspect(old))
@@ -95,6 +102,7 @@ def main():
         # reconnect only in this synthetic test to probe the prior connection.
         killed=docker('exec',old,'redis-cli','-a',PASSWORD,'CLIENT','KILL','TYPE','normal','SKIPME','yes')
         if not killed.isdigit() or int(killed)<1: raise RuntimeError('old Redis connection was not killed')
+        print('Synthetic phase: verify old connection after reconnect',flush=True)
         docker('network','connect','--alias','redis',net,old)
         newip=docker('inspect','--format','{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}',old)
         if newip!=oldip: raise RuntimeError('old address changed; socket test inconclusive')
@@ -108,8 +116,10 @@ def main():
         docker('network','disconnect',net,old)
         assert_detached(inspect(old))
         if docker('exec',old,'redis-cli','-a',PASSWORD,'GET','synthetic:old')!='1': raise RuntimeError('fenced data mismatch')
-        if common.cmd(['sudo','-n','-u','nobody','python3','-c',common.PROBE,oldip])!='BLOCKED': raise RuntimeError('old network reachable')
+        print('Synthetic phase: verify detached address inaccessible',flush=True)
+        if common.cmd(['sudo','-n','-u','nobody','python3','-c',BLOCKED,oldip])!='BLOCKED': raise RuntimeError('old network reachable')
         # Hosted VM only: restarting dockerd exercises uncertain/crash state.
+        print('Synthetic phase: restart isolated Docker daemon',flush=True)
         common.cmd(['sudo','-n','systemctl','restart','docker'],timeout=120)
         for _ in range(120):
             try:
@@ -125,6 +135,7 @@ def main():
         ended=inspect(old)
         if ended.get('running') is not False or ended.get('exit') != 0 or ended.get('oom') is not False or ended.get('error'):
             raise RuntimeError('old Redis did not stop gracefully')
+        print('Synthetic phase: restore AOF in network-none Redis',flush=True)
         replacement=start('--network','none','--mount',f'type=volume,source={volume},target=/data',REDIS,'redis-server','--bind','127.0.0.1','--requirepass',PASSWORD,'--appendonly','yes','--appendfsync','always','--save','')
         for _ in range(100):
             try:
@@ -132,10 +143,11 @@ def main():
             except RuntimeError: pass
             time.sleep(.1)
         else: raise RuntimeError('AOF content not preserved on detached replacement')
-        if common.cmd(['sudo','-n','-u','nobody','python3','-c',common.PROBE,oldip])!='BLOCKED': raise RuntimeError('replacement was reachable externally')
+        if common.cmd(['sudo','-n','-u','nobody','python3','-c',BLOCKED,oldip])!='BLOCKED': raise RuntimeError('replacement was reachable externally')
         docker('stop','-t','20',replacement,timeout=45)
         cleanup('container',replacement,owner);containers.remove(replacement)
         # Recovery here is synthetic: reconnect old container and verify preserved state.
+        print('Synthetic phase: restore previous Redis',flush=True)
         docker('start',old,timeout=45)
         for _ in range(100):
             try:

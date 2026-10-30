@@ -28,6 +28,20 @@ class ComposeFenceProbeTests(unittest.TestCase):
         with mock.patch.object(probe,'docker') as docker:
             with self.assertRaisesRegex(RuntimeError,'invalid volume'):probe.cleanup('volume','other',owner)
             docker.assert_not_called()
+    def test_detached_probe_accepts_only_expected_network_errors(self):
+        import errno
+        for code, accepted in ((errno.ECONNREFUSED, True), (errno.ENETUNREACH, True),
+                               (errno.EHOSTUNREACH, True), (errno.ETIMEDOUT, True),
+                               (0, False), (errno.EACCES, False)):
+            socket_instance = mock.Mock()
+            socket_instance.connect_ex.return_value = code
+            with self.subTest(code=code), mock.patch('socket.socket', return_value=socket_instance), \
+                    mock.patch('sys.argv', ['probe', '192.0.2.1']), mock.patch('builtins.print'):
+                if accepted:
+                    exec(probe.BLOCKED, {})
+                else:
+                    with self.assertRaises(SystemExit): exec(probe.BLOCKED, {})
+
     def test_tcp_fixture_treats_timeout_as_inconclusive(self):
         self.assertIn('except TimeoutError: raise',probe.CLIENT)
 
