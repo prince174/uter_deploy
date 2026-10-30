@@ -230,7 +230,22 @@ class BoundSession:
                 from scripts import kubernetes_fence_finalizer as finalizer
                 plan=finalizer.read_plan(self.home)
                 finalizer._check_journal(self.home,plan,operation,'isolating')
-                if name!=plan['pod'] or uid!=plan['uid'] or ops[2].get('value')!=[finalizer._token(operation)]:raise ValueError
+                if name!=plan['pod']:
+                    from scripts import kubernetes_redis_reverse_finalizer as reverse
+                    from scripts import kubernetes_writer_quiesce as writers
+                    key=backup_installation.safe_file(self._key_path,private=True,limit=32)
+                    record=reverse._record(self,operation,key);digest=writers._hash(record)
+                    if (name!=record['pod'] or uid!=record['uid']
+                            or ops[2].get('value')!=[finalizer._token(operation)]):raise ValueError
+                    marker=reverse.HOLD if len(ops)==3 else reverse.RELEASE
+                    if writers._read(self.home,marker,key)!={'operation':operation,'plan_sha256':digest}:raise ValueError
+                    if len(ops)==3:
+                        if ops[1]['value']!=record['rv']:raise ValueError
+                    else:
+                        observed=writers._read(self.home,reverse.OBSERVED,key)
+                        if observed!={'operation':operation,'plan_sha256':digest,'rv':ops[1]['value']}:raise ValueError
+                    return
+                if uid!=plan['uid'] or ops[2].get('value')!=[finalizer._token(operation)]:raise ValueError
                 if len(ops)==3:
                     if ops[1]['value']!=plan['resource_version']:raise ValueError
                 else:
