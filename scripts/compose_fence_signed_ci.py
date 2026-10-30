@@ -61,10 +61,15 @@ def _verify(home, bundle, publisher, manifest):
     if env.get('DOCKER_HOST'): raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_HOST_GUARD')
     if env.get('DOCKER_CONTEXT','default') not in ('','default'):
         raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CONTEXT_GUARD')
+    PHASE='PATH_CHECK'
     home=Path(home).resolve(strict=True);bundle=Path(bundle).resolve(strict=True);publisher=Path(publisher).resolve(strict=True)
     if not home.is_relative_to(ROOT/'work') or not bundle.is_relative_to(ROOT/'work') or not publisher.is_relative_to(ROOT/'work'):
         raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_PATH')
-    cfg=uterctl.read(home/'install.json');site=uterctl.site_config(home)
+    PHASE='CONFIG_READ'
+    cfg=uterctl.read(home/'install.json')
+    PHASE='SITE_READ'
+    site=uterctl.site_config(home)
+    PHASE='SIGNED_IDENTITY'
     if (cfg.get('name')!='uter-upgrade-ci' or cfg.get('backend')!='compose' or cfg.get('context')!='default'
             or site.get('name')!='uter-upgrade-ci' or site.get('backend')!='compose'
             or uterctl.verify(bundle,publisher)!=manifest or manifest.get('version')!='0.1.6'):
