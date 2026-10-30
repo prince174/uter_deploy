@@ -12,7 +12,11 @@ class RecoveryDiagnosticTests(unittest.TestCase):
             b'kubernetes recovery: FileNotFoundError: confidential-path token=abc': 'file-not-found',
             b'compose recovery: RuntimeError: docker recovery operation failed; output withheld to protect data: token=abc': 'recovery-external-operation-failed',
             b'kubernetes recovery: InvalidTag: secret data': 'backup-authentication-failed',
-            b'compose recovery: ValueError: do not expose this secret xyz': 'unclassified',
+            b'compose recovery: ValueError: do not expose this secret xyz': 'compose-value-error',
+            b'compose recovery: ValueError: Recovery project already exists; choose a new name': 'recovery-project-exists',
+            b'compose recovery: ValueError: Recovery volume name already exists': 'recovery-volume-exists',
+            b'compose recovery: OSError: [Errno 98] confidential-path secret-canary': 'recovery-port-in-use',
+            b'compose recovery: ValueError: Backup backend and staged installation state differ': 'backup-backend-mismatch',
             b'\xff': 'unclassified',
         }
         for raw, expected in samples.items():

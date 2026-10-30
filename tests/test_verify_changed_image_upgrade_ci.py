@@ -191,11 +191,12 @@ class ChangedImageUpgradeTests(unittest.TestCase):
             env = {'UTER_CI_NEW_VERSION':'0.1.7', 'NEW_SIGNED_BUNDLE_PATH':str(root/'bundle'),
                    'PUBLISHER_KEY_PATH':str(root/'public')}
             output = json.dumps({'version':'0.1.7','backup':str(backup)}).encode()
-            def fake_recovery(home, saved, key, public, expected, recovery_bundle=None):
+            def fake_recovery(home, saved, key, public, expected, recovery_bundle=None, *, name, port):
                 target = ci.recovery_compose_api_ci.ROOT/'work/restored-compose-api'
                 target.mkdir()
                 (target/'state.json').write_text(json.dumps({'current':{'version':'0.1.7'},'pending':None}))
                 self.assertEqual(saved, backup)
+                self.assertEqual((name,port),('uter-restored-after-ci',18006))
             with mock.patch.object(ci.harness, 'call', side_effect=[b'', output]) as call, \
                  mock.patch.object(ci.recovery_compose_api_ci, 'test', side_effect=fake_recovery):
                 ci.restore_post_update(root, 'compose', {'first_sha256':'x'}, env)

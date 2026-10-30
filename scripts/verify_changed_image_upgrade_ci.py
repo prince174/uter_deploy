@@ -249,7 +249,8 @@ def restore_post_update(root, backend, expected_audit, environ):
     try:
         recovery.ROOT = stage
         try:
-            recovery.test(home, backup, key, publisher, expected_audit, recovery_bundle=current)
+            distinct = {'name':'uter-restored-after-ci', 'port':18006} if backend == 'compose' else {}
+            recovery.test(home, backup, key, publisher, expected_audit, recovery_bundle=current, **distinct)
         except sessions.SessionCheckFailure:
             raise
         except Exception as error:

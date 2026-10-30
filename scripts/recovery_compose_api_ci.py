@@ -13,29 +13,31 @@ ROOT=Path(__file__).resolve().parents[1]
 NAME='uter-restored-api-ci'
 
 
-def test(home,backup,backup_key,publisher_key,expected_audit,recovery_bundle=None):
+def test(home,backup,backup_key,publisher_key,expected_audit,recovery_bundle=None,*,name=NAME,port=18003):
     if os.environ.get('GITHUB_ACTIONS')!='true' or os.name!='posix' or os.geteuid()!=0:
         raise ValueError('Disposable GitHub-hosted Linux runner required')
+    if not isinstance(name,str) or not install.NAME.fullmatch(name) or type(port) is not int or not 1024<=port<=65535:
+        raise ValueError('Invalid disposable recovery project or port')
     target=ROOT/'work/restored-compose-api'
     if target.exists():raise ValueError('Recovery test target already exists')
     # Only a freshly created project can be deleted in this disposable runner.
     for kind in ('container','network','volume'):
         if recover_compose.run(['docker','--context','default',kind,'ls','-q',
-                                '--filter','label=com.docker.compose.project='+NAME]).strip():
+                                '--filter','label=com.docker.compose.project='+name]).strip():
             raise ValueError('Recovery test project already exists')
     try:
         if recovery_bundle is not None:
             command=[sys.executable,Path(recovery_bundle)/'scripts/recover_compose.py','--source-home',home,'--backup',backup,
                      '--backup-key',backup_key,'--publisher-key',publisher_key,'--home',target,
-                     '--name',NAME,'--port','18003']
+                     '--name',name,'--port',str(port)]
             run=subprocess.run([str(x) for x in command],capture_output=True)
             if run.returncode:
                 category=recovery_category(run.stderr);phase=recovery_phase(target)
                 raise ValueError(f'Signed recovery failed; category={category}; phase={phase}')
             result=json.loads(run.stdout)
         else:
-            result=recover_compose.restore(home,backup,backup_key,publisher_key,target,NAME,18003)
-        if result['name']!=NAME:raise ValueError('Recovery returned unexpected project')
+            result=recover_compose.restore(home,backup,backup_key,publisher_key,target,name,port)
+        if result['name']!=name:raise ValueError('Recovery returned unexpected project')
         cfg=uterctl.read(target/'install.json');cmd,env=install.commands(target,cfg)
         from scripts.adopt_backup_ci import audit_and_redis
         data=audit_and_redis(cmd+['exec','-T','guardrail','python','-'],env,'read')
@@ -49,7 +51,7 @@ def test(home,backup,backup_key,publisher_key,expected_audit,recovery_bundle=Non
         journal=target/'recovery-operation.json'
         if journal.is_file():
             ownership=uterctl.read(journal);marker=ownership.get('id','')
-            volumes=[NAME+'_redis-data',NAME+'_audit-data']
+            volumes=[name+'_redis-data',name+'_audit-data']
             for volume in volumes:
                 result=subprocess.run(['docker','--context','default','volume','inspect',volume],capture_output=True)
                 if result.returncode==0:
