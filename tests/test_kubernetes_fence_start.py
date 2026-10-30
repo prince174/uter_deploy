@@ -18,6 +18,7 @@ class StartSequenceTests(unittest.TestCase):
             stack.enter_context(patch.object(start.finalizer,'read_plan',return_value={}))
             stack.enter_context(patch.object(start.finalizer,'_check_journal'))
             operations=((start.writers,'prepare'),(start.writer_finalizer,'prepare'),(start.recovery,'seal_before_mutation'),
+                (start.runtime_pin,'seal'),
                 (start.config_snapshot,'prepare'),(start.audit_plan,'prepare'),(start.writer_finalizer,'hold'),(start.writers,'stop'),
                 (start.writer_finalizer,'observe'),(start.writer_finalizer,'release'),(start.writers,'observe_stopped'),
                 (start.audit_guard,'seal'),
@@ -27,7 +28,7 @@ class StartSequenceTests(unittest.TestCase):
             result=start.start(self.session,self.operation,timeout=1)
             self.assertEqual(result,{'redis_finalizer_release_requested':True,'complete_backup':False,
                 'redis_isolated':False,'safe_to_backup':False,'safe_to_update':False})
-            self.assertEqual(mocks[6].call_count,2)
+            self.assertEqual(mocks[7].call_count,2)
             self.assertEqual(mocks[-1].call_count,1)
 
     def test_missing_trusted_profile_does_not_mutate(self):
@@ -43,7 +44,8 @@ class StartSequenceTests(unittest.TestCase):
             stack.enter_context(patch.object(start.finalizer,'read_plan',return_value={}))
             stack.enter_context(patch.object(start.finalizer,'_check_journal'))
             for module,name in ((start.writers,'prepare'),(start.writer_finalizer,'prepare'),
-                (start.recovery,'seal_before_mutation'),(start.config_snapshot,'prepare'),(start.audit_plan,'prepare'),(start.writer_finalizer,'hold')):
+                (start.recovery,'seal_before_mutation'),(start.runtime_pin,'seal'),(start.config_snapshot,'prepare'),
+                (start.audit_plan,'prepare'),(start.writer_finalizer,'hold')):
                 stack.enter_context(patch.object(module,name))
             stop=stack.enter_context(patch.object(start.writers,'stop',side_effect=TimeoutError))
             with self.assertRaises(start.StartError):start.start(self.session,self.operation,timeout=1)

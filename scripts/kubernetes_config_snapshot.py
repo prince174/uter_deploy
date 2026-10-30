@@ -89,3 +89,21 @@ def capture(session,operation,key,writer):
         if not accepted:
             manifest=getattr(writer,'manifest',None)
             if isinstance(manifest,dict) and isinstance(manifest.get('files'),dict):manifest['files'].pop('kubernetes',None)
+
+
+def reverify(session,operation,key):
+    """Recheck all pinned UID/resourceVersions without exposing data."""
+    try:
+        if session._executor is None or session._record['schema']!=2:raise ValueError
+        if backup_installation.safe_file(session._key_path,private=True,limit=32)!=key:raise ValueError
+        writer_guard.verify(session,operation,key)
+        plan=storage._read(session.home,NAME,key);names=_objects(session)
+        if (set(plan)!={'schema','operation','profile_sha256','objects'} or type(plan['schema']) is not int or plan['schema']!=1
+                or plan['operation']!=operation or plan['profile_sha256']!=session._profile_digest
+                or not isinstance(plan['objects'],dict) or set(plan['objects'])!=set(names)):raise ValueError
+        for name in names:
+            item=_read(session,name);meta=item['metadata']
+            if plan['objects'][name]!={'uid':meta['uid'],'rv':meta['resourceVersion']}:raise ValueError
+        writer_guard.verify(session,operation,key)
+        return {'configuration_unchanged_observed':True,'safe_to_update':False}
+    except Exception:raise ConfigSnapshotError('KUBE_CONFIG_REVERIFY_UNCERTAIN') from None

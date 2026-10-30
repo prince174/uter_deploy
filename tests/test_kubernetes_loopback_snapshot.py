@@ -84,6 +84,18 @@ class SnapshotExecutorTests(unittest.TestCase):
             self.assertEqual(self.kwargs['pass_fds'],(13,19))
             self.assertIn('redis-check-rdb',self.command)
 
+    def test_actual_bind_must_be_loopback_and_identity_unchanged(self):
+        from scripts import kubernetes_audit_reader as audit
+        with patch.object(snapshot,'_observe',return_value=self.observed), \
+             patch.object(snapshot.sealed,'verify_sealed'),patch.object(snapshot.kubectl_binary,'verify'), \
+             patch.object(audit,'_call_input',return_value=b'bind\n127.0.0.1\n'):
+            self.assertEqual(snapshot.assert_loopback(self.session,'a'*32,self.pod,self.uid),
+                {'loopback_bind_observed':True,'redis_isolated':False,'safe_to_update':False})
+        with patch.object(snapshot,'_observe',return_value=self.observed), \
+             patch.object(snapshot.sealed,'verify_sealed'),patch.object(snapshot.kubectl_binary,'verify'), \
+             patch.object(audit,'_call_input',return_value=b'bind\n0.0.0.0\n'):
+            with self.assertRaises(snapshot.SnapshotError):snapshot.assert_loopback(self.session,'a'*32,self.pod,self.uid)
+
     @unittest.skipUnless(os.name=='posix' and os.path.isfile('/usr/bin/true'),'trusted Linux executable required')
     def test_binary_path_and_hash_are_checked_independent_of_path_and_proxy(self):
         binary=Path('/usr/bin/true').resolve()

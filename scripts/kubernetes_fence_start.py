@@ -12,6 +12,7 @@ from scripts import (backup_installation, kubernetes_audit_reader_plan as audit_
                      kubernetes_config_snapshot as config_snapshot,
                      kubernetes_fence_finalizer as finalizer, kubernetes_fence_recovery_session as recovery,
                      kubernetes_loopback_auth as loopback_auth,
+                     kubernetes_runtime_pin as runtime_pin,
                      kubernetes_loopback_intent as loopback, kubernetes_redis_finalizer_release as redis_release,
                      kubernetes_redis_shutdown as shutdown, kubernetes_writer_finalizer as writer_finalizer,
                      kubernetes_writer_quiesce as writers)
@@ -42,6 +43,7 @@ def start(session,operation,*,timeout=180):
         writers.prepare(home,session,operation,session.writer_uids,key)
         for service in writers.SERVICES:writer_finalizer.prepare(home,session,operation,service,key)
         recovery.seal_before_mutation(session,operation,key)
+        runtime_pin.seal(session,operation,key)
         config_snapshot.prepare(session,operation,key)
         audit_plan.prepare(session,operation,key)
         for service in writers.SERVICES:writer_finalizer.hold(home,session,operation,service,key)

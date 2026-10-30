@@ -68,6 +68,24 @@ def _observe(session,operation,pod_name,pod_uid):
             'replicaset_uid':rs['metadata']['uid']}
 
 
+def assert_loopback(session,operation,pod_name,pod_uid):
+    """Check actual Redis bind configuration on the exact signed Pod."""
+    try:
+        if session._executor is None or session._record['schema']!=2:raise ValueError
+        before=_observe(session,operation,pod_name,pod_uid)
+        fd=session._inner.config_fd;binary_fd=session._inner.api.binary_fd
+        sealed.verify_sealed(fd,session.config_sha256);kubectl_binary.verify(binary_fd,session._record['kubectl_sha256'])
+        command=['/proc/self/fd/'+str(binary_fd),'--kubeconfig=/proc/self/fd/'+str(fd),
+                 '--context='+session.api.context,'--namespace='+session.site,'--request-timeout=20s',
+                 'exec','pod/'+pod_name,'-c','redis','--','sh','-ec',
+                 'export REDISCLI_AUTH="$REDIS_PASSWORD"; exec redis-cli --raw CONFIG GET bind']
+        from scripts import kubernetes_audit_reader
+        raw=kubernetes_audit_reader._call_input(command,b'',fd,binary_fd)
+        if raw.strip()!=b'bind\n127.0.0.1' or _observe(session,operation,pod_name,pod_uid)!=before:raise ValueError
+        return {'loopback_bind_observed':True,'redis_isolated':False,'safe_to_update':False}
+    except Exception:raise SnapshotError('KUBE_LOOPBACK_BIND_UNVERIFIED') from None
+
+
 def capture_component(session,operation,pod_name,pod_uid,writer):
     """Stream one RDB through encrypted writer; never finalize a backup set."""
     process=None;timer=None;accepted=False
