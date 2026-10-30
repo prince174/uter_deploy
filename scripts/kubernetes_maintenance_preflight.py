@@ -14,9 +14,11 @@ class PreflightError(ValueError):
     pass
 
 
-def observe(session):
+def observe(session, *, require_ready=True):
     """Verify exact signed service Pods and a separately pinned secret."""
     try:
+        if type(require_ready) is not bool:
+            raise ValueError
         if session._executor is None or session._record.get('schema') != 2:
             raise ValueError
         session.reverify()
@@ -91,7 +93,8 @@ def observe(session):
                     or container.get('securityContext', {}).get('readOnlyRootFilesystem') is not True
                     or container.get('securityContext', {}).get('privileged', False) is not False
                     or container.get('securityContext', {}).get('capabilities', {}).get('drop') != ['ALL']
-                    or running.get('name') != service or running.get('ready') is not True
+                    or running.get('name') != service or type(running.get('ready')) is not bool
+                    or (require_ready and running['ready'] is not True)
                     or type(running.get('restartCount')) is not int or running['restartCount'] != 0
                     or not isinstance(running.get('state', {}).get('running'), dict)
                     or not isinstance(running.get('imageID'), str)

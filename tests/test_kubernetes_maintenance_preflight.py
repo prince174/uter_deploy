@@ -50,12 +50,12 @@ class KubernetesPreflightTests(unittest.TestCase):
                 'ownerReferences':[{'kind':'Deployment','name':self.site+'-'+service,'uid':self.deploy[service],'controller':True}]}}
         raise AssertionError
 
-    def run_check(self):
+    def run_check(self, *, require_ready=True):
         def deployment(session, service, uid):
             return {'uid':uid},{'replicas':1}
         with patch.object(preflight.maintenance_protocol,'verify_capability',return_value=self.manifest), \
              patch.object(preflight.writers,'_deployment',side_effect=deployment):
-            return preflight.observe(self.session)
+            return preflight.observe(self.session, require_ready=require_ready)
 
     def test_verified_preflight_still_cannot_authorize_start(self):
         result = self.run_check()
@@ -81,6 +81,13 @@ class KubernetesPreflightTests(unittest.TestCase):
     def test_digest_must_match_the_running_image(self):
         self.pods['guardrail']['status']['containerStatuses'][0]['imageID']='registry.example/wrong@sha256:'+'b'*64
         with self.assertRaises(preflight.PreflightError): self.run_check()
+
+    def test_not_ready_identity_can_be_observed_without_authorizing_start(self):
+        self.pods['agent']['status']['containerStatuses'][0]['ready']=False
+        with self.assertRaises(preflight.PreflightError): self.run_check()
+        self.assertIs(self.run_check(require_ready=False)['safe_to_start'],False)
+        self.pods['agent']['status']['containerStatuses'][0]['restartCount']=1
+        with self.assertRaises(preflight.PreflightError): self.run_check(require_ready=False)
 
 
 if __name__ == '__main__': unittest.main()
