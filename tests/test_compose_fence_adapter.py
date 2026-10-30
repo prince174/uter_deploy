@@ -36,15 +36,22 @@ class ComposeFenceAdapterTests(unittest.TestCase):
         self.record = {'operation':'1'*32,'site':'uter-test','resource':'a'*64,'plan_sha256':'b'*64}
 
     def test_controller_lock_is_owned_by_current_process_and_private(self):
+        from scripts import experimental_operation_lock, managed_operation_lock
         path = self.home/'operation.lock'
         path.write_text(str(os.getpid())); path.chmod(0o600)
-        self.adapter._lock()
-        path.write_text(str(os.getpid()+1))
         with self.assertRaisesRegex(fence.ComposeFenceAdapterError, 'LOCK_INVALID'): self.adapter._lock()
-        path.write_text(str(os.getpid()));path.chmod(0o644)
+        os.link(path,self.home/'fake-anchor')
         with self.assertRaisesRegex(fence.ComposeFenceAdapterError, 'LOCK_INVALID'): self.adapter._lock()
-        path.unlink();path.symlink_to(self.home/'untrusted')
+        (self.home/'fake-anchor').unlink();path.unlink();path.symlink_to(self.home/'untrusted')
         with self.assertRaisesRegex(fence.ComposeFenceAdapterError, 'LOCK_INVALID'): self.adapter._lock()
+        path.unlink()
+        with mock.patch.object(experimental_operation_lock,'_host_pid_namespace',return_value=True):
+            with managed_operation_lock.locked(self.home):
+                self.adapter._lock()
+                key=self.home/managed_operation_lock.KEY_NAME;original=key.read_bytes()
+                key.write_bytes(b'z'*32)
+                with self.assertRaisesRegex(fence.ComposeFenceAdapterError, 'LOCK_INVALID'): self.adapter._lock()
+                key.write_bytes(original)
 
     def test_only_exact_signed_config_is_allowed_and_errors_never_expose_secrets(self):
         install=self.home/'signed';(install/'compose').mkdir(parents=True);(install/'examples').mkdir()

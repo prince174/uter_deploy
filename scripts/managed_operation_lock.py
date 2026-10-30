@@ -103,7 +103,9 @@ def locked(home,*,reclaim=False):
     if str(home) in _HELD:raise ManagedLockError('MANAGED_LOCK_ALREADY_HELD')
     lease=None;owned=False
     try:
-        lease=primitive.Lease(home,key,secrets.token_hex(16))
+        try:lease=primitive.Lease(home,key,secrets.token_hex(16))
+        except primitive.LockError:raise
+        except Exception:raise ManagedLockError('MANAGED_LOCK_ENVIRONMENT_UNVERIFIED') from None
         if reclaim:
             try:owner=primitive._read_owner(lease.directory,key)
             except Exception:raise ManagedLockError('MANAGED_LOCK_OWNER_UNVERIFIED') from None

@@ -231,6 +231,15 @@ def _require_legacy_operation_lock(home):
         raise ValueError('BACKUP_LOCK_UNVERIFIED') from None
 
 
+def _require_fenced_operation_lock(home):
+    """Require the authenticated managed capability, never just nlink=2."""
+    try:
+        from scripts import managed_operation_lock
+        managed_operation_lock.assert_held(home)
+    except Exception:
+        raise ValueError('FENCED_LOCK_UNVERIFIED') from None
+
+
 def resume_writers(home, cfg, site, current):
     # Do not restart writers while a Redis isolation operation is unresolved.
     # The caller must hold the same controller lock as fence operations.

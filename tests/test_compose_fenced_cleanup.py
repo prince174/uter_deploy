@@ -13,6 +13,10 @@ from tests import test_compose_fence_start as start_fixtures, test_controller as
 
 @unittest.skipUnless(os.name=='posix','durable POSIX cleanup')
 class SealedCleanupTests(unittest.TestCase):
+    def setUp(self):
+        guard=patch.object(update.backup_snapshot,'_require_fenced_operation_lock')
+        guard.start();self.addCleanup(guard.stop)
+
     def make_fixture(self,root):
         home=root/'home';home.mkdir(mode=0o700);key=b'k'*32
         (home/'operation.lock').write_text(str(os.getpid()));(home/'operation.lock').chmod(0o600)
@@ -153,6 +157,15 @@ class SealedCleanupTests(unittest.TestCase):
                     update.finish_sealed_cleanup(home,target,'publisher','executor',key,dest)
             self.assertTrue(all(os.path.lexists(home/name) for name in update._evidence_names()))
             self.assertTrue(os.path.lexists(home/journal.NAME));self.assertTrue(os.path.lexists(home/journal.CLEANUP_INTENT))
+
+    def test_authenticated_seal_authorizes_only_lock_reclaim_even_without_journal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture=self.make_fixture(Path(temp));home,key,source,target,dest,old,new,site,writers=fixture
+            update.verify_reclaimable_finish(home,key)
+            (home/journal.NAME).unlink();update.verify_reclaimable_finish(home,key)
+            path=home/journal.CLEANUP_INTENT;path.write_bytes(path.read_bytes()+b'corrupt')
+            with self.assertRaisesRegex(update.FencedUpdateError,'^FENCED_UPDATE_RECLAIM_UNVERIFIED$'):
+                update.verify_reclaimable_finish(home,key)
 
     def test_fsync_failure_after_last_manifest_unlink_cannot_promise_marker(self):
         with tempfile.TemporaryDirectory() as temp:

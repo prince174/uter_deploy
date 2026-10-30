@@ -208,6 +208,9 @@ class ComposeFenceStartTests(unittest.TestCase):
 @unittest.skipUnless(os.name=='posix' and hasattr(os,'O_NOFOLLOW'),'requires POSIX private files')
 class FenceStartCLITests(unittest.TestCase):
     def setUp(self):
+        from scripts import experimental_operation_lock
+        namespace=patch.object(experimental_operation_lock,'_host_pid_namespace',return_value=True)
+        namespace.start();self.addCleanup(namespace.stop)
         self.fx=fixtures.ControllerTests(methodName='test_signed_bundle');self.fx.setUp();self.addCleanup(self.fx.doCleanups)
         self.fx.home.chmod(0o700);self.key=self.fx.prepare_adopted();self.bundle=self.fx.home/'releases'/'1.0.0'
         guard=patch.object(uterctl,'_load_signed_fence_executor');guard.start();self.addCleanup(guard.stop)

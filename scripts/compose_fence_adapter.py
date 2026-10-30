@@ -52,14 +52,9 @@ class Adapter:
 
     def _lock(self):
         try:
-            fd = os.open(self.home/'operation.lock', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(fd, 'rb') as source:
-                info = os.fstat(source.fileno())
-                value = source.read(32)
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
-                        or info.st_mode & 0o077 or value != str(os.getpid()).encode()):
-                    raise ValueError
-        except (OSError, ValueError):
+            from scripts import managed_operation_lock
+            managed_operation_lock.assert_held(self.home)
+        except Exception:
             raise ComposeFenceAdapterError('COMPOSE_FENCE_LOCK_INVALID') from None
 
     def _config(self, installed):

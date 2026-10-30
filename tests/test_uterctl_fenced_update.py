@@ -2,6 +2,9 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,6 +18,9 @@ from tests import test_controller as fixtures
 @unittest.skipUnless(os.name=='posix','POSIX installation lock')
 class FencedUpdateCLITests(unittest.TestCase):
     def setUp(self):
+        from scripts import experimental_operation_lock
+        namespace=patch.object(experimental_operation_lock,'_host_pid_namespace',return_value=True)
+        namespace.start();self.addCleanup(namespace.stop)
         self.fx=fixtures.ControllerTests(methodName='test_signed_bundle');self.fx.setUp();self.addCleanup(self.fx.doCleanups)
         self.fx.home.chmod(0o700);self.key=self.fx.prepare_adopted();self.source=self.fx.home/'releases'/'1.0.0'
         self.target=self.fx.bundle(fixtures.manifest('1.1.0',['1.0.0']),'target')
@@ -100,6 +106,23 @@ class FencedUpdateCLITests(unittest.TestCase):
              contextlib.redirect_stdout(io.StringIO()):
             uterctl.finish_compose_fenced_update(self.fx.home,self.target,self.fx.pub,self.fx.pub,self.key,self.destination)
         finish.assert_called_once();self.assertFalse((self.fx.home/'operation.lock').exists())
+
+    def test_finish_reclaims_real_dead_managed_owner_only_after_double_proof(self):
+        self.destination.mkdir(mode=0o700);(self.fx.home/journal.CLEANUP_INTENT).write_text('fixture')
+        code=('import sys,time;from scripts import managed_operation_lock as m;'
+              'm.primitive._host_pid_namespace=lambda:True;'
+              'ctx=m.locked(sys.argv[1]);ctx.__enter__();print("READY",flush=True);time.sleep(300)')
+        child=subprocess.Popen([sys.executable,'-c',code,str(self.fx.home)],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
+        self.addCleanup(lambda:child.poll() is None and child.kill())
+        self.addCleanup(child.stdout.close)
+        self.assertEqual(child.stdout.readline().strip(),'READY')
+        os.kill(child.pid,signal.SIGKILL);child.wait(timeout=10)
+        with patch.object(update,'verify_reclaimable_finish') as proof, \
+             patch.object(update,'finish_sealed_cleanup',return_value=self.new) as finish, \
+             contextlib.redirect_stdout(io.StringIO()):
+            uterctl.finish_compose_fenced_update(self.fx.home,self.target,self.fx.pub,self.fx.pub,self.key,self.destination)
+        self.assertEqual(proof.call_count,2);finish.assert_called_once()
+        self.assertFalse((self.fx.home/'operation.lock').exists())
 
 
 if __name__=='__main__':unittest.main()

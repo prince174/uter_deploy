@@ -96,7 +96,7 @@ def read_intent(home,key,record):
 
 def create_intent(home,key,record,source_hash,target_hash,executor_hash,receipt_hash,destination_hash):
     """Persist exact target and snapshot identity before release or target start."""
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     if journal.read(home)!=record or record['phase']!='captured':raise FencedUpdateError('FENCED_UPDATE_STATE_UNVERIFIED')
     value=_intent_valid({'schema':1,**{name:record[name] for name in ('operation','site','resource','plan_sha256')},
         'source_sha256':source_hash,'target_sha256':target_hash,'executor_sha256':executor_hash,
@@ -176,7 +176,7 @@ def preflight(home, source, target, publisher, state, site):
 def stage_target(home,target,publisher,manifest):
     """Install a verified target bundle before stopping any application writer."""
     home=Path(home);target=Path(target)
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     try:
         backup_installation.verify_tree(target)
         if uterctl.verify(target,publisher)!=manifest:raise ValueError
@@ -230,7 +230,7 @@ def capture_for_update(home,source,target,publisher,executor_key,key,destination
     Failures leave existing evidence untouched, never resume or restore data.
     This stage is not an exposed user command and is not a complete update.
     """
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     home=Path(home);destination=Path(destination)
     if journal.blocks_mutation(home):raise FencedUpdateError('FENCED_UPDATE_PRIOR_OPERATION')
     if (not destination.is_absolute() or '..' in destination.parts or os.path.lexists(destination)
@@ -306,7 +306,7 @@ def release_for_update(home,source,target,publisher,executor_key,key,destination
     From the first release attempt, external clients may write. An interrupted
     operation must never replay release, start writers, or restore the backup.
     """
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     record=journal.read(home)
     if record['phase']!='captured':raise FencedUpdateError('FENCED_UPDATE_RELEASE_STATE_UNVERIFIED')
     try:
@@ -351,7 +351,7 @@ def read_target_start(home,key,record,intent):
 
 def create_target_start(home,key,record,intent):
     """Write once before Compose can start/recreate either target writer."""
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     if journal.read(home)!=record or record['phase']!='redis_released' or read_intent(home,key,record)!=intent:
         raise FencedUpdateError('FENCED_UPDATE_START_STATE_UNVERIFIED')
     value={'schema':1,'operation':record['operation'],'intent_sha256':hashlib.sha256(_canonical(intent)).hexdigest()}
@@ -399,7 +399,7 @@ def read_target_result(home,key,record,intent):
 
 
 def create_target_result(home,key,record,intent,writers):
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     if journal.read(home)!=record or record['phase']!='target_starting':
         raise FencedUpdateError('FENCED_UPDATE_RESULT_STATE_UNVERIFIED')
     read_target_start(home,key,record,intent)
@@ -429,7 +429,7 @@ def _released_binding(home,old,site,intent,executor_key,destination):
 
 def start_target(home,source,target,publisher,executor_key,key,destination):
     """Attempt target writers once, preserving all evidence on any uncertainty."""
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     home=Path(home);record=journal.read(home)
     if record['phase']!='redis_released':raise FencedUpdateError('FENCED_UPDATE_START_STATE_UNVERIFIED')
     if os.path.lexists(home/TARGET_START) or os.path.lexists(home/TARGET_RESULT):
@@ -583,9 +583,31 @@ def read_cleanup(home,key):
     except Exception:raise FencedUpdateError('FENCED_CLEANUP_UNVERIFIED') from None
 
 
+def verify_reclaimable_finish(home,key):
+    """Only authenticated post-target states may reclaim a dead owner lock.
+
+    This is read-only and must be repeated after acquiring the managed lease.
+    It never authorizes replaying Docker calls or restoring older data.
+    """
+    home=Path(home)
+    try:
+        if os.path.lexists(home/journal.FINALIZE_ANCHOR):raise ValueError
+        if os.path.lexists(home/CLEANUP):
+            value=read_cleanup(home,key)
+            if os.path.lexists(home/journal.NAME) and journal.read(home)!=value['record']:raise ValueError
+            return
+        record=journal.read(home)
+        if record['phase'] not in ('target_running','update_finalizing'):raise ValueError
+        intent=read_intent(home,key,record)
+        read_target_start(home,key,record,intent);read_target_result(home,key,record,intent)
+        decision,_=receipts.read_decision(home,key)
+        if decision['operation']!=record['operation'] or decision['action']!='mutation':raise ValueError
+    except Exception:raise FencedUpdateError('FENCED_UPDATE_RECLAIM_UNVERIFIED') from None
+
+
 def seal_cleanup(home,key,record,plan,saved,intent,result,old,new,site,backup,destination,directory,files):
     """Seal complete pre-cleanup proof after both state files were fsynced."""
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     if journal.read(home)!=record or record['phase']!='update_finalizing':raise FencedUpdateError('FENCED_CLEANUP_STATE_UNVERIFIED')
     hashes={}
     for name in _evidence_names():
@@ -617,7 +639,7 @@ def seal_cleanup(home,key,record,plan,saved,intent,result,old,new,site,backup,de
 
 def finish_sealed_cleanup(home,target,publisher,executor_key,key,destination):
     """Recheck sealed proof and live target; unlink only verified leftovers."""
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     home=Path(home);target=Path(target);destination=Path(destination);adapter=None
     try:
         for name in (journal.FINALIZE_ANCHOR,'backup-operation.json','recovery-operation.json',
@@ -693,7 +715,7 @@ def finish_sealed_cleanup(home,target,publisher,executor_key,key,destination):
 
 def finalize_target(home,source,target,publisher,executor_key,key,destination):
     """Commit a verified target once; remove authenticated evidence only last."""
-    backup_snapshot._require_legacy_operation_lock(home)
+    backup_snapshot._require_fenced_operation_lock(home)
     home=Path(home);record=journal.read(home)
     if record['phase'] not in ('target_running','update_finalizing'):
         raise FencedUpdateError('FENCED_UPDATE_FINALIZE_STATE_UNVERIFIED')

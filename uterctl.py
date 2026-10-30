@@ -152,6 +152,14 @@ def locked(home):
         lock.unlink()
 
 
+@contextmanager
+def fenced_locked(home, *, reclaim=False):
+    """Held managed capability for experimental fenced operations only."""
+    from scripts import managed_operation_lock
+    with managed_operation_lock.locked(home,reclaim=reclaim):
+        yield
+
+
 def site_config(home):
     site = read(home / "runtime/site.json")
     if site.get("backend") not in {"compose", "helm"}:
@@ -235,7 +243,7 @@ _FENCE_EXECUTOR_MODULES = (
     'compose_nsfirewall_checkpoint', 'compose_fence_adapter', 'compose_fence_recovery_plan',
     'compose_redis_diagnostic', 'compose_systemd_activation', 'experimental_docker_activation_ci',
     'compose_snapshot_only', 'snapshot_only_receipts', 'compose_fence_start', 'compose_fence_resume', 'compose_fence_origin',
-    'compose_fence_finalize', 'compose_fenced_update',
+    'compose_fence_finalize', 'compose_fenced_update','experimental_operation_lock','managed_operation_lock',
 )
 
 
@@ -266,7 +274,7 @@ def _load_signed_fence_executor(executor_key):
     sys.modules['scripts']=package
     sys.path.insert(0,str(ROOT))
     for name in ('backup_installation','compose_nsfirewall_adapter','compose_nsfirewall_protocol',
-                 'redis_fence_journal','compose_snapshot_only','compose_fence_start','compose_fence_resume','compose_fence_finalize','compose_fenced_update'):
+                 'redis_fence_journal','compose_snapshot_only','compose_fence_start','compose_fence_resume','compose_fence_finalize','compose_fenced_update','managed_operation_lock'):
         importlib.import_module('scripts.'+name)
     for name,module in tuple(sys.modules.items()):
         if name.startswith('scripts.'):
@@ -337,7 +345,7 @@ def recover_compose_redis_before_snapshot(home, bundle, publisher_key, backup_ke
     """Recover Redis only before snapshot; never resume writers or clear marker."""
     from scripts import compose_nsfirewall_adapter, compose_nsfirewall_protocol, redis_fence_journal
     home,_,secret=_fence_secret_inputs(home,backup_key_path)
-    with locked(home):
+    with fenced_locked(home):
         record=_fence_current_record(home,bundle,publisher_key,
                                      ('prepared','isolating','isolated','pre_capture_aborting'))
         adapter=compose_nsfirewall_adapter.Adapter(home,bundle,publisher_key,secret)
@@ -365,7 +373,7 @@ def capture_compose_fenced_backup(home,bundle,publisher_key,executor_key,backup_
     if (destination==home or destination.is_relative_to(home) or key_path==destination
             or key_path.is_relative_to(destination) or os.path.lexists(destination)):
         raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
-    with locked(home):
+    with fenced_locked(home):
         if os.path.lexists(home/'backup-operation.json'):
             raise ValueError('FENCE_BACKUP_PRIOR_BACKUP_REQUIRES_INSPECTION')
         record=_fence_current_record(home,bundle,publisher_key,('isolated',))
@@ -393,7 +401,7 @@ def recover_compose_redis_after_snapshot(home,bundle,publisher_key,executor_key,
     if (destination==home or destination.is_relative_to(home) or key_path==destination
             or key_path.is_relative_to(destination)):
         raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
-    with locked(home):
+    with fenced_locked(home):
         if os.path.lexists(home/'backup-operation.json'):
             raise ValueError('FENCE_BACKUP_PRIOR_BACKUP_REQUIRES_INSPECTION')
         record=_fence_current_record(home,bundle,publisher_key,('captured','snapshot_releasing'))
@@ -413,7 +421,7 @@ def start_compose_fence(home,bundle,publisher_key,backup_key_path):
     """Start the signed local Compose fence; ambiguous failures stay stopped."""
     from scripts import compose_fence_start
     home,_,secret=_fence_secret_inputs(home,backup_key_path)
-    with locked(home):
+    with fenced_locked(home):
         operation=compose_fence_start.start(home,bundle,publisher_key,secret)
     print('Compose Redis fence '+operation+' established; writers stopped. '
           'Experimental profile trusts host root, Docker daemon and administrators; '
@@ -432,7 +440,7 @@ def resume_compose_writers_after_fence(home,bundle,publisher_key,executor_key,ba
         if (destination==home or destination.is_relative_to(home) or key_path==destination
                 or key_path.is_relative_to(destination)):
             raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
-    with locked(home):
+    with fenced_locked(home):
         if os.path.lexists(home/'backup-operation.json'):
             raise ValueError('FENCE_BACKUP_PRIOR_BACKUP_REQUIRES_INSPECTION')
         record=_fence_current_record(home,bundle,publisher_key,('redis_released',))
@@ -458,7 +466,7 @@ def finalize_compose_fence(home,bundle,publisher_key,executor_key,backup_key_pat
         if (destination==home or destination.is_relative_to(home) or key_path==destination
                 or key_path.is_relative_to(destination)):
             raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
-    with locked(home):
+    with fenced_locked(home):
         record=_fence_current_record(home,bundle,publisher_key,('writers_resumed',))
         adapter=compose_nsfirewall_adapter.Adapter(home,bundle,publisher_key,secret)
         try:compose_fence_finalize.finalize(adapter,record,executor_key,destination)
@@ -481,7 +489,7 @@ def apply_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_ke
     if (destination==home or destination.is_relative_to(home) or key_path==destination
             or key_path.is_relative_to(destination) or os.path.lexists(destination)):
         raise ValueError('FENCED_UPDATE_DESTINATION_INVALID')
-    with locked(home):
+    with fenced_locked(home):
         if redis_fence_journal.blocks_mutation(home):raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         state=backup_installation.safe_json(home/'state.json')
         site=site_config(home)
@@ -511,7 +519,12 @@ def finish_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_k
     except backup_installation.BackupError:raise ValueError('FENCED_UPDATE_DESTINATION_INVALID') from None
     if destination==home or destination.is_relative_to(home) or key_path==destination or key_path.is_relative_to(destination):
         raise ValueError('FENCED_UPDATE_DESTINATION_INVALID')
-    with locked(home):
+    reclaim=os.path.lexists(home/'operation.lock')
+    if reclaim:
+        compose_fenced_update.verify_reclaimable_finish(home,secret)
+    with fenced_locked(home,reclaim=reclaim):
+        if reclaim:
+            compose_fenced_update.verify_reclaimable_finish(home,secret)
         if os.path.lexists(home/redis_fence_journal.FINALIZE_ANCHOR):raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         if os.path.lexists(home/redis_fence_journal.CLEANUP_INTENT):
             result=compose_fenced_update.finish_sealed_cleanup(home,bundle,publisher_key,executor_key,secret,destination)

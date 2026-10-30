@@ -33,6 +33,23 @@ class SnapshotTests(unittest.TestCase):
         self.lock=uterctl.locked(self.home);self.lock.__enter__()
         self.addCleanup(self.lock.__exit__,None,None,None)
 
+    def test_fenced_snapshot_requires_capability_and_rejects_pid_or_fake_hardlink(self):
+        from scripts import experimental_operation_lock, managed_operation_lock
+        with tempfile.TemporaryDirectory() as temp:
+            home=Path(temp);home.chmod(0o700)
+            path=home/'operation.lock';path.write_text(str(os.getpid()));path.chmod(0o600)
+            for linked in (False,True):
+                if linked:os.link(path,home/'fake-anchor')
+                with self.assertRaisesRegex(ValueError,'^FENCED_LOCK_UNVERIFIED$'):
+                    backup_snapshot._require_fenced_operation_lock(home)
+                if linked:(home/'fake-anchor').unlink()
+            path.unlink()
+            with patch.object(experimental_operation_lock,'_host_pid_namespace',return_value=True):
+                with managed_operation_lock.locked(home):
+                    backup_snapshot._require_fenced_operation_lock(home)
+                    with self.assertRaisesRegex(ValueError,'^BACKUP_LOCK_UNVERIFIED$'):
+                        backup_snapshot._require_legacy_operation_lock(home)
+
     def fake_checked(self,args,**kwargs):
         if 'ps' in args:return b'container-id\n'
         return b''

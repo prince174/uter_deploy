@@ -14,9 +14,17 @@ from scripts import bundle as builder, compose_nsfirewall_adapter, compose_nsfir
 from tests import test_controller as fixtures
 
 
+def _host_proc_visible():
+    try:os.stat('/proc/self/ns/pid');os.stat('/proc/1/ns/pid');return True
+    except OSError:return False
+
+
 @unittest.skipUnless(os.name=='posix' and hasattr(os,'O_NOFOLLOW'), 'requires POSIX private files')
 class FenceRecoveryCLITests(unittest.TestCase):
     def setUp(self):
+        from scripts import experimental_operation_lock
+        namespace=patch.object(experimental_operation_lock,'_host_pid_namespace',return_value=True)
+        namespace.start();self.addCleanup(namespace.stop)
         self.fx=fixtures.ControllerTests(methodName='test_signed_bundle')
         self.fx.setUp();self.addCleanup(self.fx.doCleanups)
         self.fx.home.chmod(0o700)
@@ -61,8 +69,9 @@ class FenceRecoveryCLITests(unittest.TestCase):
             recover.assert_not_called()
         self.assertEqual(journal.read(self.fx.home)['phase'],'capturing')
         (self.fx.home/'operation.lock').write_text('999999',encoding='ascii')
+        from scripts import experimental_operation_lock
         with patch.object(compose_nsfirewall_protocol,'recover_before_capture') as recover:
-            with self.assertRaises(FileExistsError):self.invoke()
+            with self.assertRaisesRegex(experimental_operation_lock.LockError,'^LOCK_ALREADY_PRESENT$'):self.invoke()
             recover.assert_not_called()
         self.assertTrue((self.fx.home/'operation.lock').exists())
 
@@ -122,6 +131,7 @@ class FenceRecoveryCLITests(unittest.TestCase):
         self.assertEqual(journal.read(self.fx.home)['phase'],'isolated')
         self.assertFalse((self.fx.home/'operation.lock').exists())
 
+    @unittest.skipUnless(_host_proc_visible(),'requires access to host PID namespace')
     def test_verified_isolated_executor_loads_only_its_signed_modules(self):
         executor=self.build_signed_executor()
         state=uterctl.read(self.fx.home/'state.json');state['pending']=fixtures.manifest('1.1.0',['1.0.0'])

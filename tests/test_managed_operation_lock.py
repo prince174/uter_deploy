@@ -59,6 +59,14 @@ class ManagedLockTests(unittest.TestCase):
             with subject.locked(self.home):pass
         self.assertTrue(key.is_symlink())
 
+    def test_unavailable_host_namespace_is_bounded_and_never_creates_sentinel(self):
+        with patch.object(primitive,'_host_pid_namespace',side_effect=PermissionError('secret-canary')):
+            with self.assertRaises(subject.ManagedLockError) as error:
+                with subject.locked(self.home):pass
+        self.assertEqual(str(error.exception),'MANAGED_LOCK_ENVIRONMENT_UNVERIFIED')
+        self.assertNotIn('secret-canary',str(error.exception))
+        self.assertFalse(os.path.lexists(self.home/primitive.SENTINEL))
+
     def test_lost_flock_is_detected_and_sentinel_is_preserved(self):
         with self.assertRaisesRegex(subject.ManagedLockError,'MANAGED_LOCK_NOT_HELD'):
             with subject.locked(self.home):

@@ -12,6 +12,10 @@ from tests import test_controller as fixtures
 
 class ComposeFencedUpdateTests(unittest.TestCase):
     def setUp(self):
+        # Orchestration unit tests model an already-held fenced capability;
+        # ownership is independently exercised in managed-lock/adapter tests.
+        guard=patch.object(update.backup_snapshot,'_require_fenced_operation_lock')
+        guard.start();self.addCleanup(guard.stop)
         self.old={'version':'1.0.0','data_epoch':1,'images':{'redis':'r','agent':'a','guardrail':'g'}}
         self.new={'version':'1.1.0','data_epoch':1,'upgrade_from':['1.0.0'],
                   'images':{'redis':'r','agent':'new-a','guardrail':'new-g'}}
@@ -291,6 +295,14 @@ class ComposeFencedUpdateTests(unittest.TestCase):
                      for service,ident in (('agent','d'),('guardrail','e'))}
             value=update.create_target_result(home,key,record,intent,writers)
             self.assertEqual(update.read_target_result(home,key,record,intent),value)
+            with self.assertRaisesRegex(update.FencedUpdateError,'^FENCED_UPDATE_RECLAIM_UNVERIFIED$'):
+                update.verify_reclaimable_finish(home,key)
+            record=journal.advance(home,operation=record['operation'],expected='target_starting',next_phase='target_running')
+            with patch.object(update.receipts,'read_decision',return_value=({'operation':record['operation'],'action':'mutation'},'a'*64)):
+                update.verify_reclaimable_finish(home,key)
+            with patch.object(update.receipts,'read_decision',return_value=({'operation':record['operation'],'action':'release'},'a'*64)):
+                with self.assertRaisesRegex(update.FencedUpdateError,'^FENCED_UPDATE_RECLAIM_UNVERIFIED$'):
+                    update.verify_reclaimable_finish(home,key)
             path=home/update.TARGET_RESULT;path.write_bytes(path.read_bytes().replace(b'"restart_count":0',b'"restart_count":1',1))
             with self.assertRaisesRegex(update.FencedUpdateError,'^FENCED_UPDATE_RESULT_UNVERIFIED$'):
                 update.read_target_result(home,key,record,intent)
