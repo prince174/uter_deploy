@@ -46,7 +46,12 @@ def build(manifest, output, key, *, source_root=ROOT):
                      'kubernetes_sealed_config.py','kubernetes_trusted_kubectl.py','kubernetes_fence_pin.py',
                      'kubernetes_redis_identity.py','compose_maintenance_check.py','compose_maintenance_coordinator.py',
                      'kubernetes_fence_finalizer.py','kubernetes_writer_quiesce.py','kubernetes_writer_finalizer.py',
-                     'kubernetes_maintenance_preflight.py','kubernetes_maintenance_runtime.py'):
+                     'kubernetes_maintenance_preflight.py','kubernetes_maintenance_runtime.py',
+                     'kubernetes_fence_coordinator.py','kubernetes_fence_profile_store.py','kubernetes_pinned_preflight.py',
+                     'kubernetes_audit_reader.py','kubernetes_audit_writer_guard.py','kubernetes_backup_coordinator.py',
+                     'kubernetes_config_snapshot.py','kubernetes_loopback_auth.py','kubernetes_loopback_intent.py',
+                     'kubernetes_loopback_recovery.py','kubernetes_loopback_snapshot.py','kubernetes_redis_finalizer_release.py',
+                     'kubernetes_redis_reverse_finalizer.py','kubernetes_redis_shutdown.py','kubernetes_runtime_pin.py'):
             shutil.copy2(source_root/'scripts'/name,scripts/name)
         if m.get('session_identity_gate'):
             shutil.copy2(source_root/'scripts/session_migration_guard.py', scripts/'session_migration_guard.py')

@@ -265,6 +265,11 @@ _FENCE_EXECUTOR_MODULES = (
     'compose_maintenance_check','compose_maintenance_coordinator',
     'kubernetes_fence_finalizer','kubernetes_writer_quiesce','kubernetes_writer_finalizer',
     'kubernetes_maintenance_preflight','kubernetes_maintenance_runtime',
+    'kubernetes_fence_coordinator','kubernetes_fence_profile_store','kubernetes_pinned_preflight',
+    'kubernetes_audit_reader','kubernetes_audit_writer_guard','kubernetes_backup_coordinator',
+    'kubernetes_config_snapshot','kubernetes_loopback_auth','kubernetes_loopback_intent',
+    'kubernetes_loopback_recovery','kubernetes_loopback_snapshot','kubernetes_redis_finalizer_release',
+    'kubernetes_redis_reverse_finalizer','kubernetes_redis_shutdown','kubernetes_runtime_pin',
 )
 
 
@@ -531,7 +536,7 @@ def finish_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_k
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize", "fence-finish-update", "maintenance-check-compose"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize", "fence-finish-update", "maintenance-check-compose", "maintenance-check-kubernetes"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
@@ -539,10 +544,38 @@ def main(argv=None):
     parser.add_argument("--backup-dir", type=Path, help="New, external directory for an encrypted backup")
     parser.add_argument("--backup-key", type=Path, help="Protected 32-byte backup encryption key")
     parser.add_argument("--executor-key", type=Path, help="Pre-trusted public key for the signed executor")
+    parser.add_argument("--kubeconfig", type=Path, help="Private static kubeconfig for pinned Kubernetes diagnostics")
+    parser.add_argument("--operator-profile", type=Path, help="Independently prepared authenticated Kubernetes profile")
+    parser.add_argument("--kubectl", type=Path, help="Independently pinned kubectl binary")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--fenced-update", action="store_true", help="Experimental same-epoch Compose fenced update")
     args = parser.parse_args(argv)
     home = args.home.resolve()
+    if args.command == 'maintenance-check-kubernetes':
+        required=(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.kubeconfig,args.operator_profile,args.kubectl)
+        if any(value is None for value in required):
+            raise ValueError('KUBE_MAINTENANCE_CHECK_ARGUMENTS_REQUIRED')
+        if any(not value.is_absolute() for value in required):
+            raise ValueError('KUBE_MAINTENANCE_CHECK_PATH_NOT_ABSOLUTE')
+        _load_signed_fence_executor(args.executor_key)
+        from scripts import backup_installation, kubernetes_fence_coordinator, kubernetes_maintenance_preflight, redis_fence_journal
+        checked_home=backup_installation.private_directory(args.home)
+        with locked(checked_home):
+            if redis_fence_journal.blocks_mutation(checked_home):
+                raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+            with kubernetes_fence_coordinator.checked_session(checked_home,args.bundle,args.key,args.kubeconfig,
+                    args.operator_profile,args.backup_key,executor_bundle=ROOT,executor_key=args.executor_key,
+                    kubectl_path=args.kubectl) as session:
+                snapshot=kubernetes_maintenance_preflight.observe(session)
+                if (not isinstance(snapshot,dict) or set(snapshot.get('writers',{}))!={'agent','guardrail'}
+                        or any(snapshot.get(name) is not False for name in
+                               ('ingress_fenced','restart_fenced','redis_isolated','safe_to_start','safe_to_update'))):
+                    raise ValueError('KUBE_MAINTENANCE_CHECK_RESULT_UNVERIFIED')
+                if kubernetes_maintenance_preflight.observe(session)!=snapshot:
+                    raise ValueError('KUBE_MAINTENANCE_CHECK_IDENTITY_CHANGED')
+        print(json.dumps({'backend':'kubernetes','writers_observed':2,'application_endpoint_checked':False,
+                          'ingress_fenced':False,'restart_fenced':False,'redis_isolated':False,'safe_to_update':False},sort_keys=True))
+        return
     if args.command == 'maintenance-check-compose':
         if args.key is None or args.bundle is None or args.executor_key is None:
             raise ValueError('MAINTENANCE_CHECK_SIGNED_BUNDLE_REQUIRED')

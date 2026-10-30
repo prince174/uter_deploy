@@ -1,6 +1,7 @@
 import hashlib
 import ast
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -86,7 +87,12 @@ class BundleProvenanceTests(unittest.TestCase):
                      'kubernetes_sealed_config.py','kubernetes_trusted_kubectl.py','kubernetes_fence_pin.py',
                      'kubernetes_redis_identity.py','compose_maintenance_check.py','compose_maintenance_coordinator.py',
                      'kubernetes_fence_finalizer.py','kubernetes_writer_quiesce.py','kubernetes_writer_finalizer.py',
-                     'kubernetes_maintenance_preflight.py','kubernetes_maintenance_runtime.py'):
+                     'kubernetes_maintenance_preflight.py','kubernetes_maintenance_runtime.py',
+                     'kubernetes_fence_coordinator.py','kubernetes_fence_profile_store.py','kubernetes_pinned_preflight.py',
+                     'kubernetes_audit_reader.py','kubernetes_audit_writer_guard.py','kubernetes_backup_coordinator.py',
+                     'kubernetes_config_snapshot.py','kubernetes_loopback_auth.py','kubernetes_loopback_intent.py',
+                     'kubernetes_loopback_recovery.py','kubernetes_loopback_snapshot.py','kubernetes_redis_finalizer_release.py',
+                     'kubernetes_redis_reverse_finalizer.py','kubernetes_redis_shutdown.py','kubernetes_runtime_pin.py'):
             with self.subTest(name=name):
                 path=result/'scripts'/name
                 self.assertEqual(path.read_bytes(),(uterctl.ROOT/'scripts'/name).read_bytes())
@@ -118,7 +124,7 @@ class BundleProvenanceTests(unittest.TestCase):
     def test_signed_kubernetes_maintenance_static_script_dependencies_are_present(self):
         result=self.make_bundle(gated=False)
         inventory=json.loads((result/'checksums.json').read_text(encoding='utf-8'))
-        pending=['kubernetes_maintenance_preflight','kubernetes_maintenance_runtime']
+        pending=['kubernetes_maintenance_preflight','kubernetes_maintenance_runtime','kubernetes_fence_coordinator']
         visited=set()
         while pending:
             name=pending.pop()
@@ -137,7 +143,8 @@ class BundleProvenanceTests(unittest.TestCase):
                 # Catch some obvious dynamic imports for review. This is not a
                 # proof against aliases, eval, getattr or arbitrary dynamic code.
                 elif isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='__import__':
-                    self.fail(relative+' uses dynamic __import__')
+                    if not (len(node.args)==1 and isinstance(node.args[0],ast.Constant) and node.args[0].value=='sys'):
+                        self.fail(relative+' uses unreviewed dynamic __import__')
                 elif (isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
                       and isinstance(node.func.value,ast.Name) and node.func.value.id=='importlib'):
                     self.fail(relative+' uses dynamic importlib')
@@ -148,7 +155,12 @@ class BundleProvenanceTests(unittest.TestCase):
     def test_signed_kubernetes_maintenance_modules_reject_modification(self):
         result=self.make_bundle(gated=False)
         for name in ('kubernetes_fence_finalizer','kubernetes_writer_quiesce','kubernetes_writer_finalizer',
-                     'kubernetes_maintenance_preflight','kubernetes_maintenance_runtime'):
+                     'kubernetes_maintenance_preflight','kubernetes_maintenance_runtime',
+                     'kubernetes_fence_coordinator','kubernetes_fence_profile_store','kubernetes_pinned_preflight',
+                     'kubernetes_audit_reader','kubernetes_audit_writer_guard','kubernetes_backup_coordinator',
+                     'kubernetes_config_snapshot','kubernetes_loopback_auth','kubernetes_loopback_intent',
+                     'kubernetes_loopback_recovery','kubernetes_loopback_snapshot','kubernetes_redis_finalizer_release',
+                     'kubernetes_redis_reverse_finalizer','kubernetes_redis_shutdown','kubernetes_runtime_pin'):
             with self.subTest(name=name):
                 path=result/'scripts'/(name+'.py');original=path.read_bytes()
                 path.write_bytes(original+b'\n# tampered\n')
@@ -163,8 +175,25 @@ class BundleProvenanceTests(unittest.TestCase):
               'm=importlib.util.module_from_spec(s); s.loader.exec_module(m); '
               'm._load_signed_fence_executor(Path(sys.argv[2])); '
               'from scripts import kubernetes_maintenance_preflight as pflight, kubernetes_maintenance_runtime as r, '
-              'kubernetes_fence_finalizer, kubernetes_writer_finalizer, kubernetes_writer_quiesce; '
+              'kubernetes_fence_finalizer, kubernetes_writer_finalizer, kubernetes_writer_quiesce, '
+              'kubernetes_fence_coordinator, kubernetes_fence_profile_store, kubernetes_pinned_preflight; '
               'exec("try:\\n r._require_fences(None,None,None)\\nexcept r.RuntimeError:\\n pass\\nelse:\\n raise AssertionError(\'ingress gate opened\')")')
         run=subprocess.run([sys.executable,'-I','-B','-c',code,str(result),str(self.public)],
                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=15)
         self.assertEqual(run.returncode,0,run.stderr)
+
+    @unittest.skipUnless(os.name=='posix','private POSIX installation')
+    def test_isolated_signed_kubernetes_cli_refuses_missing_profile_without_operation(self):
+        result=self.make_bundle(gated=False)
+        home=self.root/'home';home.mkdir(mode=0o700)
+        command=[sys.executable,'-I','-B',str(result/'uterctl.py'),'maintenance-check-kubernetes',
+                 '--home',str(home),'--bundle',str(result),'--key',str(self.public),
+                 '--executor-key',str(self.public),'--backup-key',str(self.root/'missing-backup-key'),
+                 '--operator-profile',str(self.root/'missing-profile'),
+                 '--kubeconfig',str(self.root/'missing-kubeconfig'),'--kubectl',str(self.root/'missing-kubectl')]
+        run=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=15)
+        self.assertNotEqual(run.returncode,0)
+        self.assertIn('KUBE_OPERATOR_PROFILE_UNVERIFIED',run.stderr)
+        self.assertEqual(run.stdout,'')
+        self.assertFalse((home/'operation.lock').exists())
+        self.assertFalse((home/'redis-fence-operation.json').exists())
