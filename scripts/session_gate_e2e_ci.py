@@ -249,7 +249,8 @@ def run_scenario():
             raise CheckFailure('SIGNED_FIXTURE_INVALID')
         cmd, env, before_audit = saved[0]
         if (os.environ.get('UTER_CI_VERIFY_KUBE_LOOPBACK') == 'true'
-                or os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true'):
+                or os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true'
+                or os.environ.get('UTER_CI_VERIFY_COMPOSE_NSFENCE') == 'true'):
             # The ordinary update wizard adopts lazily when it starts. These
             # opt-in CI hooks need that same signed adoption before the wizard.
             from scripts import adopt_managed
@@ -269,6 +270,16 @@ def run_scenario():
                         'RECONNECT_PROBE','RECONNECT_JOURNAL','RECONNECT_WRITERS'}
                 phase=kubernetes_loopback_signed_ci.PHASE
                 raise CheckFailure('KUBE_LOOPBACK_CI_'+phase if phase in stages else 'KUBE_LOOPBACK_CI_UNVERIFIED') from None
+        if os.environ.get('UTER_CI_VERIFY_COMPOSE_NSFENCE') == 'true':
+            from scripts import compose_nsfirewall_signed_ci
+            try:
+                compose_nsfirewall_signed_ci.verify(Path(home), source, public, old)
+            except compose_nsfirewall_signed_ci.SignedComposeFenceCheckFailure:
+                phases={'GUARD','PATH_CHECK','CONFIG_READ','SITE_READ','SIGNED_IDENTITY','DOCKER_SCOPE','INSPECTION',
+                        'STOP_WRITERS','PRE_CAPTURE_ISOLATE','PRE_CAPTURE_RELEASE','CAPTURE_ISOLATE','CAPTURE',
+                        'CAPTURE_RELEASE_REFUSED','CI_ONLY_CLEANUP','CI_RESUME'}
+                phase=compose_nsfirewall_signed_ci.PHASE
+                raise CheckFailure('COMPOSE_NSFENCE_CI_'+phase if phase in phases else 'COMPOSE_NSFENCE_CI_UNVERIFIED') from None
         if os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true':
             from scripts import compose_fence_signed_ci
             try:
@@ -359,7 +370,7 @@ def main():
         keep = ('GITHUB_ACTIONS','GITHUB_SHA','RUNNER_ENVIRONMENT','RUNNER_OS','BACKEND',
                 'UTER_CI_RELEASE_MODE','UTER_CI_STRICT_RUNNER','UTER_CI_OLD_VERSION','UTER_CI_NEW_VERSION',
                 'UTER_CI_OLD_TAG','UTER_CI_NEW_TAG','UTER_CI_VERIFY_REDIS_IDENTITY','UTER_CI_VERIFY_COMPOSE_FENCE',
-                'UTER_CI_VERIFY_KUBE_LOOPBACK','LANG','HOME')
+                'UTER_CI_VERIFY_KUBE_LOOPBACK','UTER_CI_VERIFY_COMPOSE_NSFENCE','LANG','HOME')
         env = {name:os.environ[name] for name in keep if name in os.environ}
         env.update({'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                     'GITHUB_WORKSPACE':str(stage), 'SOURCE_GIT_WORKSPACE':str(ROOT),
@@ -371,6 +382,12 @@ def main():
                                           '--staged'], env=env, timeout=3300, limit=1024*1024)
             if status:
                 allowed = {'EXPECTED_SIGNED_GATE_MISSING','CI_SIGNED_ADOPTION_FAILED',
+                           'COMPOSE_NSFENCE_CI_UNVERIFIED','COMPOSE_NSFENCE_CI_GUARD','COMPOSE_NSFENCE_CI_PATH_CHECK',
+                           'COMPOSE_NSFENCE_CI_CONFIG_READ','COMPOSE_NSFENCE_CI_SITE_READ','COMPOSE_NSFENCE_CI_SIGNED_IDENTITY',
+                           'COMPOSE_NSFENCE_CI_DOCKER_SCOPE','COMPOSE_NSFENCE_CI_INSPECTION','COMPOSE_NSFENCE_CI_STOP_WRITERS',
+                           'COMPOSE_NSFENCE_CI_PRE_CAPTURE_ISOLATE','COMPOSE_NSFENCE_CI_PRE_CAPTURE_RELEASE',
+                           'COMPOSE_NSFENCE_CI_CAPTURE_ISOLATE','COMPOSE_NSFENCE_CI_CAPTURE','COMPOSE_NSFENCE_CI_CAPTURE_RELEASE_REFUSED',
+                           'COMPOSE_NSFENCE_CI_CI_ONLY_CLEANUP','COMPOSE_NSFENCE_CI_CI_RESUME',
                            'KUBE_LOOPBACK_CI_UNVERIFIED','KUBE_LOOPBACK_CI_GUARD',
                            'KUBE_LOOPBACK_CI_FIXTURE','KUBE_LOOPBACK_CI_STOP_WRITERS','KUBE_LOOPBACK_CI_HOLD',
                            'KUBE_LOOPBACK_CI_PATCH','KUBE_LOOPBACK_CI_TERMINATION','KUBE_LOOPBACK_CI_POD',
