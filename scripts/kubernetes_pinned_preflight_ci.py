@@ -9,10 +9,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import tempfile
 import time
 
 from scripts import (adopt_backup_ci, install_recovery, kubernetes_pinned_preflight as preflight,
                      kubernetes_fence_pin as pin,
+                     kubernetes_fence_coordinator as coordinator,
+                     kubernetes_fence_profile_store as profile_store,
                      kubernetes_writer_finalizer as writer_finalizer,
                      kubernetes_writer_quiesce as quiesce,
                      kubernetes_redis_identity_ci as snapshot)
@@ -69,6 +72,24 @@ def verify(home,bundle,key,manifest):
         if not refused:raise ValueError
         with preflight.checked_session(home,bundle,key,raw,profile) as session:
             if session.manifest!=manifest or session.reverify()['safe_to_update'] is not False:raise ValueError
+        # Exercise operator-profile checks with an independent file and exact
+        # kubeconfig bytes on the single disposable kind runner only. These
+        # synthetic pins are observed on this same test cluster and do not
+        # constitute independent trust for a real installation.
+        config_path=Path(os.environ.get('KUBECONFIG') or Path.home()/'.kube'/'config')
+        with tempfile.TemporaryDirectory(prefix='kube-pin-ci-',dir=ROOT/'work') as folder:
+            private=Path(folder);backup_key=private/'key';backup_key.write_bytes(os.urandom(32));backup_key.chmod(0o600)
+            writer_uids={service:_query(['-n',snapshot.SITE,'get','deployment',snapshot.SITE+'-'+service])['metadata']['uid']
+                         for service in ('guardrail','agent')}
+            operator={'schema':1,'site':snapshot.SITE,'api':profile,'writer_uids':writer_uids,
+                      'release_version':manifest['version'],
+                      'inventory_sha256':hashlib.sha256((Path(bundle)/'checksums.json').read_bytes()).hexdigest(),
+                      'publisher_sha256':hashlib.sha256(Path(key).read_bytes()).hexdigest()}
+            profile_path=private/'profile';profile_store.create(profile_path,backup_key.read_bytes(),operator)
+            with coordinator.checked_session(home,bundle,key,config_path,profile_path,backup_key) as bound:
+                if bound.reverify().get('safe_to_update') is not False:raise ValueError
+                obj=json.loads(bound.api._call(['--request-timeout=20s','get','namespace','kube-system','-o','json']))
+                if obj.get('metadata',{}).get('uid')!=profile['kube_system_uid']:raise ValueError
     except Exception:raise PinnedCITestError('KUBE_PINNED_CI_UNVERIFIED') from None
     return {'result':'sealed_pinned_queries_exercised','cluster_authenticated':False,'safe_to_update':False}
 
