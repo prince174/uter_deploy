@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import unittest
 from unittest.mock import patch
+import yaml
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -37,6 +38,20 @@ class RuntimeInventoryTests(unittest.TestCase):
             with self.assertRaises(ValueError):runtime.owners_for({Path('/unowned/libexample.so')})
 
 class SecurityGateTests(unittest.TestCase):
+    def test_remediation_artifact_allowlist_excludes_raw_scanner_reports(self):
+        workflow = yaml.safe_load((ROOT/'.github/workflows/remediate-new-build.yml').read_text(encoding='utf-8'))
+        steps = workflow['jobs']['remediate']['steps']
+        uploads = [step for step in steps if step.get('uses', '').startswith('actions/upload-artifact@')]
+        self.assertEqual(len(uploads), 1)
+        paths = set(uploads[0]['with']['path'].splitlines())
+        required = {'work/image.tar.gz', 'work/evidence/image-id.txt', 'work/evidence/source-sha.txt',
+                    'work/evidence/source-state.json', 'work/evidence/archive.sha256',
+                    'work/evidence/security-summary.json', 'work/evidence/parent-image.txt',
+                    'work/evidence/policies/default.toml', 'work/evidence/profiles/model_profiles.toml'}
+        self.assertEqual(paths, required)
+        self.assertNotIn('work/evidence/', paths)
+        self.assertFalse(any('findings' in path or '*' in path for path in paths))
+
     def test_missing_os_detection_cannot_pass(self):
         for data in ({},{'Metadata':{},'Results':[{'Vulnerabilities':[]}]}):
             with self.assertRaises(ValueError):gate.summary(data)
