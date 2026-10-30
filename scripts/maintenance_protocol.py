@@ -43,12 +43,14 @@ def _parse(raw, expected_boot=None):
         raise ProtocolError('MAINTENANCE_RESPONSE_UNVERIFIED') from None
 
 
-def collect(inventory, *, observe_inventory, request, record_intent, clock=time.monotonic, sleep=time.sleep):
+def collect(inventory, *, observe_inventory, request, record_intent, record_receipt, clock=time.monotonic, sleep=time.sleep):
     """Coordinate exact Agent then Guardrail instances through a supplied adapter.
 
     This is an experimental library, not an executable adapter. `record_intent`
     must persist and fsync a write-once record before the sole POST. `request`
     returns (HTTP status, JSON bytes); errors leave the operation incomplete.
+    `record_receipt` must durably bind the receipt to that exact instance before
+    any subsequent writer is contacted. Neither callback is implemented here.
     POST transport failure is re-observed via GET, never retried. No call is
     made until all initial running states and complete identities are verified.
     """
@@ -103,7 +105,14 @@ def collect(inventory, *, observe_inventory, request, record_intent, clock=time.
                     if clock() >= deadline:
                         raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
                     if status == 200 and value['state'] == 'quiesced':
-                        receipts[instance] = maintenance_receipt.validate(raw, service=service, expected_boot=boots[instance])
+                        receipt = maintenance_receipt.validate(raw, service=service, expected_boot=boots[instance])
+                        checked()
+                        if record_receipt(service, instance, boots[instance], receipt) is not True:
+                            raise ProtocolError('MAINTENANCE_RECEIPT_PERSISTENCE_UNVERIFIED')
+                        checked()
+                        if clock() >= deadline:
+                            raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
+                        receipts[instance] = receipt
                         break
                     if status != 202 or value['state'] != 'draining' or value['safe_to_stop'] is not False or value['error'] is not None:
                         raise ProtocolError('MAINTENANCE_STATE_UNVERIFIED')

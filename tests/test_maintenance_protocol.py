@@ -36,9 +36,9 @@ class CoordinatorTests(unittest.TestCase):
         self.events.append(('intent', name))
         return True
 
-    def run_protocol(self, request=None, observe=None, record=None):
+    def run_protocol(self, request=None, observe=None, record=None, save=None):
         return protocol.collect(self.inventory, observe_inventory=observe or self.observe, request=request or self.request,
-                                record_intent=record or self.record, clock=lambda: self.now,
+                                record_intent=record or self.record, record_receipt=save or (lambda *_: True), clock=lambda: self.now,
                                 sleep=lambda seconds: setattr(self, 'now', self.now + seconds))
 
     def test_agents_complete_before_guardrail_and_intent_precedes_post(self):
@@ -89,6 +89,13 @@ class CoordinatorTests(unittest.TestCase):
         with self.assertRaisesRegex(protocol.ProtocolError, 'DEADLINE_EXCEEDED'):
             self.run_protocol(record=record)
         self.assertFalse(any(e[0] == 'POST' for e in self.events))
+
+    def test_uncertain_receipt_persistence_blocks_remaining_writers(self):
+        with self.assertRaisesRegex(protocol.ProtocolError, 'RECEIPT_PERSISTENCE_UNVERIFIED'):
+            self.run_protocol(save=lambda *_: False)
+        self.assertIn(('POST', 'agent-1'), self.events)
+        self.assertNotIn(('POST', 'agent-2'), self.events)
+        self.assertNotIn(('POST', 'guard-1'), self.events)
 
 
 if __name__ == '__main__':
