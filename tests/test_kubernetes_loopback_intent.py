@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts import kubernetes_fence_finalizer as finalizer
 from scripts import kubernetes_loopback_intent as intent
@@ -121,6 +122,21 @@ class LoopbackIntentTests(unittest.TestCase):
         with self.assertRaisesRegex(intent.LoopbackIntentError, 'WRITE_UNCERTAIN'):
             self.prepare()
         self.assertEqual(intent._read(self.home), before)
+
+    def test_untrusted_attempt_marker_or_fsync_failure_never_reaches_api(self):
+        self.prepare()
+        marker=self.home/intent.ATTEMPT_NAME
+        marker.symlink_to(self.home/'missing')
+        with self.assertRaisesRegex(intent.LoopbackIntentError, 'REQUEST_UNCERTAIN'):
+            intent.request(self.home, self.plan, self.operation, self.api)
+        marker.unlink()
+        with patch.object(intent.os,'fsync',side_effect=OSError('disk failure')):
+            with self.assertRaisesRegex(intent.LoopbackIntentError, 'REQUEST_UNCERTAIN'):
+                intent.request(self.home, self.plan, self.operation, self.api)
+        self.assertTrue(marker.exists())
+        with self.assertRaisesRegex(intent.LoopbackIntentError, 'REQUEST_UNCERTAIN'):
+            intent.request(self.home, self.plan, self.operation, self.api)
+        self.assertEqual(self.api.deployment_patches, [])
 
 
 if __name__ == '__main__':
