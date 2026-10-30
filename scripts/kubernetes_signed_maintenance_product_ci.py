@@ -26,7 +26,11 @@ class FixtureError(ValueError):
     pass
 
 
+STAGE='INITIAL'
+
+
 def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
+    global STAGE
     expected_root=Path(__file__).resolve().parents[1]
     expected_work=expected_root/'work/maintenance-kubernetes'
     if (os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted'
@@ -45,6 +49,7 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
     def uid(kind,name, *, namespaced=True):
         args=(['-n',site] if namespaced else [])+['get',kind,name]
         return query(*args)['metadata']['uid']
+    STAGE='KEYS'
     private=Path(work)/'signed-cli-private'; private.mkdir(mode=0o700)
     backup_key=private/'backup-key'; backup_key.write_bytes(os.urandom(32)); backup_key.chmod(0o600)
     config=private/'kubeconfig'; config.write_bytes(Path(kubeconfig).read_bytes()); config.chmod(0o600)
@@ -54,6 +59,7 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
     public=private/'publisher.pem'; public.write_bytes(signer.public_key().public_bytes(
         serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo)); public.chmod(0o600)
     source=json.loads((Path(root)/'candidates/source.json').read_text())['source_commit']
+    STAGE='IMAGES'
     subprocess.run(['docker','--context','default','pull',images['redis']],check=True,
                    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=300)
     image_ids={}
@@ -67,6 +73,7 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
               'image_config_ids':image_ids,
               'maintenance_protocol':{'version':1,'services':['agent','guardrail']}}
     manifest_file=private/'manifest.json';manifest_file.write_text(json.dumps(manifest))
+    STAGE='BUNDLE'
     executor=private/'executor'; bundle.build(manifest_file,executor,secret,source_root=root)
     # Only this self-signed fixture gains these unpublished experimental files.
     for name in ('kubernetes_redis_readonly_transport.py','redis_acl_operation_inspection.py',
@@ -84,6 +91,7 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
         chown_attempted=True
         subprocess.run(['sudo','chown','-R','0:0',str(executor)],check=True,
                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+        STAGE='STATE'
         runtime=Path(home)/'runtime';runtime.mkdir(mode=0o700,exist_ok=True)
         with (runtime/'site.json').open('x',encoding='utf-8') as stream:
             json.dump({'backend':'helm','name':site,'namespace':site,'context':context,
@@ -91,6 +99,7 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
         # Fixture-only controller state: no production adoption is being claimed.
         with (Path(home)/'state.json').open('x',encoding='utf-8') as stream:
             json.dump({'current':manifest,'previous':None,'pending':None,'adopted_installer':True},stream)
+        STAGE='PROFILE'
         raw=yaml.safe_load(config.read_bytes())
         cluster=raw['clusters'][0]['cluster']
         ca=base64.b64decode(cluster['certificate-authority-data'],validate=True)
@@ -117,6 +126,7 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
               '--home',str(home),'--bundle',str(executor),'--key',str(public),'--executor-key',str(public),
               '--backup-key',str(backup_key),'--kubeconfig',str(config),'--operator-profile',str(profile),
               '--kubectl',str(binary)]
+        STAGE='CLI'
         result=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=180)
         if result.returncode:
             allowed=('KUBE_PREFLIGHT_INSTALLATION_UNVERIFIED','KUBE_PREFLIGHT_IDENTITY_UNVERIFIED',
@@ -134,6 +144,7 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
             raise FixtureError('KUBE_SIGNED_CI_RESULT_INVALID')
         # Provision a synthetic separate admin entirely inside the disposable
         # Pod. The password travels only over stdin, never argv or output.
+        STAGE='REDIS_ADMIN'
         labels='app.kubernetes.io/instance='+site+',app.kubernetes.io/name=redis'
         pods=query('-n',site,'get','pods','-l',labels)['items']
         if len(pods)!=1: raise FixtureError('KUBE_SIGNED_CI_REDIS_UNVERIFIED')
@@ -150,6 +161,7 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
         plan={'schema':1,'context':context,'namespace':site,'pod':meta['name'],'uid':meta['uid'],
               'resource_version':meta['resourceVersion'],'container_id':status['containerID'],
               'spec_sha256':kubernetes_fence_finalizer._digest(pod['spec'])}
+        STAGE='PLAN'
         kubernetes_fence_finalizer.persist_plan(home,plan)
         operation=secrets.token_hex(16)
         redis_fence_journal.create(home,backend='kubernetes',site=site,resource=meta['uid'],
@@ -157,9 +169,13 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
         child=[sys.executable,'-I','-B',str(executor/'scripts/kubernetes_redis_readonly_ci_child.py'),
             str(home),str(executor),str(public),str(config),str(profile),str(backup_key),str(binary),
             operation,str(admin_key)]
-        for expected,redis_run in (('READONLY_TRANSPORT_VERIFIED',run_id),('READONLY_TRANSPORT_REFUSED','0'*40)):
+        STAGE='TRANSPORT'
+        for expected,redis_run in (('READONLY_TRANSPORT_VERIFIED',run_id),('READONLY_TRANSPORT_REFUSED_CONNECT','0'*40)):
             result=subprocess.run(child+[redis_run],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=240)
             if result.stdout.strip().decode('ascii') != expected or (result.returncode == 0) != (expected.endswith('VERIFIED')):
+                permitted={b'READONLY_TRANSPORT_REFUSED_'+x for x in (b'INITIAL',b'SESSION',b'POD',b'CONNECT',b'QUERY')}
+                status=result.stdout.strip()
+                if status in permitted: print('KUBE_SIGNED_CI_'+status.decode('ascii'),file=sys.stderr)
                 raise FixtureError('KUBE_SIGNED_CI_READONLY_TRANSPORT_UNVERIFIED')
         # Caller uses these fixture paths only for a later test of Pod replacement.
         return {'child':child,'run_id':run_id,'pod_uid':meta['uid'],'pod_name':meta['name']}

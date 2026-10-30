@@ -9,16 +9,20 @@ import uterctl
 from scripts import (kubernetes_fence_coordinator, kubernetes_fence_finalizer,
                      kubernetes_redis_readonly_transport, redis_acl_operation_inspection)
 
+PHASE='INITIAL'
 
 def main():
+    global PHASE
     if not sys.flags.isolated or len(sys.argv)!=11: raise ValueError
     home,bundle,publisher,config,profile,key,kubectl,operation,admin_key,run_id=sys.argv[1:]
     home=Path(home);bundle=Path(bundle);publisher=Path(publisher)
+    PHASE='SESSION'
     with uterctl.locked(home):
         with kubernetes_fence_coordinator.checked_session(home,bundle,publisher,Path(config),Path(profile),Path(key),
                 executor_bundle=ROOT,executor_key=publisher,kubectl_path=Path(kubectl)) as session:
             plan=kubernetes_fence_finalizer.read_plan(home)
             kubernetes_fence_finalizer._check_journal(home,plan,operation,'prepared')
+            PHASE='POD'
             try:
                 redis_acl_operation_inspection._verify_plan_pod(session,plan)
             except Exception:
@@ -34,7 +38,9 @@ def main():
                     raise ValueError
                 print('READONLY_TRANSPORT_REFUSED_POD')
                 return 2
+            PHASE='CONNECT'
             with kubernetes_redis_readonly_transport.connect(session,operation,'uter-maint-test',Path(admin_key),run_id) as redis:
+                PHASE='QUERY'
                 if not isinstance(redis.execute('INFO','SERVER'),str): raise ValueError
                 if redis.execute('CLIENT','ID')!=int(redis.client_id): raise ValueError
                 if sorted(redis.execute('ACL','USERS'))!=['default','uter-maint-test']: raise ValueError
@@ -45,5 +51,5 @@ def main():
 if __name__ == '__main__':
     try: raise SystemExit(main())
     except Exception:
-        print('READONLY_TRANSPORT_REFUSED')
+        print('READONLY_TRANSPORT_REFUSED_'+PHASE)
         raise SystemExit(1)

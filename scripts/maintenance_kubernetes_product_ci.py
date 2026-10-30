@@ -288,8 +288,21 @@ containerdConfigPatches:
         with patch.object(maintenance_protocol, 'verify_capability', return_value=session.manifest):
             preflight_initial = kubernetes_maintenance_preflight.observe(session)
         PHASE = 'SIGNED_KUBE_CLI_CHECK'
-        signed_fixture=kubernetes_signed_maintenance_product_ci.exercise(root=ROOT,work=work,home=home,kubeconfig=kubeconfig,
-            kube=kube,site=SITE,context=CONTEXT,images=images)
+        try:
+            signed_fixture=kubernetes_signed_maintenance_product_ci.exercise(root=ROOT,work=work,home=home,kubeconfig=kubeconfig,
+                kube=kube,site=SITE,context=CONTEXT,images=images)
+        except kubernetes_signed_maintenance_product_ci.FixtureError as error:
+            allowed={'KUBE_SIGNED_CI_BOUNDARY','KUBE_SIGNED_CI_CHECK_FAILED','KUBE_SIGNED_CI_RESULT_INVALID',
+                     'KUBE_SIGNED_CI_REDIS_UNVERIFIED','KUBE_SIGNED_CI_READONLY_TRANSPORT_UNVERIFIED',
+                     'KUBE_SIGNED_CI_CLEANUP_UNCERTAIN'}
+            print(str(error) if str(error) in allowed else 'KUBE_SIGNED_CI_UNCLASSIFIED',file=sys.stderr)
+            print('KUBE_SIGNED_CI_STAGE_'+kubernetes_signed_maintenance_product_ci.STAGE,file=sys.stderr)
+            raise
+        except Exception:
+            allowed={'INITIAL','KEYS','IMAGES','BUNDLE','STATE','PROFILE','CLI','REDIS_ADMIN','PLAN','TRANSPORT'}
+            stage=kubernetes_signed_maintenance_product_ci.STAGE
+            print('KUBE_SIGNED_CI_STAGE_'+(stage if stage in allowed else 'UNKNOWN'),file=sys.stderr)
+            raise
         PHASE = 'TRUSTED_JOURNAL_CREATE'
         proof = work/'proof'; proof.mkdir(mode=0o700); operation = secrets.token_hex(16); plan = secrets.token_hex(32)
         redis_fence_journal.create(proof, backend='kubernetes', site=SITE, resource=pinned['redis']['uid'],
