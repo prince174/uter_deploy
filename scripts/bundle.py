@@ -39,6 +39,7 @@ def build(manifest, output, key, *, source_root=ROOT):
             shutil.copy2(source_root/'scripts'/name,scripts/name)
         if m.get('session_identity_gate'):
             shutil.copy2(source_root/'scripts/session_migration_guard.py', scripts/'session_migration_guard.py')
+            shutil.copy2(source_root/'scripts/session_provenance.py', scripts/'session_provenance.py')
     (output / "empty.env").write_text("# Deliberately empty; runtime env files are explicit.\n")
     raw = json.dumps(inventory(output), sort_keys=True, indent=2).encode()
     (output / "checksums.json").write_bytes(raw)
