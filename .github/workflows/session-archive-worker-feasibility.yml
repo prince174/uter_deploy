@@ -11,6 +11,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
+      - name: Synthetic harness unit tests (no Docker)
+        run: python3 -m unittest discover -s tests -p 'test_session_archive_worker_ci.py' -v
       - name: Build pinned MIT-licensed librdb and synthetic workers
         run: |
           set -euo pipefail

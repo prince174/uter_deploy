@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
-/* Offline RDB session extractor. This file is not wired into deployment.
+/* Experimental feasibility prototype only. Not an archive or recovery tool;
+ * not production-ready, and not wired into deployment.
  * stdout is a binary private pipe, never a terminal or a log sink. Caller MUST
  * authenticate the complete input before supplying it and encrypt stdout.
  */
