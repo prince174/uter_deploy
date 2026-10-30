@@ -26,7 +26,7 @@ class ComposeFenceAdapterTests(unittest.TestCase):
         self.state = {'id':'a'*64, 'running':True, 'pid':23, 'started':self.plan['started_at'], 'restart_count':0,
                       'image':self.plan['image_ref'], 'image_id':self.plan['image_config_id'], 'restart':'no',
                       'network_mode':'uter-test_backend', 'ports':None, 'publish_all':False, 'runtime_ports':{},
-                      'privileged':False, 'pid_mode':'', 'cap_add':None, 'readonly':True,'user':'999:1000',
+                      'privileged':False, 'pid_mode':'', 'cap_add':None, 'readonly':True,'init':True,'user':'999:1000',
                       'tmpfs':{'/tmp':'size=128m,mode=1777'},'command':['redis-server','/usr/local/etc/redis/redis.conf'],
                       'entrypoint':['docker-entrypoint.sh'],
                       'mounts':[{'Type':'volume','Name':self.plan['volume_name'],'Destination':'/data','RW':True},
@@ -73,22 +73,33 @@ class ComposeFenceAdapterTests(unittest.TestCase):
                        {'networks':{'rogue':{}}}, {'ports':{'6379/tcp':[{}]}}, {'publish_all':True},
                        {'image_id':'sha256:'+'f'*64}, {'privileged':True}, {'network_mode':'host'},
                        {'runtime_ports':{'6379/tcp':[{'HostPort':'6379'}]}}, {'readonly':False},
-                       {'user':'0:0'}, {'command':['/bin/sh']}, {'tmpfs':{'/tmp':'rw','/bin':'rw'}},
+                       {'user':'0:0'}, {'init':False}, {'command':['/bin/sh']}, {'tmpfs':{'/tmp':'rw','/bin':'rw'}},
                        {'mounts':self.state['mounts']+[{'Type':'bind','Destination':'/usr/local/bin/redis-cli','RW':True}]}):
             with self.subTest(change=change), mock.patch.object(self.adapter,'_verify_process'), \
                  mock.patch.object(self.adapter,'_json',return_value=['docker-entrypoint.sh']), \
                  mock.patch.object(self.adapter, '_inspect_redis', return_value=dict(self.state,**change)):
                 with self.assertRaises(fence.ComposeFenceAdapterError): self.adapter._state(self.plan,detached=True,restart='no')
 
-    def test_process_identity_queries_only_names_and_executable_links(self):
-        with mock.patch.object(self.adapter,'_run',return_value='OK') as run:
-            self.adapter._verify_process(self.plan)
-        command=run.call_args.args
-        self.assertEqual(command[:5],('exec','--user','999:1000',self.plan['container_id'],'/bin/sh'))
-        self.assertNotIn('cmdline',command[-1]);self.assertNotIn('/environ',command[-1])
-        with mock.patch.object(self.adapter,'_run',return_value='unexpected'):
+    def test_host_process_identity_checks_init_parent_executable_uid_and_container_cgroup(self):
+        proc=self.home/'proc';proc.mkdir();target=proc/'246';target.mkdir()
+        (target/'stat').write_text('246 (redis-server) '+ ' '.join(['S']+['0']*18+['1234']+['0']*5))
+        (target/'status').write_text('Name:\tredis-server\nPid:\t246\nPPid:\t23\nUid:\t999\t999\t999\t999\n')
+        (target/'cgroup').write_text('0::/docker/'+self.plan['container_id']+'\n')
+        (target/'exe').symlink_to('/usr/local/bin/redis-server')
+        with mock.patch.object(fence,'PROC_ROOT',proc), mock.patch.object(fence.os,'geteuid',return_value=0), \
+             mock.patch.object(self.adapter,'_run',return_value='PID PPID COMMAND\n246 23 redis-server') as run:
+            self.adapter._verify_process(self.plan,23)
+            self.assertEqual(run.call_args.args,('top',self.plan['container_id'],'-eo','pid,ppid,comm'))
+            (target/'cgroup').write_text('0::/docker/'+'f'*64+'\n')
             with self.assertRaisesRegex(fence.ComposeFenceAdapterError,'EXECUTABLE_UNVERIFIED'):
-                self.adapter._verify_process(self.plan)
+                self.adapter._verify_process(self.plan,23)
+            (target/'cgroup').write_text('0::/docker/'+self.plan['container_id']+'\n')
+            (target/'status').write_text('Name:\tredis-server\nPid:\t246\nPPid:\t23\nUid:\t0\t0\t0\t0\n')
+            with self.assertRaisesRegex(fence.ComposeFenceAdapterError,'EXECUTABLE_UNVERIFIED'):
+                self.adapter._verify_process(self.plan,23)
+        with mock.patch.object(fence.os,'geteuid',return_value=1000):
+            with self.assertRaisesRegex(fence.ComposeFenceAdapterError,'EXECUTABLE_UNVERIFIED'):
+                self.adapter._verify_process(self.plan,23)
 
     def test_peer_network_namespace_and_volume_are_rejected(self):
         peer='f'*64

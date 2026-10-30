@@ -21,4 +21,5 @@ jobs:
         run: |
           set -euo pipefail
           ulimit -c 0
-          "$RUNNER_TEMP/uter-venv/bin/python" -m scripts.experimental_compose_adapter_ci
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS \
+            "$RUNNER_TEMP/uter-venv/bin/python" -m scripts.experimental_compose_adapter_ci

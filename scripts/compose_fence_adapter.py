@@ -17,6 +17,8 @@ import uterctl
 from scripts import compose_fence_recovery_plan as plans, compose_redis_diagnostic as diagnostic
 from scripts import install, install_recovery
 
+PROC_ROOT = Path('/proc')
+
 
 class ComposeFenceAdapterError(ValueError):
     pass
@@ -135,23 +137,58 @@ class Adapter:
                '"ports":{{json .HostConfig.PortBindings}},"publish_all":{{json .HostConfig.PublishAllPorts}},'
                '"runtime_ports":{{json .NetworkSettings.Ports}},"privileged":{{json .HostConfig.Privileged}},'
                '"pid_mode":{{json .HostConfig.PidMode}},"cap_add":{{json .HostConfig.CapAdd}},'
-               '"readonly":{{json .HostConfig.ReadonlyRootfs}},"tmpfs":{{json .HostConfig.Tmpfs}},'
+               '"readonly":{{json .HostConfig.ReadonlyRootfs}},"init":{{json .HostConfig.Init}},"tmpfs":{{json .HostConfig.Tmpfs}},'
                '"user":{{json .Config.User}},"command":{{json .Config.Cmd}},'
                '"entrypoint":{{json .Config.Entrypoint}},"mounts":{{json .Mounts}},'
                '"networks":{{json .NetworkSettings.Networks}}}')
         return self._json('inspect', '--format', fmt, container)
 
-    def _verify_process(self, plan):
-        # Read only process names and executable links inside this container.
-        # Do not read command lines or environment: those may contain secrets.
-        script = ("n=0; for f in /proc/[0-9]*/comm; do "
-                  "IFS= read -r name < \"$f\" || exit 7; "
-                  "[ \"$name\" = redis-server ] || continue; "
-                  "p=${f%/comm}; target=$(/bin/readlink \"$p/exe\") || exit 8; "
-                  "[ \"$target\" = /usr/local/bin/redis-server ] || exit 9; "
-                  "n=$((n+1)); done; [ \"$n\" = 1 ] || exit 10; printf OK")
-        if self._run('exec', '--user', '999:1000', plan['container_id'], '/bin/sh', '-ec', script) != 'OK':
+    def _verify_process(self, plan, init_pid):
+        """Check exact executable through trusted host procfs; never read argv/env."""
+        if os.name != 'posix' or os.geteuid() != 0 or type(init_pid) is not int or init_pid <= 0:
             raise ComposeFenceAdapterError('COMPOSE_FENCE_EXECUTABLE_UNVERIFIED')
+        descriptor = None
+        try:
+            output=self._run('top',plan['container_id'],'-eo','pid,ppid,comm')
+            lines=output.splitlines()
+            if not lines or lines[0].split() != ['PID','PPID','COMMAND'] or len(lines)>256:
+                raise ValueError
+            matching=[]
+            for line in lines[1:]:
+                fields=line.split(maxsplit=2)
+                if len(fields)!=3 or not all(re.fullmatch(r'[0-9]{1,10}',x) for x in fields[:2]):
+                    raise ValueError
+                if fields[2]=='redis-server': matching.append((int(fields[0]),int(fields[1])))
+            if len(matching)!=1 or matching[0][1]!=init_pid or matching[0][0]<=1: raise ValueError
+            pid=matching[0][0]
+            descriptor=os.open(PROC_ROOT/str(pid),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            def proc_file(name):
+                fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=descriptor)
+                with os.fdopen(fd,'rb') as stream: raw=stream.read(65537)
+                if len(raw)>65536: raise ValueError
+                return raw.decode('utf-8')
+            def started():
+                raw=proc_file('stat')
+                before,sep,after=raw.rpartition(') ')
+                fields=after.split()
+                if not sep or not before.startswith(str(pid)+' (redis-server') or len(fields)<20:
+                    raise ValueError
+                return fields[19]
+            before=started()
+            status=proc_file('status').splitlines()
+            values={line.split(':',1)[0]:line.split(':',1)[1].strip() for line in status if ':' in line}
+            if (values.get('Name')!='redis-server' or values.get('Pid')!=str(pid)
+                    or values.get('PPid')!=str(init_pid) or values.get('Uid','').split()[:2]!=['999','999']):
+                raise ValueError
+            cg=proc_file('cgroup')
+            if not re.search(r'(?<![0-9a-f])'+plan['container_id']+r'(?![0-9a-f])',cg):
+                raise ValueError
+            if os.readlink('exe',dir_fd=descriptor)!='/usr/local/bin/redis-server' or started()!=before:
+                raise ValueError
+        except (OSError, ValueError, UnicodeError, IndexError, TypeError):
+            raise ComposeFenceAdapterError('COMPOSE_FENCE_EXECUTABLE_UNVERIFIED') from None
+        finally:
+            if descriptor is not None: os.close(descriptor)
 
     def _state(self, plan, *, detached, restart, original_endpoint=False):
         state = self._inspect_redis(plan['container_id'])
@@ -162,7 +199,7 @@ class Adapter:
                 or state.get('image') != plan['image_ref'] or state.get('image_id') != plan['image_config_id']
                 or state.get('restart') != restart or state.get('privileged') is not False
                 or state.get('network_mode') != plan['network_name']
-                or state.get('readonly') is not True or state.get('user') != '999:1000'
+                or state.get('readonly') is not True or state.get('init') is not True or state.get('user') != '999:1000'
                 or state.get('command') != ['redis-server', '/usr/local/etc/redis/redis.conf']
                 or not isinstance(state.get('tmpfs'), dict) or set(state['tmpfs']) != {'/tmp'}
                 or state.get('pid_mode') not in ('', None) or state.get('cap_add') not in (None, [])
@@ -200,7 +237,7 @@ class Adapter:
                     or (original_endpoint and endpoint.get('EndpointID') != plan['endpoint_id'])
                     or set(endpoint.get('Aliases') or []) != set(plan['endpoint_aliases'])):
                 raise ComposeFenceAdapterError('COMPOSE_FENCE_NETWORK_CHANGED')
-        self._verify_process(plan)
+        self._verify_process(plan, state['pid'])
         return state
 
     def _network_and_volume(self, plan):
