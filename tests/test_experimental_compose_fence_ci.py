@@ -43,6 +43,17 @@ class ComposeFenceProbeTests(unittest.TestCase):
                     exec(probe.BLOCKED, {})
                     self.assertTrue(__import__('builtins').print.call_args.args[0].startswith('UNEXPECTED_ERRNO_'))
 
+    def test_eagain_requires_complete_timeout_window(self):
+        import errno
+        for elapsed, expected in ((0.01, 'UNEXPECTED_ERRNO_11'), (2.899, 'UNEXPECTED_ERRNO_11'), (2.9, 'BLOCKED'), (3.1, 'BLOCKED')):
+            socket_instance = mock.Mock()
+            socket_instance.connect_ex.return_value = errno.EAGAIN
+            with self.subTest(elapsed=elapsed), mock.patch('socket.socket', return_value=socket_instance), \
+                    mock.patch('time.monotonic', side_effect=[0, elapsed]), \
+                    mock.patch('sys.argv', ['probe', '192.0.2.1']), mock.patch('builtins.print') as output:
+                exec(probe.BLOCKED, {})
+                self.assertEqual(output.call_args.args[0], expected)
+
     def test_expect_blocked_rejects_unexpected_errno_and_response(self):
         for value in ('UNEXPECTED_ERRNO_0', 'UNEXPECTED_ERRNO_13', 'unexpected'):
             with self.subTest(value=value), mock.patch.object(probe.common, 'cmd', return_value=value):

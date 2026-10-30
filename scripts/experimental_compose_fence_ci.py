@@ -16,12 +16,15 @@ from scripts import experimental_netns_probe as common
 REDIS = 'ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc'
 PYTHON = common.PYTHON
 LABEL = 'io.uter-deploy.synthetic-compose-fence'
-BLOCKED = r'''import errno,socket,sys
-s=socket.socket();s.settimeout(3)
+BLOCKED = r'''import errno,socket,sys,time
+s=socket.socket();s.settimeout(3);start=time.monotonic()
 try: code=s.connect_ex((sys.argv[1],6379))
 except TimeoutError: code=errno.ETIMEDOUT
 except OSError as error: code=error.errno if isinstance(error.errno,int) else -1
-if code in (errno.ECONNREFUSED,errno.ENETUNREACH,errno.EHOSTUNREACH,errno.ETIMEDOUT):
+elapsed=time.monotonic()-start
+# Linux connect_ex may return EAGAIN at the timeout boundary. An early EAGAIN
+# is inconclusive and must not be called inaccessible. This is a short window.
+if code in (errno.ECONNREFUSED,errno.ENETUNREACH,errno.EHOSTUNREACH,errno.ETIMEDOUT) or (code==errno.EAGAIN and elapsed>=2.9):
  print("BLOCKED")
 else:
  print("UNEXPECTED_ERRNO_%s" % code)'''
