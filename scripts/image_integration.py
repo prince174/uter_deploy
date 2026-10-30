@@ -42,6 +42,32 @@ def ensure_owned_project(project):
         if len(observed)!=len(set(observed)) or not set(observed).issubset(allowed): raise ValueError
 
 
+def acl_startup_failure(cmd, env):
+    """Return fixed categories only; raw service logs are never returned."""
+    try:
+        state=subprocess.run(cmd+['ps','-a','--format','json'],env=env,stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL,timeout=30,check=True).stdout
+        try: items=json.loads(state) if state.strip() else []
+        except json.JSONDecodeError: items=[json.loads(line) for line in state.splitlines() if line.strip()]
+        if isinstance(items,dict): items=[items]
+        if not isinstance(items,list): return 'STARTUP_STATUS_UNAVAILABLE'
+        redis_log=subprocess.run(cmd+['logs','--no-color','--tail','80','redis'],env=env,
+                                 stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=30).stdout.upper()
+        if b'FATAL CONFIG FILE ERROR' in redis_log or b'ERROR LOADING THE ACLS' in redis_log:
+            return 'STARTUP_REDIS_CONFIG_INVALID'
+        if b'NOPERM' in redis_log or b'NOAUTH' in redis_log:
+            return 'STARTUP_REDIS_PERMISSION'
+        for service in ('redis','agent','guardrail','fixture'):
+            matches=[x for x in items if isinstance(x,dict) and x.get('Service') == service]
+            if not matches: return 'STARTUP_'+service.upper()+'_MISSING'
+            if len(matches) != 1: return 'STARTUP_'+service.upper()+'_AMBIGUOUS'
+            if matches[0].get('State') != 'running': return 'STARTUP_'+service.upper()+'_NOT_RUNNING'
+            if matches[0].get('Health') == 'unhealthy': return 'STARTUP_'+service.upper()+'_UNHEALTHY'
+        return 'STARTUP_NOT_READY'
+    except Exception:
+        return 'STARTUP_STATUS_UNAVAILABLE'
+
+
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("Disposable GitHub runner required; do not run on the active workstation")
@@ -156,6 +182,7 @@ def main():
                 (evidence/'maintenance-failure.txt').write_text(code+'\n', encoding='ascii')
                 raise
     except Exception:
+        if acl_test and phase=='STARTUP': phase=acl_startup_failure(cmd,env)
         if acl_test: (evidence/'redis-acl-product-failure.txt').write_text(phase+'\n',encoding='ascii')
         raise
     finally:

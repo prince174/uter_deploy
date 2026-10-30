@@ -29,5 +29,11 @@ class ACLProductFixtureGuardTests(unittest.TestCase):
                 (project+'_backend\n').encode()]):
             image_integration.ensure_owned_project(project)
 
+    def test_startup_diagnostics_do_not_return_raw_logs(self):
+        state=b'[{"Service":"redis","State":"exited"}]'
+        result=lambda value: type('Result',(),{'stdout':value})()
+        with patch.object(image_integration.subprocess,'run',side_effect=[result(state),result(b'FATAL CONFIG FILE ERROR SECRET')]):
+            self.assertEqual(image_integration.acl_startup_failure(['docker'],{}),'STARTUP_REDIS_CONFIG_INVALID')
+
 
 if __name__ == '__main__': unittest.main()
