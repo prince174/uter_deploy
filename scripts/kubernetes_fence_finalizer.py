@@ -110,7 +110,7 @@ def plan_from_pod(context, namespace, name, pod):
 
 
 class Kubectl:
-    """Only explicit context, namespace and one named Pod; no force/delete."""
+    """Explicit context/namespace, selected Pod and namespace Redis Deployment."""
     def __init__(self, *, context, namespace, env=None):
         self.context=context;self.namespace=namespace;self.env=env
 
