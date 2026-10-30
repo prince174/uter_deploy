@@ -8,6 +8,9 @@ imagePullSecrets: []
 guardrailSecret: ''
 agentSecret: ''
 redisSecret: ''
+# Reserved for the verified maintenance profile. The installer does not enable it yet.
+maintenanceEnabled: false
+maintenanceSecret: ''
 policyConfigMap: ''
 profileConfigMap: ''
 modelsClaim: ''

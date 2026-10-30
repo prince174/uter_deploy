@@ -249,7 +249,7 @@ def deploy(home, bundle, m, site, *, check=False, offline=False):
 
 
 _FENCE_EXECUTOR_MODULES = (
-    'backup_installation', 'backup_crypto', 'backup_store', 'backup_snapshot', 'compose_maintenance_secret',
+    'backup_installation', 'backup_crypto', 'backup_store', 'backup_snapshot', 'compose_maintenance_secret', 'compose_maintenance_profile', 'kubernetes_maintenance_profile',
     'archive_safety', 'restore_backup', 'recovery_preflight', 'recovery_volume',
     'recovery_aof', 'recover_compose', 'recover_kubernetes', 'recovery_kube_volumes',
     'extract_signed_bundle', 'managed_smoke', 'adopt_managed', 'update_installation',

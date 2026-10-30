@@ -1,3 +1,29 @@
+{{- if not (kindIs "bool" .Values.maintenanceEnabled) }}
+{{- fail "maintenanceEnabled must be a boolean" }}
+{{- end }}
+{{- range $env := list .Values.guardrailEnv .Values.agentEnv }}
+{{- if not (kindIs "map" $env) }}{{ fail "custom service environment must be a map" }}{{ end }}
+{{- range $key := list "UTER_MAINTENANCE_ENABLED" "UTER_MAINTENANCE_KEY_FILE" }}
+{{- if hasKey $env $key }}{{ fail (printf "%s is reserved for the maintenance profile" $key) }}{{ end }}
+{{- end }}
+{{- end }}
+{{- if .Values.maintenanceEnabled }}
+{{- $secret := required "maintenanceSecret required" .Values.maintenanceSecret }}
+{{- if ne $secret (printf "%s-maintenance" .Release.Name) }}
+{{- fail "maintenanceSecret must use the release-specific name" }}
+{{- end }}
+{{- if or (eq $secret .Values.guardrailSecret) (eq $secret .Values.agentSecret) (eq $secret .Values.redisSecret) }}
+{{- fail "maintenanceSecret must be separate from service Secrets" }}
+{{- end }}
+{{- range .Values.imagePullSecrets }}
+{{- if eq $secret .name }}{{ fail "maintenanceSecret must be separate from registry Secrets" }}{{ end }}
+{{- end }}
+{{- range $env := list .Values.guardrailEnv .Values.agentEnv }}
+{{- if hasKey $env "WEB_CONCURRENCY" }}{{ fail "WEB_CONCURRENCY is reserved for the maintenance profile" }}{{ end }}
+{{- end }}
+{{- else if .Values.maintenanceSecret }}
+{{- fail "maintenanceSecret requires maintenanceEnabled" }}
+{{- end }}
 {{- range $name := list "guardrail" "agent" "redis" }}
 {{- $image := index $.Values.images $name }}
 {{- if not (regexMatch "^[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}$" $image) }}
@@ -64,6 +90,11 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            {{- if $.Values.maintenanceEnabled }}
+            - {name: UTER_MAINTENANCE_ENABLED, value: 'true'}
+            - {name: UTER_MAINTENANCE_KEY_FILE, value: /run/secrets/uter-maintenance/key}
+            - {name: WEB_CONCURRENCY, value: '1'}
+            {{- end }}
             {{- if eq $name "guardrail" }}
             - {name: REDIS_HOST, value: {{ printf "%s-redis" $.Release.Name | quote }}}
             - name: REDIS_PASSWORD
@@ -99,6 +130,9 @@ spec:
           {{- end }}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            {{- if and $.Values.maintenanceEnabled (ne $name "redis") }}
+            - {name: maintenance, mountPath: /run/secrets/uter-maintenance, readOnly: true}
+            {{- end }}
             {{- if eq $name "redis" }}
             - {name: data, mountPath: /data}
             {{- else if eq $name "guardrail" }}
@@ -110,6 +144,14 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 128Mi}
+        {{- if and $.Values.maintenanceEnabled (ne $name "redis") }}
+        - name: maintenance
+          secret:
+            secretName: {{ $.Values.maintenanceSecret | quote }}
+            defaultMode: 288 # 0440; readable by fsGroup 10001
+            optional: false
+            items: [{key: key, path: key}]
+        {{- end }}
         {{- if ne $name "agent" }}
         - name: data
           persistentVolumeClaim: {claimName: {{ $.Release.Name }}-{{ $name }}}

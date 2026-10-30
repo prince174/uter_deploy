@@ -195,6 +195,9 @@ def maintenance_enabled(home, values, site, manifest):
     marker=config.get('maintenance_enabled',False)
     if type(marker) is not bool: raise ValueError('Invalid maintenance opt-in')
     secret=values.get('maintenanceSecret')
+    enabled=values.get('maintenanceEnabled',False)
+    if type(enabled) is not bool or enabled != marker:
+        raise ValueError('Inconsistent maintenance profile')
     if not marker:
         if secret not in (None,''): raise ValueError('Unexpected maintenance Secret reference')
         if os.path.lexists(Path(home)/'runtime/maintenance-key'):

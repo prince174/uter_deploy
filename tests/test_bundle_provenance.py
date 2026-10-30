@@ -119,6 +119,28 @@ class BundleProvenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'inventory mismatch'):
             uterctl.verify(result,self.public)
 
+    def test_signed_compose_maintenance_profile_rejects_modification(self):
+        result=self.make_bundle(gated=False)
+        for relative in ('scripts/compose_maintenance_profile.py','compose/maintenance.yaml'):
+            with self.subTest(relative=relative):
+                path=result/relative;original=path.read_bytes()
+                path.write_bytes(original+b'\n# modified\n')
+                with self.assertRaisesRegex(ValueError,'inventory mismatch'):
+                    uterctl.verify(result,self.public)
+                path.write_bytes(original)
+        uterctl.verify(result,self.public)
+
+    def test_signed_kubernetes_maintenance_profile_rejects_modification(self):
+        result=self.make_bundle(gated=False)
+        for relative in ('scripts/kubernetes_maintenance_profile.py','charts/uter/templates/workloads.yaml'):
+            with self.subTest(relative=relative):
+                path=result/relative;original=path.read_bytes()
+                path.write_bytes(original+b'\n# modified\n')
+                with self.assertRaisesRegex(ValueError,'inventory mismatch'):
+                    uterctl.verify(result,self.public)
+                path.write_bytes(original)
+        uterctl.verify(result,self.public)
+
     def test_legacy_signed_bundle_without_new_helper_still_verifies(self):
         result=self.make_bundle(gated=False)
         (result/'scripts/compose_maintenance_secret.py').unlink()

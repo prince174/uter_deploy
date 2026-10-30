@@ -37,6 +37,7 @@ class KubernetesMaintenanceBackupTests(unittest.TestCase):
     def enable(self):
         self.config['maintenance_enabled'] = True
         self.values['maintenanceSecret'] = 'uter-maintenance'
+        self.values['maintenanceEnabled'] = True
         path = self.home / 'runtime/maintenance-key'
         path.write_bytes(self.key)
         path.chmod(0o600)
