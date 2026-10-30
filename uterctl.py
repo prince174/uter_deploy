@@ -262,7 +262,7 @@ _FENCE_EXECUTOR_MODULES = (
     'compose_fence_finalize', 'compose_fenced_update','experimental_operation_lock','managed_operation_lock',
     'maintenance_receipt','maintenance_protocol','maintenance_evidence','maintenance_transport',
     'kubernetes_sealed_config','kubernetes_trusted_kubectl','kubernetes_fence_pin','kubernetes_redis_identity',
-    'compose_maintenance_check',
+    'compose_maintenance_check','compose_maintenance_coordinator',
 )
 
 

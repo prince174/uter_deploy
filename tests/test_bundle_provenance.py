@@ -1,6 +1,8 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -81,9 +83,31 @@ class BundleProvenanceTests(unittest.TestCase):
                      'experimental_operation_lock.py','managed_operation_lock.py',
                      'maintenance_receipt.py','maintenance_protocol.py','maintenance_evidence.py','maintenance_transport.py',
                      'kubernetes_sealed_config.py','kubernetes_trusted_kubectl.py','kubernetes_fence_pin.py',
-                     'kubernetes_redis_identity.py','compose_maintenance_check.py'):
+                     'kubernetes_redis_identity.py','compose_maintenance_check.py','compose_maintenance_coordinator.py'):
             with self.subTest(name=name):
                 path=result/'scripts'/name
                 self.assertEqual(path.read_bytes(),(uterctl.ROOT/'scripts'/name).read_bytes())
                 self.assertIn('scripts/'+name,json.loads((result/'checksums.json').read_text()))
         self.assertEqual(uterctl.verify(result, self.public)['data_epoch'], 1)
+
+    def test_signed_compose_coordinator_rejects_modification(self):
+        result=self.make_bundle(gated=False)
+        path=result/'scripts'/'compose_maintenance_coordinator.py'
+        original=path.read_bytes()
+        self.assertEqual(original,(uterctl.ROOT/'scripts'/'compose_maintenance_coordinator.py').read_bytes())
+        uterctl.verify(result,self.public)
+        path.write_bytes(original+b'\n# tampered\n')
+        with self.assertRaisesRegex(ValueError,'inventory mismatch'):
+            uterctl.verify(result,self.public)
+
+    def test_signed_compose_coordinator_imports_in_isolated_executor_with_gate_closed(self):
+        result=self.make_bundle(gated=False)
+        code=('import importlib.util,sys; from pathlib import Path; '
+              'p=Path(sys.argv[1]); s=importlib.util.spec_from_file_location("executor_entrypoint",p/"uterctl.py"); '
+              'm=importlib.util.module_from_spec(s); s.loader.exec_module(m); '
+              'm._load_signed_fence_executor(Path(sys.argv[2])); '
+              'from scripts import compose_maintenance_coordinator as c; '
+              'exec("try:\\n c._verify_ingress(None,None,None)\\nexcept c.ComposeMaintenanceError:\\n pass\\nelse:\\n raise AssertionError(\'ingress gate opened\')")')
+        run=subprocess.run([sys.executable,'-I','-B','-c',code,str(result),str(self.public)],
+                           stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=15)
+        self.assertEqual(run.returncode,0,run.stderr)
