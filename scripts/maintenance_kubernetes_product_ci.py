@@ -15,13 +15,14 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
+from unittest.mock import patch
 import urllib.request
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts import (kubernetes_sealed_config, kubernetes_trusted_kubectl,
+from scripts import (kubernetes_maintenance_preflight, kubernetes_sealed_config, kubernetes_trusted_kubectl,
                      maintenance_evidence, maintenance_protocol, maintenance_transport, redis_fence_journal)
 
 NODE = 'kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0'
@@ -108,7 +109,8 @@ def _patch_fixture(home, key):
     values = yaml.safe_load(values_path.read_text(encoding='utf-8'))
     for field in ('guardrailEnv', 'agentEnv'):
         values.setdefault(field, {}).update({'UTER_MAINTENANCE_ENABLED': 'true',
-                                             'UTER_MAINTENANCE_KEY_FILE': '/run/uter-maintenance/key'})
+                                             'UTER_MAINTENANCE_KEY_FILE': '/run/uter-maintenance/key',
+                                             'WEB_CONCURRENCY': '1'})
     values_path.write_text(yaml.safe_dump(values), encoding='utf-8')
     resources_path = home/'resources.yaml'
     resources = list(yaml.safe_load_all(resources_path.read_text(encoding='utf-8')))
@@ -266,6 +268,25 @@ containerdConfigPatches:
         session = SimpleNamespace(site=SITE, _executor=object(), _record={'schema':2,'kubectl_sha256':binary_hash},
             config_sha256=config_hash, _inner=SimpleNamespace(config_fd=config_fd,
                 api=SimpleNamespace(binary_fd=binary_fd, context=CONTEXT)), _scope=lambda: inventory())
+        # Real Kubernetes objects with a fixture-only signing shim: source
+        # images were identity checked above, but this does not test release
+        # signature verification or the production profile/lock.
+        def query(args):
+            return json.loads(run(kube+['-n', SITE]+args+['-o', 'json']))
+        session._query = query
+        session._get_configured_object = lambda kind, name: query(['get', kind, name])
+        session.reverify = lambda: None
+        session.manifest = {'images':images}
+        session._inner.bundle = None
+        session._inner.publisher_key = None
+        session.writer_uids = {service:query(['get', 'deployment', SITE+'-'+service])['metadata']['uid']
+                               for service in ('agent', 'guardrail')}
+        secret_name = SITE+'-maintenance'
+        session._record['object_uids'] = {'secret/'+secret_name:query(['get', 'secret', secret_name])['metadata']['uid']}
+        PHASE = 'KUBE_PREFLIGHT_INITIAL'
+        with patch.object(maintenance_protocol, 'verify_capability', return_value=session.manifest):
+            preflight_initial = kubernetes_maintenance_preflight.observe(session)
+        PHASE = 'TRUSTED_JOURNAL_CREATE'
         proof = work/'proof'; proof.mkdir(mode=0o700); operation = secrets.token_hex(16); plan = secrets.token_hex(32)
         redis_fence_journal.create(proof, backend='kubernetes', site=SITE, resource=pinned['redis']['uid'],
                                    plan_sha256=plan, operation=operation)
@@ -281,6 +302,11 @@ containerdConfigPatches:
                                                 record_intent=recorder.intent, record_receipt=recorder.receipt)
         if set(receipts) != {identities['agent'][0], identities['guardrail'][0]} or not stable():
             raise ProbeError('MAINTENANCE_KUBE_RECEIPTS_UNVERIFIED')
+        PHASE = 'KUBE_PREFLIGHT_QUIESCED'
+        with patch.object(maintenance_protocol, 'verify_capability', return_value=session.manifest):
+            preflight_final = kubernetes_maintenance_preflight.observe(session, require_ready=False)
+        if preflight_final != preflight_initial:
+            raise ProbeError('MAINTENANCE_KUBE_PREFLIGHT_CHANGED')
         PHASE = 'RESTART_IDENTITY_TEST'
         # Fault injection only in this disposable kind cluster: replacement of a
         # receipted writer must invalidate the entire inventory before any next
@@ -295,6 +321,7 @@ containerdConfigPatches:
             raise ProbeError('MAINTENANCE_KUBE_RESTART_NOT_DETECTED')
         evidence = ROOT/'work/maintenance-kubernetes-evidence'; evidence.mkdir(mode=0o700)
         (evidence/'maintenance.txt').write_text('Agent and Guardrail receipts verified on exact kind Pods.\n'
+            'Read-only preflight checked real Pod identity before and after quiescence using a fixture signing shim.\n'
             'Deleting a receipted Agent Pod invalidated the inventory.\n'
             'Redis fence, backup, update and recovery were not tested by this probe.\n', encoding='utf-8')
     finally:
