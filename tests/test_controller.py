@@ -52,6 +52,25 @@ class ControllerTests(unittest.TestCase):
     def test_signed_bundle(self):
         self.assertEqual(u.verify(self.bundle(), self.pub)["version"], "1.0.0")
 
+    def test_maintenance_capability_requires_signed_exact_declaration(self):
+        from scripts import maintenance_protocol
+        old = self.bundle(name='old')
+        with self.assertRaisesRegex(maintenance_protocol.ProtocolError, 'CAPABILITY_UNVERIFIED'):
+            maintenance_protocol.verify_capability(old, self.pub)
+        m = manifest(); m['maintenance_protocol'] = {'version': 1, 'services': ['agent', 'guardrail']}
+        new = self.bundle(m, name='new')
+        self.assertEqual(maintenance_protocol.verify_capability(new, self.pub)['maintenance_protocol'], m['maintenance_protocol'])
+        data = u.read(new/'manifest.json'); data['maintenance_protocol']['version'] = 2
+        u.write(new/'manifest.json', data)
+        with self.assertRaisesRegex(maintenance_protocol.ProtocolError, 'CAPABILITY_UNVERIFIED'):
+            maintenance_protocol.verify_capability(new, self.pub)
+        for invalid in ({'version': True, 'services': ['agent', 'guardrail']},
+                        {'version': 1, 'services': ['guardrail']},
+                        {'version': 1, 'services': ['agent', 'guardrail'], 'extra': True}):
+            m['maintenance_protocol'] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                u.validate(m)
+
     def test_incomplete_recovery_blocks_controller_mutations(self):
         b=self.bundle()
         u.write(self.home/'recovery-operation.json',{'phase':'starting'})

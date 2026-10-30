@@ -66,6 +66,12 @@ def validate(m):
         raise ValueError("Optional image_config_ids must cover all images with sha256 IDs")
     if type(m.get("data_epoch")) is not int or m["data_epoch"] < 1:
         raise ValueError("Positive data_epoch required")
+    if 'maintenance_protocol' in m:
+        capability = m['maintenance_protocol']
+        if (not isinstance(capability, dict) or set(capability) != {'version', 'services'}
+                or type(capability['version']) is not int or capability['version'] != 1
+                or capability['services'] != ['agent', 'guardrail']):
+            raise ValueError('Invalid maintenance protocol capability')
     if 'session_identity_gate' in m:
         gate = m['session_identity_gate']
         if (not isinstance(gate, dict) or set(gate) != {'schema', 'from_epoch', 'to_epoch', 'policy'}
@@ -244,6 +250,8 @@ _FENCE_EXECUTOR_MODULES = (
     'compose_redis_diagnostic', 'compose_systemd_activation', 'experimental_docker_activation_ci',
     'compose_snapshot_only', 'snapshot_only_receipts', 'compose_fence_start', 'compose_fence_resume', 'compose_fence_origin',
     'compose_fence_finalize', 'compose_fenced_update','experimental_operation_lock','managed_operation_lock',
+    'maintenance_receipt','maintenance_protocol','maintenance_evidence','maintenance_transport',
+    'kubernetes_sealed_config','kubernetes_trusted_kubectl','kubernetes_fence_pin','kubernetes_redis_identity',
 )
 
 

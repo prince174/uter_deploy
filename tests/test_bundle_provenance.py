@@ -78,7 +78,10 @@ class BundleProvenanceTests(unittest.TestCase):
                      'compose_redis_diagnostic.py','compose_systemd_activation.py','experimental_docker_activation_ci.py',
                      'compose_snapshot_only.py','snapshot_only_receipts.py','compose_fence_start.py','compose_fence_resume.py',
                      'compose_fence_origin.py','compose_fence_finalize.py','compose_fenced_update.py',
-                     'experimental_operation_lock.py','managed_operation_lock.py'):
+                     'experimental_operation_lock.py','managed_operation_lock.py',
+                     'maintenance_receipt.py','maintenance_protocol.py','maintenance_evidence.py','maintenance_transport.py',
+                     'kubernetes_sealed_config.py','kubernetes_trusted_kubectl.py','kubernetes_fence_pin.py',
+                     'kubernetes_redis_identity.py'):
             with self.subTest(name=name):
                 path=result/'scripts'/name
                 self.assertEqual(path.read_bytes(),(uterctl.ROOT/'scripts'/name).read_bytes())

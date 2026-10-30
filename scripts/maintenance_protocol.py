@@ -18,6 +18,25 @@ class ProtocolError(ValueError):
     pass
 
 
+def verify_capability(bundle, publisher_key):
+    """Require the installed signed release to declare this exact protocol.
+
+    This authenticates a publisher declaration; it does not prove runtime
+    behavior, process identity, network exclusion or update compatibility.
+    """
+    try:
+        import uterctl
+        manifest = uterctl.verify(bundle, publisher_key)
+        capability = manifest.get('maintenance_protocol')
+        if (not isinstance(capability, dict) or set(capability) != {'version', 'services'}
+                or type(capability['version']) is not int or capability['version'] != 1
+                or capability['services'] != ['agent', 'guardrail']):
+            raise ValueError
+        return manifest
+    except Exception:
+        raise ProtocolError('MAINTENANCE_CAPABILITY_UNVERIFIED') from None
+
+
 def _parse(raw, expected_boot=None):
     if not isinstance(raw, bytes) or len(raw) > 16384:
         raise ProtocolError('MAINTENANCE_RESPONSE_UNVERIFIED')

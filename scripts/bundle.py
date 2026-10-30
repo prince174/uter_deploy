@@ -41,7 +41,10 @@ def build(manifest, output, key, *, source_root=ROOT):
                      'compose_redis_diagnostic.py','compose_systemd_activation.py','experimental_docker_activation_ci.py',
                      'compose_snapshot_only.py','snapshot_only_receipts.py','compose_fence_start.py',
                      'compose_fence_resume.py','compose_fence_origin.py','compose_fence_finalize.py','compose_fenced_update.py',
-                     'experimental_operation_lock.py','managed_operation_lock.py'):
+                     'experimental_operation_lock.py','managed_operation_lock.py',
+                     'maintenance_receipt.py','maintenance_protocol.py','maintenance_evidence.py','maintenance_transport.py',
+                     'kubernetes_sealed_config.py','kubernetes_trusted_kubectl.py','kubernetes_fence_pin.py',
+                     'kubernetes_redis_identity.py'):
             shutil.copy2(source_root/'scripts'/name,scripts/name)
         if m.get('session_identity_gate'):
             shutil.copy2(source_root/'scripts/session_migration_guard.py', scripts/'session_migration_guard.py')
