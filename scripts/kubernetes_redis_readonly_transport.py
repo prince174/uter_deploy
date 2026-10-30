@@ -48,6 +48,7 @@ class Connection:
     def __init__(self,process,session,plan,operation,expected_run_id):
         self.process=process;self.session=session;self.plan=plan;self.operation=operation;self.expected_run_id=expected_run_id
         self.client_id=None;self.buffer=bytearray();self.deadline=time.monotonic()+120;self.failed=False
+        self.identity_detail='INFO_REQUEST'
 
     def _scope(self):
         if time.monotonic()>=self.deadline: raise TimeoutError
@@ -81,11 +82,18 @@ class Connection:
         return json.loads(line)
 
     def _identity(self):
-        info=redis_acl_experiment._fields(self._exchange(('INFO','SERVER')))
+        self.identity_detail='INFO_REQUEST'
+        raw=self._exchange(('INFO','SERVER'))
+        self.identity_detail='INFO_FORMAT'
+        info=redis_acl_experiment._fields(raw)
+        self.identity_detail='RUN_MISMATCH'
+        if info.get('run_id')!=self.expected_run_id: raise ValueError
+        self.identity_detail='CLIENT_REQUEST'
         ident=self._exchange(('CLIENT','ID'))
-        if (info.get('run_id')!=self.expected_run_id or type(ident) is not int or ident<1
-                or (self.client_id is not None and str(ident)!=self.client_id)):
-            raise ValueError
+        self.identity_detail='CLIENT_TYPE'
+        if type(ident) is not int or ident<1: raise ValueError
+        self.identity_detail='CLIENT_CHANGED'
+        if self.client_id is not None and str(ident)!=self.client_id: raise ValueError
         return str(ident)
 
     def execute(self,*parts):
@@ -144,6 +152,8 @@ def connect(session,operation,admin_user,credential_path,expected_run_id):
         raise
     except Exception as error:
         category='TIMEOUT' if isinstance(error,TimeoutError) else 'INVALID'
+        if stage=='REDIS_IDENTITY' and process is not None:
+            stage=connection.identity_detail
         raise ReadonlyTransportError('KUBE_REDIS_READONLY_UNVERIFIED',stage+'_'+category) from None
     finally:
         if process is not None: _cleanup(process)

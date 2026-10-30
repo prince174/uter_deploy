@@ -72,7 +72,8 @@ if __name__ == '__main__':
         code=str(error) if str(error) in allowed else 'UNCLASSIFIED'
         stage=getattr(error,'stage',None)
         stages={prefix+'_'+suffix for prefix in ('ARGUMENTS','SESSION','CREDENTIAL','BINARY','SPAWN','AUTH',
-                                                  'SCOPE_BEFORE','REDIS_IDENTITY','SCOPE_AFTER')
+                                                  'SCOPE_BEFORE','SCOPE_AFTER','INFO_REQUEST','INFO_FORMAT',
+                                                  'RUN_MISMATCH','CLIENT_REQUEST','CLIENT_TYPE','CLIENT_CHANGED')
                 for suffix in ('TIMEOUT','INVALID')}
         if stage in stages: code='TRANSPORT_'+stage
         print('READONLY_TRANSPORT_DETAIL_'+code)

@@ -28,11 +28,23 @@ class ReadonlyTransportTests(unittest.TestCase):
         value=transport.Connection(None,None,None,'a'*32,'b'*40);value.client_id='7'
         with patch.object(value,'_scope'),patch.object(value,'_exchange',side_effect=['run_id:'+'c'*40,7]) as exchange:
             with self.assertRaises(transport.ReadonlyTransportError): value.execute('CLIENT','LIST')
-            self.assertEqual(exchange.call_count,2)
+            self.assertEqual(exchange.call_count,1)
+            self.assertEqual(value.identity_detail,'RUN_MISMATCH')
         value.failed=False
         with patch.object(value,'_scope'),patch.object(value,'_exchange',side_effect=['run_id:'+'b'*40,8]) as exchange:
             with self.assertRaises(transport.ReadonlyTransportError): value.execute('CLIENT','LIST')
             self.assertEqual(exchange.call_count,2)
+            self.assertEqual(value.identity_detail,'CLIENT_CHANGED')
+
+    def test_info_format_and_client_type_have_fixed_categories(self):
+        value=transport.Connection(None,None,None,'a'*32,'b'*40)
+        with patch.object(value,'_scope'),patch.object(value,'_exchange',return_value={}):
+            with self.assertRaises(transport.ReadonlyTransportError): value.execute('CLIENT','LIST')
+            self.assertEqual(value.identity_detail,'INFO_FORMAT')
+        value.failed=False
+        with patch.object(value,'_scope'),patch.object(value,'_exchange',side_effect=['run_id:'+'b'*40,'7']):
+            with self.assertRaises(transport.ReadonlyTransportError): value.execute('CLIENT','LIST')
+            self.assertEqual(value.identity_detail,'CLIENT_TYPE')
 
     def test_duplicate_acl_fields_are_rejected(self):
         value=transport.Connection(None,None,None,'a'*32,'b'*40);value.client_id='7'
