@@ -22,7 +22,7 @@ class DurableInventoryTests(unittest.TestCase):
             resource=self.plan['uid'], plan_sha256=self.plan_hash, operation=self.operation)
         self.snapshot = {'writers':{service:{'pod':f'uter-test-{service}-x', 'uid':service,
             'container_id':'containerd://'+'a'*64, 'pod_spec_sha256':'b'*64,
-            'deployment_uid':service, 'secret_uid':'secret'} for service in ('agent','guardrail')},
+            'deployment_uid':service, 'secret_uid':'secret', 'secret_rv':'42'} for service in ('agent','guardrail')},
             'ingress_fenced':False, 'restart_fenced':False, 'redis_isolated':False,
             'safe_to_start':False, 'safe_to_update':False}
         self.patches = [patch.object(runtime.finalizer,'read_plan',return_value=self.plan),

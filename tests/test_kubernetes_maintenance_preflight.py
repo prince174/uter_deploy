@@ -14,7 +14,7 @@ class KubernetesPreflightTests(unittest.TestCase):
         self.deploy = {'agent':'22222222-2222-2222-2222-222222222222',
                        'guardrail':'33333333-3333-3333-3333-333333333333'}
         self.manifest = {'images': {name:'registry.example/'+name+'@sha256:'+'a'*64 for name in ('agent','guardrail')}}
-        self.secret = {'kind':'Secret','type':'Opaque','metadata':{'uid':self.secret_uid},
+        self.secret = {'kind':'Secret','type':'Opaque','metadata':{'uid':self.secret_uid,'resourceVersion':'42'},
                        'data':{'key':base64.b64encode(b'x'*64).decode()}}
         self.pods = {}
         for index, service in enumerate(('agent','guardrail'), start=4):
@@ -81,6 +81,13 @@ class KubernetesPreflightTests(unittest.TestCase):
     def test_digest_must_match_the_running_image(self):
         self.pods['guardrail']['status']['containerStatuses'][0]['imageID']='registry.example/wrong@sha256:'+'b'*64
         with self.assertRaises(preflight.PreflightError): self.run_check()
+
+    def test_secret_change_changes_the_observed_inventory(self):
+        before = self.run_check()
+        self.secret['metadata']['resourceVersion'] = '43'
+        after = self.run_check()
+        self.assertNotEqual(before, after)
+        self.assertEqual(after['writers']['agent']['secret_rv'], '43')
 
     def test_not_ready_identity_can_be_observed_without_authorizing_start(self):
         self.pods['agent']['status']['containerStatuses'][0]['ready']=False

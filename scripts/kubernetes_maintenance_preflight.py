@@ -28,8 +28,10 @@ def observe(session, *, require_ready=True):
         secret_name = session.site+'-maintenance'
         expected_uid = session._record['object_uids']['secret/'+secret_name]
         secret = session._get_configured_object('secret', secret_name)
+        secret_rv = secret.get('metadata', {}).get('resourceVersion')
         if (secret.get('kind') != 'Secret' or secret.get('type') != 'Opaque'
                 or secret.get('metadata', {}).get('uid') != expected_uid
+                or not isinstance(secret_rv, str) or not re.fullmatch(r'[0-9]{1,32}', secret_rv)
                 or set(secret.get('data', {})) != {'key'}):
             raise ValueError
         decoded = base64.b64decode(secret['data']['key'], validate=True)
@@ -110,7 +112,7 @@ def observe(session, *, require_ready=True):
                 raise ValueError
             result[service] = {'pod': metadata['name'], 'uid': metadata['uid'],
                                'container_id': running['containerID'], 'pod_spec_sha256': common._digest(pod_spec),
-                               'deployment_uid': meta['uid'], 'secret_uid': expected_uid}
+                               'deployment_uid': meta['uid'], 'secret_uid': expected_uid, 'secret_rv': secret_rv}
         session.reverify()
         return {'writers': result, 'ingress_fenced': False, 'restart_fenced': False,
                 'redis_isolated': False, 'safe_to_start': False, 'safe_to_update': False}
