@@ -226,6 +226,12 @@ def run_scenario():
     def capture(cmd, env, action):
         result = old_audit(cmd, env, action)
         if action == 'write':
+            if os.environ.get('UTER_CI_VERIFY_REDIS_IDENTITY') == 'true':
+                from scripts import kubernetes_redis_identity_ci
+                try:
+                    kubernetes_redis_identity_ci.verify(old)
+                except kubernetes_redis_identity_ci.IdentityCheckFailure:
+                    raise CheckFailure('KUBE_IDENTITY_CI_UNVERIFIED') from None
             if saved:
                 raise CheckFailure('FIXTURE_CAPTURE_REPEATED')
             saved.append((cmd, env, result))
@@ -311,7 +317,7 @@ def main():
         python = stage_tools.prepare_private_python(stage)
         keep = ('GITHUB_ACTIONS','GITHUB_SHA','RUNNER_ENVIRONMENT','RUNNER_OS','BACKEND',
                 'UTER_CI_RELEASE_MODE','UTER_CI_STRICT_RUNNER','UTER_CI_OLD_VERSION','UTER_CI_NEW_VERSION',
-                'UTER_CI_OLD_TAG','UTER_CI_NEW_TAG','LANG','HOME')
+                'UTER_CI_OLD_TAG','UTER_CI_NEW_TAG','UTER_CI_VERIFY_REDIS_IDENTITY','LANG','HOME')
         env = {name:os.environ[name] for name in keep if name in os.environ}
         env.update({'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                     'GITHUB_WORKSPACE':str(stage), 'SOURCE_GIT_WORKSPACE':str(ROOT),
@@ -322,7 +328,7 @@ def main():
             status, output = run_checked([str(python), '-I', '-B', str(stage/'scripts/session_gate_e2e_ci.py'),
                                           '--staged'], env=env, timeout=3300, limit=1024*1024)
             if status:
-                allowed = {'EXPECTED_SIGNED_GATE_MISSING','FIXTURE_ACTION_INVALID','FIXTURE_PROBE_FAILED',
+                allowed = {'EXPECTED_SIGNED_GATE_MISSING','KUBE_IDENTITY_CI_UNVERIFIED','FIXTURE_ACTION_INVALID','FIXTURE_PROBE_FAILED',
                            'FIXTURE_CAPTURE_REPEATED','SIGNED_FIXTURE_INVALID','FIXTURE_SEED_FAILED',
                            'SIGNED_UPDATE_BLOCK_INVALID','OLD_STATE_NOT_PRESERVED','OLD_SIGNATURE_NOT_PRESERVED',
                            'OLD_SERVICE_NOT_READY','OLD_AUTHENTICATED_SMOKE_FAILED','FIXTURE_DATA_CHANGED','OLD_CONTROLLER_ACCEPTED_EPOCH_CHANGE',
