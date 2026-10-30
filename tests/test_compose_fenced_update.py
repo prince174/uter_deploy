@@ -148,6 +148,48 @@ class ComposeFencedUpdateTests(unittest.TestCase):
             adapter.close.assert_called_once();recover.assert_not_called()
 
     @unittest.skipUnless(os.name=='posix','private POSIX journal')
+    def test_capture_propagates_only_bounded_start_diagnostic(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home=Path(temp);home.chmod(0o700);(home/'operation.lock').write_text(str(os.getpid()))
+            (home/'operation.lock').chmod(0o600);(home/'state.json').write_text('{}')
+            source=home/'releases'/'1.0.0';source.mkdir(parents=True);destination=home.parent/'unused-test-backup'
+            accepted='FENCE_START_WRITER_STOP_GUARDRAIL_EXIT_TERM_LIKE_OOM_FALSE'
+            for code,expected in ((accepted,'FENCED_UPDATE_CAPTURE_'+accepted),
+                                  ('FENCE_START_secret_canary','FENCED_UPDATE_CAPTURE_FENCE_START_UNCERTAIN')):
+                with self.subTest(code=code),patch.object(update.backup_installation,'private_directory'), \
+                     patch.object(update.uterctl,'site_config',return_value={}), \
+                     patch.object(update,'preflight',return_value=(self.old,self.new)), \
+                     patch.object(update.snapshot,'_executor',return_value='a'*64), \
+                     patch.object(update.compose_fence_start,'start',side_effect=update.compose_fence_start.StartError(code)):
+                    with self.assertRaises(update.FencedUpdateError) as error:
+                        update.capture_for_update(home,source,'target','publisher','executor',b'k'*32,destination)
+                    self.assertEqual(str(error.exception),expected);self.assertNotIn('secret_canary',str(error.exception))
+
+    @unittest.skipUnless(os.name=='posix','private POSIX journal')
+    def test_capture_adapter_and_backup_errors_report_only_fixed_stage(self):
+        for failed in ('ADAPTER_ATTACH','BACKUP_CAPTURE'):
+            with self.subTest(stage=failed),tempfile.TemporaryDirectory() as temp:
+                home=Path(temp);home.chmod(0o700);(home/'operation.lock').write_text(str(os.getpid()))
+                (home/'operation.lock').chmod(0o600);(home/'state.json').write_text('{}')
+                source=home/'releases'/'1.0.0';source.mkdir(parents=True);dest=home.parent/'unused-test-backup'
+                def start(*args):
+                    record=journal.create(home,backend='compose',site='test',resource='a'*64,plan_sha256='b'*64)
+                    for old,new in (('prepared','isolating'),('isolating','isolated')):
+                        record=journal.advance(home,operation=record['operation'],expected=old,next_phase=new)
+                    return record['operation']
+                adapter=Mock();adapter.attach_before_capture_recovery.return_value=True;adapter.verify_fenced.return_value=True
+                if failed=='ADAPTER_ATTACH':adapter.attach_before_capture_recovery.side_effect=ValueError('secret-canary')
+                with patch.object(update.backup_installation,'private_directory'),patch.object(update.uterctl,'site_config',return_value={}), \
+                     patch.object(update,'preflight',return_value=(self.old,self.new)),patch.object(update.snapshot,'_executor',return_value='a'*64), \
+                     patch.object(update.compose_fence_start,'start',side_effect=start), \
+                     patch.object(update.compose_nsfirewall_adapter,'Adapter',return_value=adapter), \
+                     patch.object(update.snapshot,'capture_for_mutation',side_effect=ValueError('secret-canary')):
+                    with self.assertRaises(update.FencedUpdateError) as error:
+                        update.capture_for_update(home,source,'target','publisher','executor',b'k'*32,dest)
+                    self.assertEqual(str(error.exception),'FENCED_UPDATE_CAPTURE_'+failed+'_UNCERTAIN')
+                    self.assertNotIn('secret-canary',str(error.exception));adapter.close.assert_called_once()
+
+    @unittest.skipUnless(os.name=='posix','private POSIX journal')
     def test_release_uncertainty_is_never_replayed(self):
         with tempfile.TemporaryDirectory() as temp:
             home=Path(temp);home.chmod(0o700);(home/'operation.lock').write_text(str(os.getpid()))

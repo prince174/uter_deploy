@@ -28,6 +28,27 @@ class FencedUpdateError(ValueError): pass
 TARGET_START=journal.UPDATE_START
 TARGET_RESULT=journal.UPDATE_RESULT
 CLEANUP=journal.CLEANUP_INTENT
+_SAFE_START_CODES=frozenset('FENCE_START_'+name for name in (
+    'INCOMPLETE','INTENT_INVALID','INTENT_UNCERTAIN','INTENT_UNVERIFIED','NETWORK_UNVERIFIED',
+    'PRIOR_OPERATION','REDIS_UNVERIFIED','RESULT_UNVERIFIED','WRITER_UNVERIFIED','WRITER_EXIT_UNVERIFIED',
+    'RECHECK_BUNDLE_CHANGED',*(phase+'_UNCERTAIN' for phase in ('PRECHECK','PLAN','INTENT','JOURNAL','RECHECK',
+        'STOP','WRITER_STOP_VERIFY','ISOLATE','RESULT'))))
+_SAFE_START_CODES|=frozenset(prefix+'_'+suffix for prefix,suffixes in (
+    ('FENCE_START_RECHECK_PLAN',('PROCESS','IMAGE','NETWORK_ID','NETWORK_POLICY','IPAM','ENDPOINT_ID',
+        'ENDPOINT_ADDRESS','ENDPOINT_ALIASES','ENDPOINT_MAC','ENDPOINT_OPTIONS','VOLUME','OTHER')),
+    ('FENCE_START_RECHECK_WRITERS',('IDENTITY','STARTED','RESTART','OTHER')),
+    ('FENCE_START_OBSERVE_WRITERS',('IDENTITY','STARTED','RESTART','OTHER')),
+    ('FENCE_START_OBSERVE_REDIS',('PROCESS','IMAGE','NETWORK','VOLUME','OTHER')))
+    for suffix in suffixes)
+_SAFE_START_CODES|=frozenset('FENCE_START_WRITER_STOP_'+service+'_'+category
+    for service in ('GUARDRAIL','AGENT') for category in
+    ('RESPONSE','IDENTITY','RUNNING','EXIT_TYPE','EXIT_NONZERO','OOM','ENGINE_ERROR','STARTED',
+     'RESTART_COUNT','PROJECT','SERVICE','IMAGE_REF','IMAGE_ID','FINISHED',
+     *('EXIT_'+kind+'_OOM_'+oom for kind in ('TERM_LIKE','KILL_LIKE','OTHER') for oom in ('TRUE','FALSE','UNKNOWN'))))
+_SAFE_START_CODES|=frozenset('FENCE_START_OBSERVE_'+stage+'_'+category
+    for stage in ('SIGNED_LIVE','WRITER_IDENTITIES','REDIS_INSPECT','PLAN_VALIDATE','CONFIG','STATE','NETWORK','PEERS','REINSPECT','BUNDLE_HASH')
+    for category in ('ERROR','KEY_ERROR','TYPE_ERROR',*compose_fence_start._OBSERVE_DIAGNOSTIC_CODES,
+                     *compose_fence_start._OBSERVE_ADAPTER_CODES))
 
 
 def _evidence_names():
@@ -215,6 +236,7 @@ def capture_for_update(home,source,target,publisher,executor_key,key,destination
     if (not destination.is_absolute() or '..' in destination.parts or os.path.lexists(destination)
             or destination==home or destination.is_relative_to(home)):
         raise FencedUpdateError('FENCED_UPDATE_DESTINATION_INVALID')
+    phase='PRECHECK'
     try:
         backup_installation.private_directory(destination.parent)
         state=uterctl.read(home/'state.json');site=uterctl.site_config(home)
@@ -222,15 +244,19 @@ def capture_for_update(home,source,target,publisher,executor_key,key,destination
         if Path(source)!=(home/'releases'/old['version']):raise ValueError
         executor_hash=snapshot._executor(uterctl.ROOT,executor_key)
         # start() durably records the original exact IDs before first stop.
+        phase='FENCE_START'
         operation=compose_fence_start.start(home,source,publisher,key)
         record=journal.read(home)
         if record['operation']!=operation or record['phase']!='isolated':raise ValueError
         adapter=compose_nsfirewall_adapter.Adapter(home,source,publisher,key)
         try:
+            phase='ADAPTER_ATTACH'
             if adapter.attach_before_capture_recovery(record) is not True or adapter.verify_fenced(record) is not True:
                 raise ValueError
+            phase='BACKUP_CAPTURE'
             backup_id=snapshot.capture_for_mutation(adapter,record,uterctl.ROOT,executor_key,destination)
         finally:adapter.close()
+        phase='RECEIPT'
         record=journal.read(home)
         receipt,receipt_hash=receipts.read_receipt(home,key)
         if record['operation']!=operation or record['phase']!='captured' or receipt['backup_id']!=backup_id:
@@ -238,10 +264,16 @@ def capture_for_update(home,source,target,publisher,executor_key,key,destination
         source_hash=hashlib.sha256(snapshot._file(Path(source)/'checksums.json')).hexdigest()
         target_hash=hashlib.sha256(snapshot._file(Path(target)/'checksums.json')).hexdigest()
         destination_hash=hashlib.sha256(str(destination.resolve()).encode()).hexdigest()
+        phase='INTENT'
         create_intent(home,key,record,source_hash,target_hash,executor_hash,receipt_hash,destination_hash)
         return record,old,new
     except FencedUpdateError:raise
-    except Exception:raise FencedUpdateError('FENCED_UPDATE_CAPTURE_INCOMPLETE') from None
+    except compose_fence_start.StartError as error:
+        code=str(error)
+        if phase=='FENCE_START' and code in _SAFE_START_CODES:
+            raise FencedUpdateError('FENCED_UPDATE_CAPTURE_'+code) from None
+        raise FencedUpdateError('FENCED_UPDATE_CAPTURE_'+phase+'_UNCERTAIN') from None
+    except Exception:raise FencedUpdateError('FENCED_UPDATE_CAPTURE_'+phase+'_UNCERTAIN') from None
 
 
 def _verify_binding(home,source,target,publisher,executor_key,key,destination,record,*,allow_committed=False):
