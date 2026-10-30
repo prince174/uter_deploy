@@ -20,6 +20,7 @@ PYTHON = 'python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf5
 NODE = 'kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0'
 PASS = 'synthetic-only-password'
 LABEL = 'app=synthetic-redis'
+PHASE = 'initialization'
 OLD_CLIENT = r'''
 import socket,sys
 s=socket.create_connection(('synthetic-redis',6379),timeout=10);s.settimeout(10)
@@ -84,6 +85,7 @@ def deployment(hanging=False, bind='0.0.0.0'):
 
 
 def main():
+    global PHASE
     safe.guard(os.environ)
     if safe.cmd(['docker', 'context', 'show']) != 'default':
         raise RuntimeError('nondefault Docker context')
@@ -135,7 +137,9 @@ def main():
             if cluster in call('kind','get','clusters').splitlines():
                 raise RuntimeError('synthetic cluster name already exists')
             attempted=True
+            PHASE='cluster-create'
             call('kind','create','cluster','--name',cluster,'--image',NODE,'--wait','180s',timeout=300)
+            PHASE='fixtures-create'
             call('kubectl','--context','kind-'+cluster,'create','namespace',namespace)
             apply({'apiVersion':'v1','kind':'PersistentVolumeClaim','metadata':{'name':'synthetic-data'},
                    'spec':{'accessModes':['ReadWriteOnce'],'resources':{'requests':{'storage':'32Mi'}}}})
@@ -145,35 +149,44 @@ def main():
             apply({'apiVersion':'v1','kind':'Pod','metadata':{'name':'client'},
                    'spec':{'automountServiceAccountToken':False,'containers':[{'name':'client','image':PYTHON,
                            'command':['python','-c','import time;time.sleep(900)']}]}})
+            PHASE='fixtures-ready'
             ready();k('wait','--for=condition=Ready','pod/client','--timeout=180s')
             old,old_uid,_=current()
+            PHASE='old-client-connect'
             proc=subprocess.Popen(kube+['exec','-i','client','--','python','-u','-c',OLD_CLIENT],
                                   env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
             selector=selectors.DefaultSelector();selector.register(proc.stdout,selectors.EVENT_READ)
             if not selector.select(20) or proc.stdout.readline().strip()!='READY':
                 raise RuntimeError('synthetic established connection failed')
+            PHASE='fenced-rollout'
             set_template(False,'127.0.0.1');ready()
             new,new_uid,ip=current()
             if new_uid==old_uid or old in [p['metadata']['name'] for p in json.loads(k('get','pods','-l',LABEL,'-o','json'))['items']]:
                 raise RuntimeError('old synthetic pod still exists')
+            PHASE='old-client-disconnect'
             proc.stdin.write('check\n');proc.stdin.flush()
             if not selector.select(20) or proc.stdout.readline().strip()!='CLOSED' or proc.wait(timeout=5):
                 raise RuntimeError('old synthetic connection did not close')
             proc=None
+            PHASE='shutdown-marker-and-aof'
             if not marker_valid(marker(new,old_uid),old_uid): raise RuntimeError('synthetic shutdown marker missing')
             if redis(new,'CONFIG','GET','bind')!='bind\n127.0.0.1' or redis(new,'GET','synthetic:pre-fence')!='before':
                 raise RuntimeError('synthetic AOF state or bind mismatch')
+            PHASE='fenced-connectivity'
             external_blocked(ip)
+            PHASE='fenced-restart'
             k('rollout','restart','deployment/synthetic-redis');ready()
             restarted,restarted_uid,ip=current()
             if restarted_uid==new_uid or redis(restarted,'GET','synthetic:pre-fence')!='before':
                 raise RuntimeError('synthetic fenced restart failed')
             external_blocked(ip)
+            PHASE='synthetic-rollback'
             set_template(False,'0.0.0.0');ready()
             restored,_,_=current()
             if redis(restored,'GET','synthetic:pre-fence')!='before': raise RuntimeError('synthetic rollback lost data')
             # Introduce an intentionally hanging synthetic preStop, then trigger a
             # rollout: lack of a marker is a mandatory failure, not an isolation proof.
+            PHASE='hanging-shutdown'
             set_template(True,'0.0.0.0');ready();hung,hung_uid,_=current()
             set_template(False,'127.0.0.1');ready();after,_,_=current()
             if marker_valid(marker(after,hung_uid),hung_uid):
@@ -191,5 +204,7 @@ def main():
 
 if __name__=='__main__':
     try: main()
-    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
-        raise SystemExit('Synthetic Kubernetes fence experiment failed: '+type(error).__name__)
+    except RuntimeError as error:
+        raise SystemExit('Synthetic Kubernetes fence experiment failed at '+PHASE+': '+str(error))
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise SystemExit('Synthetic Kubernetes fence experiment failed at '+PHASE+': '+type(error).__name__)
