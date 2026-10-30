@@ -51,6 +51,10 @@ ip -n "$receiver" link set lo up
 ip -n "$sender" link set "$sender_if" up
 ip -n "$receiver" link set "$receiver_if" up
 
+# Activate conntrack before the initial connection, as a normal firewall with
+# established-flow rules would. Otherwise a flow created before conntrack is
+# enabled may be classified NEW when the rule is inserted.
+ip netns exec "$receiver" iptables -w -A INPUT -p tcp --dport 8000 -m conntrack --ctstate ESTABLISHED -j ACCEPT
 workdir="$(mktemp -d /tmp/uter-keepalive-probe.XXXXXXXX)"
 ip netns exec "$receiver" /usr/bin/python3 -u scripts/compose_keepalive_ci_fixture.py server >"$workdir/server.log" 2>&1 &
 server_pid=$!
