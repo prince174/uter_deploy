@@ -262,7 +262,10 @@ def run_scenario():
             try:
                 kubernetes_loopback_signed_ci.verify(Path(home), source, public, old)
             except kubernetes_loopback_signed_ci.KubernetesLoopbackCIError:
-                stages={'GUARD','FIXTURE','STOP_WRITERS','HOLD','PATCH','TERMINATION','POD','SNAPSHOT','RECONNECT','START_WRITERS'}
+                stages={'GUARD','FIXTURE','STOP_WRITERS','HOLD','PATCH','TERMINATION','POD','SNAPSHOT',
+                        'RECONNECT','START_WRITERS','CLIENT_CREATE','CLIENT_READY','CLIENT_EXEC',
+                        'RECONNECT_PATCH','RECONNECT_ROLLOUT','RECONNECT_DATA',
+                        'RECONNECT_PROBE','RECONNECT_JOURNAL','RECONNECT_WRITERS'}
                 phase=kubernetes_loopback_signed_ci.PHASE
                 raise CheckFailure('KUBE_LOOPBACK_CI_'+phase if phase in stages else 'KUBE_LOOPBACK_CI_UNVERIFIED') from None
         if os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true':
@@ -368,6 +371,10 @@ def main():
                            'KUBE_LOOPBACK_CI_FIXTURE','KUBE_LOOPBACK_CI_STOP_WRITERS','KUBE_LOOPBACK_CI_HOLD',
                            'KUBE_LOOPBACK_CI_PATCH','KUBE_LOOPBACK_CI_TERMINATION','KUBE_LOOPBACK_CI_POD',
                            'KUBE_LOOPBACK_CI_SNAPSHOT','KUBE_LOOPBACK_CI_RECONNECT','KUBE_LOOPBACK_CI_START_WRITERS',
+                           'KUBE_LOOPBACK_CI_CLIENT_CREATE','KUBE_LOOPBACK_CI_CLIENT_READY','KUBE_LOOPBACK_CI_CLIENT_EXEC',
+                           'KUBE_LOOPBACK_CI_RECONNECT_PATCH','KUBE_LOOPBACK_CI_RECONNECT_ROLLOUT',
+                           'KUBE_LOOPBACK_CI_RECONNECT_DATA','KUBE_LOOPBACK_CI_RECONNECT_PROBE',
+                           'KUBE_LOOPBACK_CI_RECONNECT_JOURNAL','KUBE_LOOPBACK_CI_RECONNECT_WRITERS',
                            'COMPOSE_SIGNED_CI_UNVERIFIED','COMPOSE_SIGNED_CI_GUARD',
                            'COMPOSE_SIGNED_CI_PATH','COMPOSE_SIGNED_CI_IDENTITY',
                            'COMPOSE_SIGNED_CI_ACTIONS_GUARD','COMPOSE_SIGNED_CI_HOSTED_GUARD',

@@ -176,12 +176,15 @@ def _verify(home,bundle,key,manifest):
         pod=original[0];name=pod['metadata']['name'];uid=pod['metadata']['uid']
         ip=pod['status']['podIP']
         if not re.fullmatch(r'[0-9.]{7,15}',ip): raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_POD')
+        PHASE='CLIENT_CREATE'
         probe_spec={'spec':{'automountServiceAccountToken':False,'containers':[{'name':'uter-ci-loopback-probe',
                     'image':PYTHON_IMAGE,'command':['python','-c','import time;time.sleep(600)'],
                     'env':[{'name':'REDIS_PASSWORD','valueFrom':{'secretKeyRef':{'name':SITE+'-redis-secret','key':'password'}}}]}]}}
         k('run','uter-ci-loopback-probe','--image='+PYTHON_IMAGE,'--restart=Never',
           '--overrides='+json.dumps(probe_spec,separators=(',',':')))
+        PHASE='CLIENT_READY'
         k('wait','--for=condition=Ready','pod/uter-ci-loopback-probe','--timeout=180s')
+        PHASE='CLIENT_EXEC'
         CLIENT_PROCESS=subprocess.Popen(['kubectl','--context',CONTEXT,'-n',SITE,'exec','-i',
                          'pod/uter-ci-loopback-probe','--','python','-u','-c',CLIENT_PROGRAM,ip],
                          stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
@@ -254,7 +257,7 @@ def _verify(home,bundle,key,manifest):
             backup_snapshot.verify_redis_snapshot(writer,check)
         # Test-only reconnect: guarded by exact Deployment UID, current RV and
         # loopback args, after which synthetic data is verified and removed.
-        PHASE='RECONNECT'
+        PHASE='RECONNECT_PATCH'
         dep=snapshot._query(['-n',SITE,'get','deployment',DEPLOYMENT]);meta=dep['metadata']
         if not isinstance(meta.get('resourceVersion'),str) or not re.fullmatch(r'[0-9]{1,32}',meta['resourceVersion']):
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
@@ -264,15 +267,19 @@ def _verify(home,bundle,key,manifest):
              {'op':'replace','path':'/spec/template/spec/containers/0/args','value':[identity.COMMAND]}]
         api._call(['--request-timeout=20s','patch','deployment/'+DEPLOYMENT,'--type=json',
                    '-p',json.dumps(ops,separators=(',',':'))])
+        PHASE='RECONNECT_ROLLOUT'
         rollout()
+        PHASE='RECONNECT_DATA'
         if redis('read')!=CI_VALUE or redis('delete')!='1':
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_DATA')
+        PHASE='RECONNECT_PROBE'
         k('delete','pod/uter-ci-loopback-probe','--wait=true','--timeout=120s')
+        PHASE='RECONNECT_JOURNAL'
         saved=journal.read(home)
         if saved['operation']!=operation or saved['phase']!='isolating':
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
         (home/journal.NAME).unlink();(home/finalizer.PLAN_NAME).unlink()
-        PHASE='START_WRITERS'
+        PHASE='RECONNECT_WRITERS'
         k('scale','deployment/'+SITE+'-guardrail','deployment/'+SITE+'-agent','--replicas=1')
         for service in ('guardrail','agent'):
             k('rollout','status','deployment/'+SITE+'-'+service,'--timeout=300s')
