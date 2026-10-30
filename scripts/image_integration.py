@@ -5,6 +5,7 @@ from pathlib import Path
 import secrets
 import shutil
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,6 +46,21 @@ def main():
             "command": ["python", "/fixture.py"], "volumes": [str(ROOT / "tests/fixtures/upstream.py") + ":/fixture.py:ro"], "networks": ["outbound"]},
         "guardrail": {"cpus": 2,
             "depends_on": {"fixture": {"condition": "service_started"}}}}}
+    maintenance = os.environ.get('UTER_CI_MAINTENANCE') == 'true'
+    if maintenance:
+        if os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted' or os.environ.get('RUNNER_OS') != 'Linux':
+            raise SystemExit('Disposable hosted Linux runner required')
+        key = home/'maintenance-key'
+        fd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        with os.fdopen(fd, 'w', encoding='ascii') as stream:
+            stream.write(secrets.token_hex(32))
+        run(['sudo', 'chown', '10001:10001', key])
+        for service in ('agent', 'guardrail'):
+            item = override['services'].setdefault(service, {})
+            item['environment'] = {'UTER_MAINTENANCE_ENABLED': 'true',
+                                   'UTER_MAINTENANCE_KEY_FILE': '/run/uter-maintenance/key'}
+            item['volumes'] = [str(key)+':/run/uter-maintenance/key:ro']
+            item['stop_grace_period'] = '90s'
     (home / "override.json").write_text(json.dumps(override))
     env = os.environ.copy()
     env.update(RUNTIME_DIR=str(home), GUARDRAIL_IMAGE="uter-guardrail-protected", AGENT_IMAGE="uter-agent-protected",
@@ -59,6 +75,10 @@ def main():
         run(cmd + ["up", "-d", "--no-build", "--wait", "--wait-timeout", "180"], env=env)
         run(cmd + ["exec", "-T", "guardrail", "python", "-"], input=check, stdout=subprocess.PIPE, env=env)
         (evidence / "restart.txt").write_text("Guardrail restart + repeated acceptance + audit continuity passed\n")
+        if maintenance:
+            sys.path.insert(0, str(ROOT))
+            from scripts import maintenance_compose_product_ci
+            maintenance_compose_product_ci.exercise(home)
     finally:
         logs = subprocess.run(cmd + ["logs", "--no-color", "--tail", "150"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.decode(errors="replace")
         for secret in [admin, service, shared, redis_password, jwt, hmac, admin_hash, service_hash]:

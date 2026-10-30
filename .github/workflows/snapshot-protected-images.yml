@@ -211,11 +211,15 @@ jobs:
             test "$actual" = "$expected"
           done
       - name: Exercise real services in disposable Compose project
+        env:
+          UTER_CI_MAINTENANCE: ${{ inputs.maintenance_files }}
         run: python scripts/image_integration.py > /dev/null 2>&1 || { echo 'Protected integration failed'; exit 1; }
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
           name: protected-integration-evidence
-          path: work/integration-evidence/restart.txt
+          path: |
+            work/integration-evidence/restart.txt
+            work/integration-evidence/maintenance.txt
           retention-days: 7
           if-no-files-found: warn
