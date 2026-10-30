@@ -22,9 +22,12 @@ def parse_properties(raw, keys):
     result={}
     for line in raw.splitlines():
         key,separator,value=line.partition('=')
-        if not separator or key not in keys or key in result:raise ProbeError('PROPERTIES')
+        if not separator or key not in keys or key in result:raise ProbeError('PROPERTIES_MALFORMED')
         result[key]=value
-    if set(result)!=set(keys):raise ProbeError('PROPERTIES')
+    if set(result)!=set(keys):
+        missing=set(keys)-set(result)
+        if len(missing)==1:raise ProbeError('PROPERTY_MISSING_'+next(iter(missing)).upper())
+        raise ProbeError('PROPERTIES_MISSING_MULTIPLE')
     return result
 
 
@@ -33,9 +36,13 @@ def properties(unit,keys):
         command=['/usr/bin/systemctl','show',unit,*['--property='+key for key in keys]]
         result=subprocess.run(command,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                               timeout=10,check=True,env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C'})
-        if len(result.stdout)>8192:raise ProbeError('PROPERTIES')
+        if len(result.stdout)>8192:raise ProbeError('PROPERTIES_TOO_LARGE')
         return parse_properties(result.stdout.decode('utf-8'),keys)
-    except (OSError,subprocess.SubprocessError,UnicodeError):raise ProbeError('PROPERTIES') from None
+    except FileNotFoundError:raise ProbeError('SYSTEMCTL_UNAVAILABLE') from None
+    except subprocess.TimeoutExpired:raise ProbeError('SYSTEMCTL_TIMEOUT') from None
+    except subprocess.CalledProcessError:raise ProbeError('SYSTEMCTL_FAILED') from None
+    except UnicodeError:raise ProbeError('PROPERTIES_ENCODING') from None
+    except OSError:raise ProbeError('SYSTEMCTL_EXECUTION') from None
 
 
 def listening_inode(raw, path):
@@ -117,7 +124,11 @@ def main():
 if __name__=='__main__':
     try:main()
     except ProbeError as error:
-        allowed={'GUARD','PROPERTIES','SOCKET_UNIT','SERVICE_STATE','SERVICE_PID','PROCESS_NAME','NAMESPACES',
+        allowed={'GUARD','PROPERTIES_MALFORMED','PROPERTIES_MISSING_MULTIPLE','PROPERTIES_TOO_LARGE',
+                 'PROPERTY_MISSING_ACTIVESTATE','PROPERTY_MISSING_ACCEPT','PROPERTY_MISSING_SERVICE',
+                 'PROPERTY_MISSING_SUBSTATE','PROPERTY_MISSING_MAINPID','PROPERTY_MISSING_EXECMAINPID',
+                 'SYSTEMCTL_UNAVAILABLE','SYSTEMCTL_TIMEOUT','SYSTEMCTL_FAILED','PROPERTIES_ENCODING','SYSTEMCTL_EXECUTION',
+                 'SOCKET_UNIT','SERVICE_STATE','SERVICE_PID','PROCESS_NAME','NAMESPACES',
                  'SOCKET_FILE','SOCKET_PEER','SERVICE_EXITED','LISTENER','LISTENER_HOLDERS','PROC_VISIBILITY',
                  'SOCKET_REPLACED','UNIT_CHANGED','SOCKET_CHANGED'}
         code=str(error) if str(error) in allowed else 'UNVERIFIED'

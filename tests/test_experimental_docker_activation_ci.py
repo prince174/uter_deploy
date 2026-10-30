@@ -9,6 +9,10 @@ class ActivationProbeTests(unittest.TestCase):
         for raw in ('A=x\n','A=x\nA=x\nB=y\n','A=x\nB=y\nC=z\n'):
             with self.subTest(raw=raw),self.assertRaises(probe.ProbeError):
                 probe.parse_properties(raw,('A','B'))
+        with self.assertRaisesRegex(probe.ProbeError,'PROPERTY_MISSING_B'):
+            probe.parse_properties('A=x\n',('A','B'))
+        with self.assertRaisesRegex(probe.ProbeError,'PROPERTIES_MALFORMED'):
+            probe.parse_properties('A=x\nB=y\nB=z\n',('A','B'))
 
     def test_listener_requires_exact_unique_stream_listening_socket(self):
         prefix='Num RefCount Protocol Flags Type St Inode Path\n'
