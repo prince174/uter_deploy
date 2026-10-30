@@ -161,9 +161,16 @@ class WriterFinalizerTests(unittest.TestCase):
     def test_nonzero_exit_has_bounded_diagnostic_without_contents(self):
         self.prepare('agent');self.hold('agent');quiesce.stop(self.home,self.session,self.operation,'agent',self.key)
         self.session.writer_pods['agent']['status']['containerStatuses'][0]['state']['terminated']['exitCode']=143
+        self.session.writer_pods['agent']['status']['phase']='Failed'
         with self.assertRaises(writer.WriterFinalizerError) as error:self.observe('agent')
         self.assertEqual(error.exception.stage,'EXIT_CODE')
         self.assertEqual(str(error.exception),'KUBE_WRITER_TERMINATION_UNVERIFIED')
+
+    def test_failed_pod_even_with_zero_exit_is_refused(self):
+        self.prepare('agent');self.hold('agent');quiesce.stop(self.home,self.session,self.operation,'agent',self.key)
+        self.session.writer_pods['agent']['status']['phase']='Failed'
+        with self.assertRaises(writer.WriterFinalizerError) as error:self.observe('agent')
+        self.assertEqual(error.exception.stage,'POD_STATUS')
 
     def test_fsync_failure_blocks_patch(self):
         self.prepare('agent')

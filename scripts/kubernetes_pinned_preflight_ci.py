@@ -127,7 +127,7 @@ def quiesce_writers(home,bundle,key,manifest,operation):
                     except writer_finalizer.WriterFinalizerError as error:
                         termination_stage=error.stage;time.sleep(.5)
                 else:
-                    allowed={'POD_FETCH','IDENTITY','CONTAINER','TERMINATED_STATE','EXIT_CODE','SIGNAL','REASON'}
+                    allowed={'POD_FETCH','IDENTITY','CONTAINER','TERMINATED_STATE','EXIT_CODE','SIGNAL','REASON','POD_STATUS'}
                     raise PinnedCITestError('KUBE_WRITER_CI_UNVERIFIED',
                                             'WRITER_TERMINATION_'+(termination_stage if termination_stage in allowed else 'UNVERIFIED'))
                 if observed.get('audit_durability_verified') is not False or observed.get('safe_to_backup') is not False:

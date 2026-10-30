@@ -46,7 +46,7 @@ def _pod(session,record,expected_finalizers,*,deleting=None,original_rv=False,te
                 or (deleting is False and meta.get('deletionTimestamp'))
                 or common._digest(pod['spec'])!=record['spec_sha256']
                 or any(meta.get('labels',{}).get(k)!=v for k,v in labels.items())
-                or status.get('phase') not in ('Running','Succeeded') or not isinstance(statuses,list) or len(statuses)!=1):
+                or status.get('phase') not in ('Running','Succeeded','Failed') or not isinstance(statuses,list) or len(statuses)!=1):
             raise ValueError
         container=statuses[0]
         stage='CONTAINER'
@@ -63,7 +63,10 @@ def _pod(session,record,expected_finalizers,*,deleting=None,original_rv=False,te
             if type(term.get('signal',0)) is not int or term.get('signal',0)!=0:raise ValueError
             stage='REASON'
             if term.get('reason')!='Completed':raise ValueError
-        elif (container.get('ready') is not True or not isinstance(container.get('state',{}).get('running'),dict)):
+            stage='POD_STATUS'
+            if status.get('phase')=='Failed':raise ValueError
+        elif (status.get('phase')!='Running' or container.get('ready') is not True
+              or not isinstance(container.get('state',{}).get('running'),dict)):
             raise ValueError
         return meta['resourceVersion']
     except Exception:raise WriterFinalizerError('KUBE_WRITER_POD_UNVERIFIED',stage) from None
