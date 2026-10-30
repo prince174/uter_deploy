@@ -77,12 +77,45 @@ class RedisACLExperimentTests(unittest.TestCase):
         with self.assertRaises(experiment.ACLExperimentError): self.run_it()
         self.assertEqual(self.intents,[])
 
+    def test_selected_uter_profile_rejects_extra_and_missing_commands(self):
+        self.default_commands='-@all '+' '.join(sorted(experiment._UTER_TEST))
+        def run_selected():
+            return experiment.run(self.call, admin_user=self.admin, expected_run_id='a'*40,
+                expected_client_id='7', record_intent=self.intent, profile='uter-selected-ci')
+        self.default_commands+=' +acl'
+        with self.assertRaises(experiment.ACLExperimentError): run_selected()
+        self.assertEqual(self.intents,[])
+        self.default_commands='-@all '+' '.join(sorted(experiment._UTER_TEST- {'+eval'}))
+        with self.assertRaises(experiment.ACLExperimentError): run_selected()
+        self.assertEqual(self.intents,[])
+        self.default_commands='-@all '+' '.join(sorted(experiment._UTER_TEST))
+        self.assertFalse(run_selected()['safe_to_update'])
+
     def test_timeout_is_uncertain_and_never_retried(self):
         self.failure=('CLIENT','KILL','USER','default','SKIPME','yes')
         with self.assertRaises(experiment.ACLExperimentError): self.run_it()
         self.assertEqual(self.intents,['disable-default','kill-default'])
         with self.assertRaises(experiment.ACLExperimentError): self.run_it()
         self.assertEqual(self.commands.count(self.failure),1)
+
+    def test_failure_inspection_is_read_only_and_never_authorizes_resume(self):
+        self.off=True
+        result=experiment.inspect_after_failure(self.call,admin_user=self.admin,expected_run_id='a'*40,
+            expected_client_id='7',recorded_intents=frozenset({'disable-default'}))
+        self.assertEqual(result['observation'],'default_off_clients_present')
+        self.assertFalse(result['retry_allowed'])
+        self.assertFalse(result['recovery_automated'])
+        self.assertFalse(result['safe_to_backup'])
+        self.assertFalse(any(c[0:2] in (('ACL','SETUSER'),('CLIENT','KILL')) for c in self.commands))
+        self.clients=self.clients[:1]
+        result=experiment.inspect_after_failure(self.call,admin_user=self.admin,expected_run_id='a'*40,
+            expected_client_id='7',recorded_intents=frozenset({'disable-default','kill-default'}))
+        self.assertEqual(result['observation'],'default_off_only_admin')
+        self.assertFalse(result['safe_to_update'])
+        self.run_id='b'*40
+        with self.assertRaises(experiment.ACLExperimentError):
+            experiment.inspect_after_failure(self.call,admin_user=self.admin,expected_run_id='a'*40,
+                expected_client_id='7',recorded_intents=frozenset({'disable-default'}))
 
     def test_ci_probe_refuses_non_hosted_runner_before_docker(self):
         with patch.dict('os.environ', {'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'self-hosted',

@@ -167,6 +167,12 @@ def main():
                 if sent.count(('ACL','SETUSER','default','off')) != 1 or \
                         sent.count(('CLIENT','KILL','USER','default','SKIPME','yes')) != (stage == 'kill'):
                     raise ValueError
+                observation=redis_acl_experiment.inspect_after_failure(admin.call,admin_user='uter-maint-test',
+                    expected_run_id=run_id,expected_client_id=admin_id,recorded_intents=frozenset(recorded))
+                expected='default_off_clients_present' if stage == 'disable' else 'default_off_only_admin'
+                if (observation['observation'] != expected or observation['retry_allowed'] is not False
+                        or observation['safe_to_backup'] is not False or observation['safe_to_update'] is not False):
+                    raise ValueError
                 if 'off' not in admin.call('ACL','GETUSER','default')['flags']: raise ValueError
                 if stage == 'disable':
                     if uncertain_writer.call('SET','ci-uncertain','still-connected') != 'OK': raise ValueError
@@ -175,13 +181,32 @@ def main():
                     try: uncertain_writer.call('SET','ci-uncertain','unexpected')
                     except (OSError, ValueError): pass
                     else: raise ValueError
+            PHASE='UTER_SELECTED_ACL'
+            admin.call('ACL','SETUSER','default','on','-@all',*sorted(redis_acl_experiment._UTER_TEST))
+            candidate_writer=Client(port); clients.append(candidate_writer)
+            candidate_writer.call('AUTH',default_password)
+            if candidate_writer.call('EVAL',"return redis.call('SET',KEYS[1],ARGV[1])",1,'ci-lua','value') != 'OK':
+                raise ValueError
+            candidate_intents=set()
+            def candidate_intent(value):
+                if value in candidate_intents: return False
+                candidate_intents.add(value); return True
+            selected=redis_acl_experiment.run(admin.call,admin_user='uter-maint-test',expected_run_id=run_id,
+                expected_client_id=admin_id,record_intent=candidate_intent,profile='uter-selected-ci')
+            if (selected['default_clients_killed'] != 1 or selected['safe_to_backup'] is not False
+                    or selected['safe_to_update'] is not False): raise ValueError
             print('Redis ACL experiment observed a writer after disable, then disconnection and denied new AUTH.')
             print('Unknown command outcomes refused completion without retry; recovery was not tested.')
+            print('Selected test ACL with Lua also denied backup and update authorization.')
             print('Fixture-only in-memory intents; isolation, persistence, backup and recovery not proven.')
         finally:
-            for client in clients: client.close()
+            close_failed=False
+            for client in clients:
+                try: client.close()
+                except Exception: close_failed=True
             if attempted:
                 cleanup_container(name, nonce, container_id)
+            if close_failed: raise ValueError('ACL_CI_CLEANUP_UNCERTAIN')
 
 
 if __name__ == '__main__':
