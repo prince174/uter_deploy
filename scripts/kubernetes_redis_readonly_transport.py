@@ -4,9 +4,10 @@ One new admin connection is bound to one exact Redis Pod and server run_id.
 The connection is not the admin connection from an earlier failed operation;
 its identity is never accepted as recovery authority. No ACL mutation, replay,
 backup, update, or continuous network isolation is implemented here.
+The RESP2 peer is the trusted pinned Redis process. Checks for extra frames
+cannot exclude malicious delayed traffic from a compromised peer.
 """
 from contextlib import contextmanager
-import json
 import os
 from pathlib import Path
 import re
@@ -48,6 +49,7 @@ class Connection:
     def __init__(self,process,session,plan,operation,expected_run_id):
         self.process=process;self.session=session;self.plan=plan;self.operation=operation;self.expected_run_id=expected_run_id
         self.client_id=None;self.buffer=bytearray();self.deadline=time.monotonic()+120;self.failed=False
+        self._reply_bytes=0;self._reply_items=0
         self.identity_detail='INFO_REQUEST'
 
     def _scope(self):
@@ -60,7 +62,11 @@ class Connection:
         if time.monotonic()>=self.deadline: raise TimeoutError
 
     def _exchange(self, parts):
-        message=(' '.join(parts)+'\n').encode('ascii')
+        if self.buffer or select.select([self.process.stdout.fileno()],[],[],0)[0]:
+            raise ValueError
+        encoded=[part.encode('ascii') for part in parts]
+        message=b'*'+str(len(encoded)).encode()+b'\r\n'+b''.join(
+            b'$'+str(len(value)).encode()+b'\r\n'+value+b'\r\n' for value in encoded)
         if len(message)>512: raise ValueError
         deadline=min(self.deadline,time.monotonic()+8)
         fd=self.process.stdin.fileno()
@@ -70,16 +76,56 @@ class Connection:
             written=os.write(fd,message)
             if written<=0: raise ValueError
             message=message[written:]
+        self._reply_bytes=0;self._reply_items=0
+        value=self._reply(deadline,0)
+        # A RESP2 request is never pipelined. Buffered trailing data is not an
+        # acceptable response and must not become the next command's answer.
+        if self.buffer or select.select([self.process.stdout.fileno()],[],[],0)[0]: raise ValueError
+        return value
+
+    def _read(self,count,deadline):
+        if count<0 or count>262144 or self._reply_bytes+count>262144: raise ValueError
         fd=self.process.stdout.fileno()
-        while b'\n' not in self.buffer:
+        while len(self.buffer)<count:
             remaining=deadline-time.monotonic()
             if remaining<=0 or not select.select([fd],[],[],remaining)[0]: raise TimeoutError
-            chunk=os.read(fd,4096)
+            chunk=os.read(fd,min(4096,262145-len(self.buffer)))
             if not chunk: raise ValueError
             self.buffer.extend(chunk)
             if len(self.buffer)>262144: raise ValueError
-        line,_,tail=self.buffer.partition(b'\n');self.buffer=bytearray(tail)
-        return json.loads(line)
+        value=bytes(self.buffer[:count]);del self.buffer[:count];self._reply_bytes+=count
+        return value
+
+    def _line(self,deadline):
+        result=bytearray()
+        while len(result)<=128:
+            byte=self._read(1,deadline)
+            if (result and result[-1]==13 and byte!=b'\n') or (byte==b'\n' and (not result or result[-1]!=13)):
+                raise ValueError
+            result.extend(byte)
+            if result.endswith(b'\r\n'): return bytes(result[:-2])
+        raise ValueError
+
+    def _reply(self,deadline,depth):
+        if depth>4: raise ValueError
+        kind=self._read(1,deadline);head=self._line(deadline)
+        if kind in (b'+',b'-'):
+            if kind==b'-': raise ValueError
+            return head.decode('utf-8')
+        if kind not in (b':',b'$',b'*') or not re.fullmatch(rb'-?(?:0|[1-9][0-9]{0,18})',head):
+            raise ValueError
+        if head==b'-0': raise ValueError
+        number=int(head)
+        if kind==b':': return number
+        if number==-1: return None
+        if number<0: raise ValueError
+        if kind==b'$':
+            raw=self._read(number+2,deadline)
+            if raw[-2:]!=b'\r\n': raise ValueError
+            return raw[:-2].decode('utf-8')
+        self._reply_items+=number
+        if self._reply_items>4096: raise ValueError
+        return [self._reply(deadline,depth+1) for _ in range(number)]
 
     def _identity(self):
         self.identity_detail='INFO_REQUEST'
@@ -137,7 +183,7 @@ def connect(session,operation,admin_user,credential_path,expected_run_id):
         kubernetes_sealed_config.verify_sealed(config,session.config_sha256)
         command=['/proc/self/fd/'+str(binary),'--kubeconfig=/proc/self/fd/'+str(config),
                  '--context='+api.context,'--namespace='+session.site,'--request-timeout=180s',
-                 'exec','-i','pod/'+plan['pod'],'-c','redis','--','redis-cli','--json']
+                 'exec','-i','pod/'+plan['pod'],'-c','redis','--','nc','127.0.0.1','6379']
         stage='SPAWN';process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
             env=dict(kubernetes_trusted_kubectl.ENV),pass_fds=(binary,config),start_new_session=True,bufsize=0)
         connection=Connection(process,session,plan,operation,expected_run_id)
