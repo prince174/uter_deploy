@@ -141,5 +141,21 @@ class KubernetesLoopbackTests(unittest.TestCase):
                 self.assertEqual(args[0],'delete')
                 self.assertTrue(args[1].startswith('--raw=/'))
 
+    def test_cleanup_failure_categories_are_fixed_and_do_not_expose_response(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'work').mkdir()
+            for kind,name,output,stage in (
+                ('policy','uter-ci-loopback-policy-'+'a'*16,ValueError('secret'), 'DELETE_POLICY_COMMAND'),
+                ('policy','uter-ci-loopback-policy-'+'a'*16,'{"private":"secret"}', 'DELETE_POLICY_RESPONSE'),
+                ('pod','uter-ci-loopback-probe',ValueError('secret'), 'DELETE_POD_COMMAND'),
+                ('pod','uter-ci-loopback-probe','not-json-secret', 'DELETE_POD_RESPONSE')):
+                with self.subTest(stage=stage),patch.object(experiment,'ROOT',root), \
+                     patch.object(experiment,'_ci_kube_command',side_effect=output if isinstance(output,Exception) else None,
+                                  return_value=output):
+                    with self.assertRaisesRegex(experiment.KubernetesLoopbackCIError,'CLEANUP_UNCERTAIN') as error:
+                        experiment._ci_delete_uid(kind,name,self.uid)
+                    self.assertEqual(experiment.PHASE,stage)
+                    self.assertNotIn('secret',str(error.exception))
+
 
 if __name__=='__main__':unittest.main()

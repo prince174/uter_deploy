@@ -84,6 +84,7 @@ def _ci_kube_command(args, *, timeout=30):
 
 def _ci_delete_uid(kind,name,uid):
     """Delete only one observed synthetic object with a server UID precondition."""
+    global PHASE
     patterns={'pod':r'uter-ci-loopback-probe', 'policy':r'uter-ci-loopback-policy-[0-9a-f]{16}'}
     if (kind not in patterns or not isinstance(name,str) or not re.fullmatch(patterns[kind],name)
             or not isinstance(uid,str) or not identity.UUID.fullmatch(uid)):
@@ -95,10 +96,15 @@ def _ci_delete_uid(kind,name,uid):
         with tempfile.NamedTemporaryFile(mode='w',prefix='kube-delete-options-',dir=ROOT/'work',encoding='utf-8') as fp:
             json.dump(options,fp,separators=(',',':'));fp.flush();os.fsync(fp.fileno())
             raw=_ci_kube_command(['delete','--raw=/'+resource,'-f',fp.name])
+    except Exception:
+        PHASE='DELETE_POLICY_COMMAND' if kind=='policy' else 'DELETE_POD_COMMAND'
+        raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLEANUP_UNCERTAIN') from None
+    try:
         response=json.loads(raw)
         if not isinstance(response,dict) or response.get('kind')!='Status' or response.get('status')!='Success':
             raise ValueError
     except Exception:
+        PHASE='DELETE_POLICY_RESPONSE' if kind=='policy' else 'DELETE_POD_RESPONSE'
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLEANUP_UNCERTAIN') from None
 
 
@@ -368,8 +374,19 @@ def _verify(home,bundle,key,manifest):
         PHASE='RECONNECT_DATA'
         if redis('read')!=CI_VALUE or redis('delete')!='1':
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_DATA')
-        PHASE='RECONNECT_PROBE'
+        PHASE='RECONNECT_POLICY_NEGATIVE'
+        wrong_uid='00000000-0000-0000-0000-000000000000'
+        if policy_uid==wrong_uid: raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_ARGUMENT')
+        try: _ci_delete_uid('policy',policy_name,wrong_uid)
+        except KubernetesLoopbackCIError: pass
+        else: raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_UID_PRECONDITION')
+        PHASE='RECONNECT_POLICY_NEGATIVE'
+        check=snapshot._query(['-n',SITE,'get','networkpolicy',policy_name])
+        if check.get('metadata',{}).get('uid')!=policy_uid:
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_UID_PRECONDITION')
+        PHASE='RECONNECT_POLICY_DELETE'
         _ci_delete_uid('policy',policy_name,policy_uid)
+        PHASE='RECONNECT_POD_DELETE'
         _ci_delete_uid('pod','uter-ci-loopback-probe',probe_uid)
         PHASE='RECONNECT_JOURNAL'
         saved=journal.read(home)
