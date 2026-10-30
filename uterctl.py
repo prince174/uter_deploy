@@ -205,14 +205,21 @@ def deploy(home, bundle, m, site, *, check=False, offline=False):
         values = home / "runtime/values.yaml"
         if not values.is_file():
             raise ValueError("runtime/values.yaml required")
+        chart = bundle / "charts/uter"
+        helm = ["helm"] + (["--kube-context", site["context"]] if site.get("context") else [])
+        if check:
+            # Check must not overwrite the shared values consumed by a
+            # concurrent apply. Keep the private file alive until lint exits.
+            with tempfile.TemporaryDirectory(prefix=".uter-helm-check-", dir=home) as directory:
+                generated = Path(directory) / "release-values.json"
+                write(generated, {"images": m["images"], "productVersion": m["version"]})
+                args = ["-f", str(values), "-f", str(generated)]
+                run(helm + ["lint", chart] + args)
+            return
         generated = home / "release-values.json"
         write(generated, {"images": m["images"], "productVersion": m["version"]})
-        chart = bundle / "charts/uter"
         args = ["-f", str(values), "-f", str(generated)]
-        helm = ["helm"] + (["--kube-context", site["context"]] if site.get("context") else [])
         run(helm + ["lint", chart] + args)
-        if check:
-            return
         run(helm + ["upgrade", "--install", site["name"], chart, "--namespace", site["namespace"], "--create-namespace", "--wait", "--timeout", "5m"] + args)
 
 
