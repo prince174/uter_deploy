@@ -57,6 +57,16 @@ def listening_inode(raw, path):
     return found[0]
 
 
+def validate_units(socket_unit,service):
+    # Triggers/TriggeredBy are systemd's implicit activation dependencies:
+    # https://www.freedesktop.org/software/systemd/man/257/systemd.unit.html
+    if (socket_unit.get('ActiveState')!='active' or socket_unit.get('Accept')!='no'
+            or socket_unit.get('Triggers','').split()!=['docker.service']):
+        raise ProbeError('SOCKET_UNIT')
+    if (service.get('ActiveState')!='active' or service.get('SubState')!='running'
+            or service.get('TriggeredBy','').split()!=['docker.socket']):raise ProbeError('SERVICE_STATE')
+
+
 def socket_holders(inode):
     holders=set();target='socket:['+inode+']'
     try:
@@ -81,13 +91,11 @@ def main():
     if (env.get('GITHUB_ACTIONS')!='true' or env.get('RUNNER_ENVIRONMENT')!='github-hosted'
             or env.get('RUNNER_OS')!='Linux' or env.get('UTER_CI_STRICT_RUNNER')!='true'
             or os.name!='posix' or os.geteuid()!=0):raise ProbeError('GUARD')
-    socket_keys=('ActiveState','Accept','Service')
-    service_keys=('ActiveState','SubState','MainPID','ExecMainPID')
+    socket_keys=('ActiveState','Accept','Triggers')
+    service_keys=('ActiveState','SubState','MainPID','ExecMainPID','TriggeredBy')
     socket_unit=properties('docker.socket',socket_keys)
     service=properties('docker.service',service_keys)
-    if socket_unit!={'ActiveState':'active','Accept':'no','Service':'docker.service'}:
-        raise ProbeError('SOCKET_UNIT')
-    if service.get('ActiveState')!='active' or service.get('SubState')!='running':raise ProbeError('SERVICE_STATE')
+    validate_units(socket_unit,service)
     value=service.get('MainPID','')
     if not re.fullmatch(r'[1-9][0-9]{0,9}',value) or value!=service.get('ExecMainPID') or int(value)<=1:
         raise ProbeError('SERVICE_PID')
@@ -127,6 +135,7 @@ if __name__=='__main__':
         allowed={'GUARD','PROPERTIES_MALFORMED','PROPERTIES_MISSING_MULTIPLE','PROPERTIES_TOO_LARGE',
                  'PROPERTY_MISSING_ACTIVESTATE','PROPERTY_MISSING_ACCEPT','PROPERTY_MISSING_SERVICE',
                  'PROPERTY_MISSING_SUBSTATE','PROPERTY_MISSING_MAINPID','PROPERTY_MISSING_EXECMAINPID',
+                 'PROPERTY_MISSING_TRIGGERS','PROPERTY_MISSING_TRIGGEREDBY',
                  'SYSTEMCTL_UNAVAILABLE','SYSTEMCTL_TIMEOUT','SYSTEMCTL_FAILED','PROPERTIES_ENCODING','SYSTEMCTL_EXECUTION',
                  'SOCKET_UNIT','SERVICE_STATE','SERVICE_PID','PROCESS_NAME','NAMESPACES',
                  'SOCKET_FILE','SOCKET_PEER','SERVICE_EXITED','LISTENER','LISTENER_HOLDERS','PROC_VISIBILITY',

@@ -22,6 +22,15 @@ class ActivationProbeTests(unittest.TestCase):
             with self.subTest(bad=bad),self.assertRaises(probe.ProbeError):
                 probe.listening_inode(bad,'/run/docker.sock')
 
+    def test_activation_dependency_must_match_both_ways(self):
+        socket_unit={'ActiveState':'active','Accept':'no','Triggers':'docker.service'}
+        service={'ActiveState':'active','SubState':'running','TriggeredBy':'docker.socket'}
+        probe.validate_units(socket_unit,service)
+        for sock,srv in ((dict(socket_unit,Triggers='other.service'),service),
+                         (dict(socket_unit,Accept='yes'),service),
+                         (socket_unit,dict(service,TriggeredBy='docker.socket other.socket'))):
+            with self.assertRaises(probe.ProbeError):probe.validate_units(sock,srv)
+
     def test_nonhosted_does_not_inspect_systemd(self):
         from unittest import mock
         with mock.patch.dict(probe.os.environ,{},clear=True),mock.patch.object(probe,'properties') as properties:
