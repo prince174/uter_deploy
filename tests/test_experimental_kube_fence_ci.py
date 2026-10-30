@@ -17,8 +17,11 @@ class SyntheticKubernetesFenceTests(unittest.TestCase):
         template = document['spec']['template']['spec']
         container = template['containers'][0]
         self.assertEqual(document['spec']['strategy'], {'type':'Recreate'})
-        self.assertIn('127.0.0.1', container['args'])
-        self.assertIn('always', container['args'])
+        self.assertIn({'name':'SYNTHETIC_BIND','value':'127.0.0.1'}, container['env'])
+        self.assertIn('--appendfsync always', container['args'][0])
+        self.assertIn('if wait "$child"', container['args'][0])
+        self.assertIn('intent-$POD_UID', container['args'][0])
+        self.assertIn('marker-$POD_UID', container['args'][0])
         self.assertEqual(template['volumes'][0]['persistentVolumeClaim']['claimName'], 'synthetic-data')
         self.assertFalse(template['automountServiceAccountToken'])
 

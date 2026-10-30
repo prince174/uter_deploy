@@ -77,8 +77,16 @@ def deployment(hanging=False, bind='0.0.0.0'):
     # UIDs are synthetic and the markers are not authenticated. The deliberate
     # hang models a failed graceful termination, not a safe recovery protocol.
     prestop = 'sleep 30' if hanging else (
-        'redis-cli -a "$SYNTHETIC_PASSWORD" --no-auth-warning shutdown save && '
-        'printf "%s" "$POD_UID" > "/data/marker-$POD_UID"')
+        'printf "%s" "$POD_UID" > "/data/intent-$POD_UID"; '
+        'exec redis-cli -a "$SYNTHETIC_PASSWORD" --no-auth-warning shutdown save')
+    # Synthetic supervisor keeps PID 1 alive after the child Redis exits and
+    # records an observed zero exit + shutdown intent. The released Uter image
+    # does not use this wrapper; its marker is not a production trust anchor.
+    supervisor = ('redis-server --appendonly yes --appendfsync always --dir /data '
+                  '--bind "$SYNTHETIC_BIND" --requirepass "$SYNTHETIC_PASSWORD" & '
+                  'child=$!; if wait "$child"; then rc=0; else rc=$?; fi; '
+                  'if [ "$rc" -eq 0 ] && [ -f "/data/intent-$POD_UID" ]; then '
+                  'printf "%s" "$POD_UID" > "/data/marker-$POD_UID"; fi; exit "$rc"')
     return {'apiVersion':'apps/v1','kind':'Deployment','metadata':{'name':'synthetic-redis'},
             'spec':{'replicas':1,'strategy':{'type':'Recreate'},
                     'selector':{'matchLabels':{'app':'synthetic-redis'}},
@@ -86,10 +94,9 @@ def deployment(hanging=False, bind='0.0.0.0'):
                       'spec':{'automountServiceAccountToken':False, 'terminationGracePeriodSeconds':5 if hanging else 30,
                               'securityContext':{'fsGroup':1000},
                               'containers':[{'name':'redis','image':REDIS,
-                                 'command':['redis-server'],
-                                 'args':['--appendonly','yes','--appendfsync','always','--dir','/data',
-                                         '--bind',bind,'--requirepass',PASS],
+                                 'command':['sh','-ec'], 'args':[supervisor],
                                  'env':[{'name':'SYNTHETIC_PASSWORD','value':PASS},
+                                        {'name':'SYNTHETIC_BIND','value':bind},
                                         {'name':'POD_UID','valueFrom':{'fieldRef':{'fieldPath':'metadata.uid'}}}],
                                  'lifecycle':{'preStop':{'exec':{'command':['sh','-ec',prestop]}}},
                                  'readinessProbe':{'exec':{'command':['sh','-ec',
