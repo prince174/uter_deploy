@@ -8,6 +8,9 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
+import signal
+import subprocess
 import tempfile
 import time
 
@@ -27,6 +30,22 @@ CI_KEY='uter:ci-loopback-probe'
 CI_VALUE='ci-loopback-value'
 PYTHON_IMAGE='python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea'
 PHASE='GUARD'
+CLIENT_PROCESS=None
+CLIENT_PROGRAM=r'''
+import os,socket,sys
+s=socket.create_connection((sys.argv[1],6379),timeout=10);s.settimeout(10)
+def req(*items):
+ b=b'*%d\r\n'%len(items)+b''.join(b'$%d\r\n'%len(x.encode())+x.encode()+b'\r\n' for x in items)
+ s.sendall(b);return s.recv(1024)
+if not req('AUTH',os.environ['REDIS_PASSWORD']).startswith(b'+OK'):raise SystemExit(2)
+if not req('PING').startswith(b'+PONG'):raise SystemExit(3)
+print('READY',flush=True);sys.stdin.readline()
+try:
+ if req('PING') != b'': raise SystemExit(4)
+except TimeoutError: raise
+except OSError: pass
+print('CLOSED',flush=True)
+'''
 
 
 class KubernetesLoopbackCIError(ValueError):
@@ -121,7 +140,7 @@ def _verify(home,bundle,key,manifest):
     rollback. An error never triggers a compensating patch or finalizer removal.
     The surrounding CI harness owns the ephemeral cluster and cleans it up.
     """
-    global PHASE
+    global PHASE,CLIENT_PROCESS
     PHASE='GUARD'
     guard(home,bundle,key,manifest)
     home=Path(home).resolve(strict=True)
@@ -155,6 +174,21 @@ def _verify(home,bundle,key,manifest):
         original=pods('redis')
         if len(original)!=1: raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_POD')
         pod=original[0];name=pod['metadata']['name'];uid=pod['metadata']['uid']
+        ip=pod['status']['podIP']
+        if not re.fullmatch(r'[0-9.]{7,15}',ip): raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_POD')
+        probe_spec={'spec':{'automountServiceAccountToken':False,'containers':[{'name':'uter-ci-loopback-probe',
+                    'image':PYTHON_IMAGE,'command':['python','-c','import time;time.sleep(600)'],
+                    'env':[{'name':'REDIS_PASSWORD','valueFrom':{'secretKeyRef':{'name':SITE+'-redis-secret','key':'password'}}}]}]}}
+        k('run','uter-ci-loopback-probe','--image='+PYTHON_IMAGE,'--restart=Never',
+          '--overrides='+json.dumps(probe_spec,separators=(',',':')))
+        k('wait','--for=condition=Ready','pod/uter-ci-loopback-probe','--timeout=180s')
+        CLIENT_PROCESS=subprocess.Popen(['kubectl','--context',CONTEXT,'-n',SITE,'exec','-i',
+                         'pod/uter-ci-loopback-probe','--','python','-u','-c',CLIENT_PROGRAM,ip],
+                         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        selector=selectors.DefaultSelector();selector.register(CLIENT_PROCESS.stdout,selectors.EVENT_READ)
+        if not selector.select(20) or CLIENT_PROCESS.stdout.readline().strip()!=b'READY':
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT')
         PHASE='HOLD'
         plan=finalizer.plan_from_pod(CONTEXT,SITE,name,pod)
         finalizer.persist_plan(home,plan)
@@ -173,6 +207,12 @@ def _verify(home,bundle,key,manifest):
             except shutdown.ShutdownObservationError:
                 time.sleep(.5)
         else: raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_TERMINATION_UNVERIFIED')
+        CLIENT_PROCESS.stdin.write(b'check\n');CLIENT_PROCESS.stdin.flush()
+        if not selector.select(20) or CLIENT_PROCESS.stdout.readline().strip()!=b'CLOSED':
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT_NOT_CLOSED')
+        if CLIENT_PROCESS.wait(timeout=10)!=0:
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT_NOT_CLOSED')
+        CLIENT_PROCESS=None
         # This removal is exclusively CI fixture cleanup after observation. It
         # must not be reused as a real-world safe finalizer release.
         old=api.get(name);meta=old['metadata'];token=finalizer._token(operation)
@@ -195,9 +235,6 @@ def _verify(home,bundle,key,manifest):
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_AOF')
         ip=new[0]['status']['podIP']
         if not re.fullmatch(r'[0-9.]{7,15}',ip): raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_POD')
-        k('run','uter-ci-loopback-probe','--image='+PYTHON_IMAGE,'--restart=Never',
-          '--command','--','python','-c','import time;time.sleep(600)')
-        k('wait','--for=condition=Ready','pod/uter-ci-loopback-probe','--timeout=180s')
         probe=('import socket,sys\n'
                's=socket.socket();s.settimeout(3)\n'
                'try: s.connect((sys.argv[1],6379))\n'
@@ -243,8 +280,16 @@ def _verify(home,bundle,key,manifest):
 
 
 def verify(home,bundle,key,manifest):
+    global CLIENT_PROCESS
     try:
         return _verify(home,bundle,key,manifest)
     except Exception:
         # Never expose API data, names, command text or secret-related details.
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_UNVERIFIED') from None
+    finally:
+        if CLIENT_PROCESS is not None:
+            try: os.killpg(CLIENT_PROCESS.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+            try: CLIENT_PROCESS.wait(timeout=10)
+            except subprocess.TimeoutExpired: pass
+            CLIENT_PROCESS=None
