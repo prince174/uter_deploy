@@ -1,0 +1,19 @@
+name: Experimental Compose init mount inode
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Check bounded probe cases
+        run: python3 -m unittest tests.test_compose_mount_inode_probe -q
+      - name: Check mount and atomic replacement on disposable Docker
+        env:
+          UTER_CI_INODE: 'true'
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS,UTER_CI_INODE python3 scripts/compose_mount_inode_ci.py
