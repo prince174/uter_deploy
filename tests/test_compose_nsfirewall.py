@@ -74,7 +74,10 @@ class NamespaceFenceTests(unittest.TestCase):
             self.assertEqual(self.adapter._daemon_identity(),99)
             peer.close.assert_not_called()
             peer.getsockopt.return_value=struct.pack('3i',1,0,0)
-            with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_PEER_PID1'):self.adapter._daemon_identity()
+            with mock.patch.object(ns.systemd_activation,'daemon_pid',return_value=99):
+                self.assertEqual(self.adapter._daemon_identity(),99)
+            with mock.patch.object(ns.systemd_activation,'daemon_pid',side_effect=ns.systemd_activation.SystemdActivationError):
+                with self.assertRaisesRegex(ns.NamespaceFenceError,'SYSTEMD_UNVERIFIED'):self.adapter._daemon_identity()
         for content in (b'',b'unexpected'):
             peer.recv.return_value=content
             with self.subTest(content=content),mock.patch.object(ns.select,'select',return_value=([peer],[],[])):

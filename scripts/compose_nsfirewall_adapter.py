@@ -16,7 +16,8 @@ import struct
 import subprocess
 import time
 
-from scripts import compose_fence_adapter as compose, redis_fence_journal as journal
+from scripts import (compose_fence_adapter as compose, redis_fence_journal as journal,
+                     compose_systemd_activation as systemd_activation)
 
 NSENTER='/usr/bin/nsenter'
 IPTABLES='/usr/sbin/iptables'
@@ -56,7 +57,10 @@ class Adapter(compose.Adapter):
                 if peek is not None:raise NamespaceFenceError('NS_FENCE_DAEMON_SOCKET_STATE')
             pid,uid,_=struct.unpack('3i',peer.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
             if uid!=0 or pid<=0:raise NamespaceFenceError('NS_FENCE_DAEMON_PEER_CREDENTIALS')
-            if pid==1:raise NamespaceFenceError('NS_FENCE_DAEMON_PEER_PID1')
+            if pid==1:
+                try:return systemd_activation.daemon_pid()
+                except systemd_activation.SystemdActivationError:
+                    raise NamespaceFenceError('NS_FENCE_SYSTEMD_UNVERIFIED') from None
             proc=Path('/proc')/str(pid)
             if (proc/'comm').read_text(encoding='utf-8').strip()!='dockerd':
                 raise NamespaceFenceError('NS_FENCE_DAEMON_PEER_PROCESS')
