@@ -17,6 +17,18 @@ OLD_CONTROLLER_COMMIT = '7d2c38450776df9a479e5e2b0933ec1c23204e96'
 
 
 class RedisGuardTests(unittest.TestCase):
+    def test_internal_empty_scan_is_not_update_authorization(self):
+        with patch.object(guard, '_query', side_effect=[b'databases\n1\n', b'0\n0\n']):
+            self.assertIsNone(guard._scan_for_legacy_sessions('/x', {}, {}, {}))
+        with patch.object(guard, '_scan_for_legacy_sessions', return_value=None):
+            with self.assertRaisesRegex(guard.SessionMigrationBlocked, '^SESSION_MIGRATION_FENCE_UNVERIFIED$'):
+                guard.classify('/x', {}, {}, {})
+
+    def test_internal_scan_always_refuses_legacy_session(self):
+        with patch.object(guard, '_query', side_effect=[b'databases\n2\n', b'0\n0\n', b'0\n1\n']):
+            with self.assertRaisesRegex(guard.SessionMigrationBlocked, '^SESSION_MIGRATION_AMBIGUOUS$'):
+                guard._scan_for_legacy_sessions('/x', {}, {}, {})
+
     def test_scanner_targets_only_the_selected_local_redis_and_no_password_argument(self):
         cfg={'backend':'compose','context':'default','name':'uter-ci','images':{}}
         site={'backend':'compose','context':'default','name':'uter-ci','namespace':'uter-ci'}

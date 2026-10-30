@@ -89,11 +89,12 @@ def _query(home, cfg, site, current, args, timeout):
                 process.stdout.close()
 
 
-def classify(home, cfg, site, current, *, timeout=180):
-    """Check all configured Redis databases; refuse on any missing proof.
+def _scan_for_legacy_sessions(home, cfg, site, current, *, timeout=180):
+    """Observe all DBs without authorizing an update or proving isolation.
 
-    Even when no session exists, external-writer fencing is not yet proven.
-    This function therefore cannot return success for the identity transition.
+    No session at the instant of these reads does not rule out a new writer.
+    An eligible caller must independently hold and verify a continuous fence
+    before and after the complete scan; this helper never verifies that fence.
     """
     if type(timeout) is not int or not 1 <= timeout <= 600:
         raise SessionMigrationBlocked(SCAN_FAILED)
@@ -129,4 +130,9 @@ def classify(home, cfg, site, current, *, timeout=180):
         raise
     except (OSError, ValueError, TypeError, OverflowError):
         raise SessionMigrationBlocked(SCAN_FAILED) from None
+
+
+def classify(home, cfg, site, current, *, timeout=180):
+    """Preserve the public fail-closed gate, including for empty databases."""
+    _scan_for_legacy_sessions(home, cfg, site, current, timeout=timeout)
     raise SessionMigrationBlocked(FENCE_UNVERIFIED)
