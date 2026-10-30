@@ -1,0 +1,21 @@
+name: Inspect fixed Redis image bridge utilities
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Inspect utilities in disposable container without network
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = Linux
+          test -z "${DOCKER_HOST:-}${DOCKER_CONTEXT:-}"
+          test "$(docker --context default context inspect default --format '{{.Endpoints.docker.Host}}')" = unix:///var/run/docker.sock
+          docker --context default run --rm --network none --entrypoint sh ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc -ec '
+            for tool in nc ncat bash python3 socat cat; do
+              if command -v "$tool" >/dev/null 2>&1; then echo "$tool=yes"; else echo "$tool=no"; fi
+            done'
