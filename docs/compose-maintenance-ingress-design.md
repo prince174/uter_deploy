@@ -192,6 +192,7 @@ registry reference из manifest и для Nexus-зеркала отказыва
 init-процесса в момент наблюдения не подтверждает mount у Python worker и не
 устанавливает непрерывный fence. Совпадение PID namespace текущего процесса и
 PID 1 само по себе не доказывает host namespace; поэтому поле
-`host_pid_namespace_verified` всегда равно `false`. Отдельный disposable CI проверяет также отказ
-после атомарной замены host-файла; до успешного выполнения CI это остаётся
-непроверенным экспериментом.
+`host_pid_namespace_verified` всегда равно `false`. [Disposable CI](https://github.com/prince174/uter_deploy/actions/runs/41146812580)
+на синтетическом контейнере подтвердил совпадение inode и последующий отказ
+после атомарной замены host-файла при неизменном Docker init. Это не проверка
+образов Uter, работающего worker или реального обновления.
