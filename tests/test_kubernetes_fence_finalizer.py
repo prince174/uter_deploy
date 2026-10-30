@@ -49,6 +49,20 @@ class KubernetesFinalizerTests(unittest.TestCase):
     def hold(self): return finalizer.hold(self.home,self.plan,self.record['operation'],self.api)
     def release(self): return finalizer.release_unchanged(self.home,self.plan,self.record['operation'],self.api)
 
+    def test_deployment_api_is_limited_to_selected_redis_name(self):
+        client=finalizer.Kubectl(context='kind-test',namespace='test')
+        with patch.object(client,'_call',return_value=b'{"kind":"Deployment"}') as call:
+            self.assertEqual(client.get_deployment('test-redis'),{'kind':'Deployment'})
+            self.assertEqual(call.call_args.args[0],['--request-timeout=20s','get','deployment/test-redis','-o','json'])
+            client.patch_deployment('test-redis',[{'op':'test','path':'/metadata/uid','value':'synthetic'}])
+            self.assertIn('deployment/test-redis',call.call_args.args[0])
+            for bad in ('other-redis','test-redis/../../foreign','test-guardrail'):
+                with self.subTest(name=bad),self.assertRaises(finalizer.FinalizerError):
+                    client.get_deployment(bad)
+                with self.subTest(name=bad),self.assertRaises(finalizer.FinalizerError):
+                    client.patch_deployment(bad,[])
+            self.assertEqual(call.call_count,2)
+
     def test_hold_and_remove_only_own_finalizer_without_asserting_isolation(self):
         self.assertEqual(self.hold(),{'result':'finalizer_held','redis_isolated':False})
         self.assertEqual(journal.read(self.home)['phase'],'isolating')

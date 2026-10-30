@@ -17,6 +17,7 @@ import time
 
 import uterctl
 from scripts import (adopt_backup_ci, kubernetes_fence_finalizer as finalizer,
+                     kubernetes_loopback_intent as loopback_intent,
                      kubernetes_redis_identity as identity,
                      kubernetes_redis_identity_ci as snapshot,
                      kubernetes_redis_shutdown as shutdown,
@@ -215,11 +216,49 @@ def request_loopback(home,bundle,key,plan,operation,api,manifest):
         if (meta.get('name')!=DEPLOYMENT or meta.get('namespace')!=SITE
                 or deploy.get('spec',{}).get('replicas')!=1):
             raise ValueError
-        patch=deployment_patch(meta['uid'],meta['resourceVersion'])
-        # The journal remains isolating before and after the request. On an API
-        # timeout no compensating patch or finalizer removal is attempted.
-        api._call(['--request-timeout=20s','patch','deployment/'+DEPLOYMENT,
-                   '--type=json','-p',json.dumps(patch,separators=(',',':'))])
+        deployment_patch(meta['uid'],meta['resourceVersion'])
+        record=loopback_intent.prepare(home,plan,operation,api)
+        if record['uid']!=meta['uid'] or record['original_rv']!=meta['resourceVersion']:
+            raise ValueError
+        # Fault injection on this explicitly disposable CI cluster: the API
+        # patch succeeds and the caller then observes an exception. The
+        # read-only classifier must observe the target spec without retrying.
+        real_patch=api.patch_deployment
+        calls={'attempted':0,'succeeded':0}
+        def timeout_after_success(name,ops):
+            calls['attempted']+=1
+            real_patch(name,ops)
+            calls['succeeded']+=1
+            raise TimeoutError('synthetic after-success fault')
+        api.patch_deployment=timeout_after_success
+        try:
+            try:
+                loopback_intent.request(home,plan,operation,api)
+            except loopback_intent.LoopbackIntentError:
+                pass
+            else:
+                raise ValueError
+            if calls!={'attempted':1,'succeeded':1}:
+                raise ValueError
+            try:
+                loopback_intent._reject_existing_attempt(home)
+            except loopback_intent.LoopbackIntentError:
+                pass
+            else:
+                raise ValueError
+            try:
+                loopback_intent.request(home,plan,operation,api)
+            except loopback_intent.LoopbackIntentError:
+                pass
+            else:
+                raise ValueError
+            if calls!={'attempted':1,'succeeded':1}:
+                raise ValueError
+        finally:
+            api.patch_deployment=real_patch
+        if loopback_intent.classify(home,plan,operation,api)!= {
+                'state':'loopback_spec_observed','redis_isolated':False,'safe_to_update':False}:
+            raise ValueError
     except Exception:
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_REQUEST_UNCERTAIN') from None
     return {'result':'loopback_requested','redis_isolated':False,'safe_to_upgrade':False}
@@ -419,6 +458,11 @@ def _verify(home,bundle,key,manifest):
         saved=journal.read(home)
         if saved['operation']!=operation or saved['phase']!='isolating':
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+        recorded=loopback_intent._read(home)
+        if recorded['operation']!=operation:
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+        (home/loopback_intent.ATTEMPT_NAME).unlink()
+        (home/loopback_intent.NAME).unlink()
         (home/journal.NAME).unlink();(home/finalizer.PLAN_NAME).unlink()
         PHASE='RECONNECT_WRITERS'
         k('scale','deployment/'+SITE+'-guardrail','deployment/'+SITE+'-agent','--replicas=1')

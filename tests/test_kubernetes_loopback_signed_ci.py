@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -26,18 +27,31 @@ class KubernetesLoopbackTests(unittest.TestCase):
                 patch.object(experiment.finalizer,'_check_journal'),patch.object(experiment.finalizer,'_verify_live'),
                 patch.object(experiment.snapshot,'verify'),patch.object(experiment.snapshot,'_query',side_effect=self.reads))
 
-    def test_loopback_patch_checks_uid_version_and_original_command(self):
+    def intent_fault(self,home,plan,operation,api):
+        self.intent_calls+=1
+        if self.intent_calls==1:
+            try: api.patch_deployment('test',[])
+            except TimeoutError: pass
+        raise experiment.loopback_intent.LoopbackIntentError('fault')
+
+    def test_loopback_uses_intent_and_classifies_the_injected_after_success_fault(self):
         patchers=self.patches()
-        with patchers[0],patchers[1],patchers[2],patchers[3],patchers[4],patchers[5]:
+        self.intent_calls=0
+        with contextlib.ExitStack() as stack:
+            for item in patchers: stack.enter_context(item)
+            prepare=stack.enter_context(patch.object(experiment.loopback_intent,'prepare',
+                                        return_value={'uid':self.uid,'original_rv':'42'}))
+            request=stack.enter_context(patch.object(experiment.loopback_intent,'request',side_effect=self.intent_fault))
+            stack.enter_context(patch.object(experiment.loopback_intent,'_reject_existing_attempt',
+                                side_effect=experiment.loopback_intent.LoopbackIntentError('attempt')))
+            classify=stack.enter_context(patch.object(experiment.loopback_intent,'classify',
+                return_value={'state':'loopback_spec_observed','redis_isolated':False,'safe_to_update':False}))
             result=self.request()
         self.assertEqual(result,{'result':'loopback_requested','redis_isolated':False,'safe_to_upgrade':False})
-        args=self.api._call.call_args.args[0]
-        self.assertEqual(args[:3],['--request-timeout=20s','patch','deployment/'+experiment.DEPLOYMENT])
-        operations=json.loads(args[-1]);tests={x['path']:x['value'] for x in operations if x['op']=='test'}
-        self.assertEqual(tests['/metadata/uid'],self.uid)
-        self.assertEqual(tests['/metadata/resourceVersion'],'42')
-        self.assertEqual(tests['/spec/template/spec/containers/0/args'],[experiment.identity.COMMAND])
-        self.assertEqual(operations[-1]['value'],[experiment.LOOPBACK_COMMAND])
+        self.assertEqual(prepare.call_count,1)
+        self.assertEqual(request.call_count,2)
+        self.api.patch_deployment.assert_called_once()
+        self.assertEqual(classify.call_count,1)
 
     def test_running_writers_or_ambiguous_api_fails_without_patch(self):
         for change in ('replicas','pods','guard'):
@@ -52,14 +66,30 @@ class KubernetesLoopbackTests(unittest.TestCase):
                         self.request()
                 self.api._call.assert_not_called()
 
-    def test_patch_timeout_does_not_remove_finalizer_or_advance_journal(self):
-        self.api._call.side_effect=TimeoutError('potentially accepted')
+    def test_unclassifiable_after_success_fault_does_not_remove_finalizer(self):
         patchers=self.patches()
-        with patchers[0],patchers[1] as valid,patchers[2] as check,patchers[3],patchers[4],patchers[5]:
+        self.intent_calls=0
+        with contextlib.ExitStack() as stack:
+            for item in patchers: stack.enter_context(item)
+            stack.enter_context(patch.object(experiment.loopback_intent,'prepare',return_value={'uid':self.uid,'original_rv':'42'}))
+            stack.enter_context(patch.object(experiment.loopback_intent,'request',side_effect=self.intent_fault))
+            stack.enter_context(patch.object(experiment.loopback_intent,'_reject_existing_attempt',
+                                side_effect=experiment.loopback_intent.LoopbackIntentError('attempt')))
+            stack.enter_context(patch.object(experiment.loopback_intent,'classify',side_effect=ValueError('changed')))
             with self.assertRaises(experiment.KubernetesLoopbackCIError):self.request()
-        self.assertEqual(self.api._call.call_count,1)
-        self.assertEqual(check.call_args.args[-1],'isolating')
         self.api.patch.assert_not_called()
+
+    def test_fault_before_real_patch_cannot_count_as_after_success(self):
+        with contextlib.ExitStack() as stack:
+            for item in self.patches(): stack.enter_context(item)
+            stack.enter_context(patch.object(experiment.loopback_intent,'prepare',return_value={'uid':self.uid,'original_rv':'42'}))
+            stack.enter_context(patch.object(experiment.loopback_intent,'request',
+                                side_effect=experiment.loopback_intent.LoopbackIntentError('early')))
+            stack.enter_context(patch.object(experiment.loopback_intent,'classify',
+                return_value={'state':'loopback_spec_observed','redis_isolated':False,'safe_to_update':False}))
+            with self.assertRaisesRegex(experiment.KubernetesLoopbackCIError,'REQUEST_UNCERTAIN'):
+                self.request()
+        self.api.patch_deployment.assert_not_called()
 
     def test_bad_resource_versions_are_rejected_before_patch(self):
         for version in ('', '-1', 'abc', 1, None):

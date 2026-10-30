@@ -164,6 +164,20 @@ class Kubectl:
     def patch(self, name, ops):
         self._call(['--request-timeout=20s','patch','pod/'+name,'--type=json','-p',json.dumps(ops,separators=(',',':'))])
 
+    def get_deployment(self, name):
+        if name != self.namespace + '-redis':
+            raise FinalizerError('KUBE_FINALIZER_ARGUMENT_INVALID')
+        try:
+            return json.loads(self._call(['--request-timeout=20s','get','deployment/'+name,'-o','json']))
+        except (ValueError,UnicodeError):
+            raise FinalizerError('KUBE_FINALIZER_API_UNCERTAIN') from None
+
+    def patch_deployment(self, name, ops):
+        if name != self.namespace + '-redis':
+            raise FinalizerError('KUBE_FINALIZER_ARGUMENT_INVALID')
+        self._call(['--request-timeout=20s','patch','deployment/'+name,'--type=json',
+                    '-p',json.dumps(ops,separators=(',',':'))])
+
 
 def _check_journal(directory, plan, operation, expected):
     if read_plan(directory)!=plan:
