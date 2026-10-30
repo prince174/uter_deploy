@@ -76,11 +76,18 @@ class ShutdownObservationTests(unittest.TestCase):
 
     def test_api_errors_or_wrong_operation_are_fixed_diagnostics(self):
         self.api.failure='get'
-        with self.assertRaisesRegex(shutdown.ShutdownObservationError,'^KUBE_REDIS_SHUTDOWN_UNVERIFIED$'):
+        with self.assertRaisesRegex(shutdown.ShutdownObservationError,'^KUBE_REDIS_SHUTDOWN_UNVERIFIED$') as error:
             self.observe()
+        self.assertEqual(error.exception.stage,'POD_FETCH')
         self.api.failure=None
         with self.assertRaises(shutdown.ShutdownObservationError):
             shutdown.observe(self.home,self.plan,'0'*32,self.api)
+
+    def test_exit_stage_does_not_disclose_status_contents(self):
+        self.api.pod['status']['containerStatuses'][0]['state']['terminated']['exitCode']=137
+        with self.assertRaises(shutdown.ShutdownObservationError) as error:self.observe()
+        self.assertEqual(error.exception.stage,'EXIT_CODE')
+        self.assertEqual(str(error.exception),'KUBE_REDIS_SHUTDOWN_UNVERIFIED')
 
 
 if __name__=='__main__': unittest.main()

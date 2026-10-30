@@ -470,13 +470,19 @@ def _verify(home,bundle,key,manifest):
         request_loopback(home,bundle,key,plan,operation,api,manifest)
         PHASE='TERMINATION'
         deadline=time.monotonic()+120
+        shutdown_stage='UNVERIFIED'
         while time.monotonic()<deadline:
             try:
                 observed=observe_old_process(home,plan,operation,api)
                 if observed['result']=='termination_observed': break
-            except shutdown.ShutdownObservationError:
+            except shutdown.ShutdownObservationError as error:
+                shutdown_stage=error.stage
                 time.sleep(.5)
-        else: raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_TERMINATION_UNVERIFIED')
+        else:
+            allowed={'PLAN','POD_FETCH','POD_IDENTITY','POD_SPEC','POD_STATUS',
+                     'CONTAINER','TERMINATED_STATE','EXIT_CODE','SIGNAL','REASON'}
+            PHASE='TERMINATION_'+(shutdown_stage if shutdown_stage in allowed else 'UNVERIFIED')
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_TERMINATION_UNVERIFIED')
         CLIENT_PROCESS.stdin.write(b'check\n');CLIENT_PROCESS.stdin.flush()
         if not selector.select(20) or CLIENT_PROCESS.stdout.readline().strip()!=b'CLOSED':
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT_NOT_CLOSED')
