@@ -46,6 +46,13 @@ def validate(m):
         raise ValueError("Only released, versioned manifests can be installed")
     if not re.fullmatch(r"[0-9a-f]{40}", m.get("source_commit", "")):
         raise ValueError("Full source commit SHA required")
+    if 'source_state' in m:
+        state = m['source_state']
+        if (not isinstance(state, dict) or set(state) != {'kind', 'baseline_commit', 'patch_sha256'}
+                or state.get('kind') != 'uncommitted_patch' or state.get('baseline_commit') != m['source_commit']
+                or not isinstance(state.get('patch_sha256'), str)
+                or not re.fullmatch(r'[0-9a-f]{64}', state['patch_sha256'])):
+            raise ValueError('Invalid source snapshot provenance')
     if 'deployment_commit' in m and not re.fullmatch(r'[0-9a-f]{40}',m['deployment_commit']):
         raise ValueError('Full deployment commit SHA required')
     if set(m.get("images", {})) != {"guardrail", "agent", "redis"}:

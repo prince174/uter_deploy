@@ -10,6 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from uterctl import validate
+from scripts import source_provenance
 
 
 def make_manifest(inputs, version, data_epoch, upgrade_from):
@@ -29,6 +30,16 @@ def make_manifest(inputs, version, data_epoch, upgrade_from):
     manifest = {'schema': 1, 'config_schema': 1, 'tooling_schema': 1, 'status': 'released',
                 'version': version, 'source_commit': sha, 'data_epoch': data_epoch,
                 'upgrade_from': upgrade_from, 'images': images, 'image_config_ids': ids}
+    states = [records[service].get('source_state') for service in ('guardrail', 'agent', 'redis')]
+    if any(state is not None for state in states):
+        if any(state is None for state in states):
+            raise ValueError('Source snapshot provenance missing from an image')
+        validated = [source_provenance.validate(state, sha) for state in states]
+        if any(state != validated[0] for state in validated):
+            raise ValueError('Source snapshot provenance differs across images')
+        # source_commit is explicitly the committed BASELINE for this variant;
+        # source_state identifies the additional working-tree patch.
+        manifest['source_state'] = validated[0]
     return validate(manifest)
 
 

@@ -32,6 +32,26 @@ class ReleaseManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'commits differ'):
             make_manifest(self.root, '1.2.3', 1, [])
 
+    def test_snapshot_provenance_is_signed_and_identical_across_all_services(self):
+        state = {'kind':'uncommitted_patch', 'baseline_commit':'c'*40, 'patch_sha256':'d'*64}
+        for service in self.records: self.records[service]['source_state'] = dict(state)
+        self.records['redis']['application_commit'] = 'c'*40
+        self.write()
+        self.assertEqual(make_manifest(self.root, '1.2.3', 1, [])['source_state'], state)
+        self.records['agent']['source_state']['patch_sha256'] = 'e'*64; self.write()
+        with self.assertRaisesRegex(ValueError, 'differs across images'):
+            make_manifest(self.root, '1.2.3', 1, [])
+        del self.records['redis']['source_state']; self.write()
+        with self.assertRaisesRegex(ValueError, 'missing'):
+            make_manifest(self.root, '1.2.3', 1, [])
+
+    def test_manifest_rejects_snapshot_baseline_disagreement(self):
+        from uterctl import validate
+        manifest = make_manifest(self.root, '1.2.3', 1, [])
+        manifest['source_state'] = {'kind':'uncommitted_patch', 'baseline_commit':'f'*40, 'patch_sha256':'b'*64}
+        with self.assertRaisesRegex(ValueError, 'snapshot provenance'):
+            validate(manifest)
+
     def test_refuses_mutable_image(self):
         self.images['agent'] = 'ghcr.io/test/agent:latest'
         self.write()

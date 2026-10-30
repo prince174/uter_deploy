@@ -1,0 +1,214 @@
+name: Build protected images from authenticated private snapshot
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: Exact committed source baseline
+        required: true
+        type: string
+      patch_sha256:
+        description: SHA256 of private tracked-file patch
+        required: true
+        type: string
+      secret_name:
+        description: Dedicated randomly named temporary snapshot secret
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: protected-images
+  cancel-in-progress: false
+jobs:
+  source-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Validate snapshot identity
+        env:
+          BASELINE: ${{ inputs.baseline_sha }}
+          PATCH_DIGEST: ${{ inputs.patch_sha256 }}
+          SECRET_NAME: ${{ inputs.secret_name }}
+        run: |
+          python - <<'PY'
+          import json,os,re
+          from scripts.source_provenance import validate_secret_name
+          base=os.environ['BASELINE']; patch=os.environ['PATCH_DIGEST']
+          assert re.fullmatch(r'[0-9a-f]{40}',base) and re.fullmatch(r'[0-9a-f]{64}',patch)
+          validate_secret_name(os.environ['SECRET_NAME'])
+          assert json.load(open('candidates/source.json'))['source_commit']==base
+          PY
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: prince174/uter
+          ref: ${{ inputs.baseline_sha }}
+          token: ${{ secrets.SOURCE_READ_TOKEN }}
+          path: work/upstream
+          persist-credentials: false
+      - name: Apply authenticated private snapshot in memory
+        env:
+          SNAPSHOT_ROOT: work/upstream
+          SNAPSHOT_BASE_SHA: ${{ inputs.baseline_sha }}
+          SNAPSHOT_PATCH_SHA256: ${{ inputs.patch_sha256 }}
+          SOURCE_SNAPSHOT_PATCH_B64: ${{ secrets[inputs.secret_name] }}
+        run: python scripts/snapshot_source.py > /dev/null
+      - name: Scan source checkout for embedded secrets without publishing report
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: work/upstream
+          scanners: secret
+          format: json
+          output: work/private-source-secret-scan.json
+          exit-code: '1'
+          timeout: 10m
+      - name: Install product test dependencies
+        working-directory: work/upstream
+        run: python -m pip install -r guardrail/requirements.txt -r agent/requirements.txt -r requirements-test.txt > /dev/null 2>&1 || { echo 'Dependency setup failed'; exit 1; }
+      - name: Run product unit tests without publishing source logs
+        working-directory: work/upstream
+        run: python -m pytest tests/unit -q > /dev/null 2>&1 || { echo 'Product unit tests failed'; exit 1; }
+      - name: Run product API tests without publishing source logs
+        working-directory: work/upstream
+        run: python -m pytest tests/api -q > /dev/null 2>&1 || { echo 'Product API tests failed'; exit 1; }
+  build:
+    needs: source-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        service: [guardrail, agent]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Read merged candidate
+        id: candidate
+        env:
+          EXPECTED_BASE: ${{ inputs.baseline_sha }}
+        run: |
+          python - <<'PY'
+          import json, os, re
+          data = json.load(open('candidates/source.json'))
+          sha = data['source_commit']
+          assert re.fullmatch('[0-9a-f]{40}', sha)
+          assert data['source_repository'] == 'prince174/uter'
+          assert sha == os.environ['EXPECTED_BASE']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('sha=' + sha + '\n')
+          PY
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: prince174/uter
+          ref: ${{ steps.candidate.outputs.sha }}
+          token: ${{ secrets.SOURCE_READ_TOKEN }}
+          path: work/upstream
+          persist-credentials: false
+      - name: Apply the exact tested private snapshot in memory
+        env:
+          SNAPSHOT_ROOT: work/upstream
+          SNAPSHOT_BASE_SHA: ${{ inputs.baseline_sha }}
+          SNAPSHOT_PATCH_SHA256: ${{ inputs.patch_sha256 }}
+          SOURCE_SNAPSHOT_PATCH_B64: ${{ secrets[inputs.secret_name] }}
+        run: |
+          mkdir -p work/evidence
+          python scripts/snapshot_source.py > work/evidence/source-state.json
+      - name: Build source-containing intermediate (runner only)
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          docker build --target builder --build-arg PRELOAD_MODELS=true --provenance=false -t "uter-$SERVICE-buildbase" "work/upstream/$SERVICE" > /dev/null 2>&1 || { echo "Protected builder failed"; exit 1; }
+      - name: Compile and assemble final image
+        id: compiled
+        env:
+          SERVICE: ${{ matrix.service }}
+          SOURCE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          docker build --provenance=false --build-arg "SOURCE_IMAGE=uter-$SERVICE-buildbase" -f packaging/Dockerfile.protected -t "uter-$SERVICE-protected" packaging > /dev/null 2>&1 || { echo 'Compilation failed'; exit 1; }
+          if [ "$SERVICE" = agent ]; then
+            docker tag uter-agent-protected uter-agent-protected-base
+            docker build --provenance=false --build-arg PROTECTED_IMAGE=uter-agent-protected-base -f packaging/Dockerfile.agent -t uter-agent-protected packaging > /dev/null 2>&1 || { echo 'Agent packaging failed'; exit 1; }
+          fi
+          mkdir -p work/evidence
+          cp -r work/upstream/policies work/upstream/profiles work/evidence/
+          docker image inspect "uter-$SERVICE-protected" --format '{{.Id}}' > work/evidence/image-id.txt
+          printf '%s\n' "$SOURCE_SHA" > work/evidence/source-sha.txt
+      - name: Import compiled modules and test real model offline
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:size=256m --memory=4g --cpus=2 \
+            -e JWT_SECRET=ci-only-secret-not-a-runtime-credential \
+            -e AGENT_INTERNAL_SHARED_SECRET=ci-only-internal-secret \
+            -e GUARDRAIL_SERVICE_PASSWORD=ci-only-service-password \
+            -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+            -e AUDIT_LOG_ENABLED=false -e JUDGE_ENABLED=false \
+            -e SECURITY_POLICY_PATH=/app/policies/default.toml \
+            -v "$PWD/work/upstream/policies:/app/policies:ro" \
+            -v "$PWD/work/upstream/profiles:/app/profiles:ro" \
+            -v "$PWD/scripts/check_compiled_runtime.py:/checks/check.py:ro" \
+            --entrypoint python "uter-$SERVICE-protected" /checks/check.py "$SERVICE" \
+            > work/evidence/runtime-check.json 2>/dev/null || { echo 'Protected runtime test failed'; exit 1; }
+      - name: Export and scan every layer (retain compiled image if runtime check fails)
+        id: exported
+        if: always() && steps.compiled.outcome == 'success'
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          docker save "uter-$SERVICE-protected" -o work/image.tar
+          python scripts/scan_image_archive.py work/image.tar --source-root work/upstream --report work/evidence/full-image-scan.json | tee work/evidence/source-scan.txt
+          python scripts/audit_binary_exposure.py work/image.tar --source-root work/upstream --output work/evidence/binary-exposure.json
+          gzip -1 work/image.tar
+          sha256sum work/image.tar.gz > work/evidence/archive.sha256
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always() && steps.exported.outcome == 'success'
+        with:
+          name: protected-${{ matrix.service }}
+          path: |
+            work/image.tar.gz
+            work/evidence/
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always() && steps.exported.outcome == 'success'
+        with:
+          name: snapshot-provenance-${{ matrix.service }}
+          path: work/evidence/source-state.json
+          retention-days: 14
+          if-no-files-found: error
+  integration:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: protected-*
+          path: work/images
+      - name: Load exactly the verified images
+        run: |
+          for service in guardrail agent; do
+            docker load -i "work/images/protected-$service/image.tar.gz"
+            actual=$(docker image inspect "uter-$service-protected" --format '{{.Id}}')
+            expected=$(cat "work/images/protected-$service/evidence/image-id.txt")
+            test "$actual" = "$expected"
+          done
+      - name: Exercise real services in disposable Compose project
+        run: python scripts/image_integration.py > /dev/null 2>&1 || { echo 'Protected integration failed'; exit 1; }
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: protected-integration-evidence
+          path: work/integration-evidence/restart.txt
+          retention-days: 7
+          if-no-files-found: warn

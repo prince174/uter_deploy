@@ -10,6 +10,20 @@ spec.loader.exec_module(m)
 
 
 class PublicationTests(unittest.TestCase):
+    def test_snapshot_identity_must_match_before_publication(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); state = {'kind':'uncommitted_patch', 'baseline_commit':'a'*40, 'patch_sha256':'b'*64}
+            for service in ('guardrail', 'agent', 'redis'):
+                folder = root / ('protected-'+service) / 'evidence'; folder.mkdir(parents=True)
+                (folder/'source-sha.txt').write_text('a'*40+'\n')
+                (folder/'source-state.json').write_text(json.dumps(state))
+            self.assertEqual(m.snapshot_identity(root), state)
+            (root/'protected-agent/evidence/source-state.json').write_text(json.dumps(dict(state, patch_sha256='c'*64)))
+            with self.assertRaisesRegex(ValueError, 'differs'): m.snapshot_identity(root)
+            (root/'protected-agent/evidence/source-state.json').unlink()
+            with self.assertRaisesRegex(ValueError, 'differs'): m.snapshot_identity(root)
+
     def test_public_verification_uses_empty_separate_docker_config(self):
         with patch.object(m.subprocess, 'run') as run, patch.object(m, 'anonymous_denied') as denied:
             m.verify_visibility('owner/package','ghcr.io/owner/package@sha256:'+'a'*64,'public')

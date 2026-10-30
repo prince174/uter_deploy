@@ -23,6 +23,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate exact source build
+        id: build_identity
         env:
           GH_TOKEN: ${{ github.token }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
@@ -32,8 +33,17 @@ jobs:
           run_id=os.environ['BUILD_RUN_ID']
           assert re.fullmatch(r'[0-9]+',run_id)
           run=json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}']))
-          assert run['path']=='.github/workflows/protected-images.yml' and run['conclusion']=='success'
+          assert run['path'] in ('.github/workflows/protected-images.yml', '.github/workflows/snapshot-protected-images.yml') and run['conclusion']=='success'
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+              output.write('snapshot='+str(run['path'].endswith('/snapshot-protected-images.yml')).lower()+'\n')
           PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: steps.build_identity.outputs.snapshot == 'true'
+        with:
+          pattern: snapshot-provenance-*
+          path: work/provenance
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         if: matrix.service != 'redis'
         with:
@@ -44,17 +54,27 @@ jobs:
       - name: Load exact source build and configuration
         env:
           SERVICE: ${{ matrix.service }}
+          SNAPSHOT_BUILD: ${{ steps.build_identity.outputs.snapshot }}
         run: |
           mkdir -p work/evidence
           python - <<'PY'
           import json,os,pathlib,shutil,subprocess,hashlib,re
+          from scripts import source_provenance
           svc=os.environ['SERVICE']; candidate=json.loads(pathlib.Path('candidates/source.json').read_text())['source_commit']
           assert re.fullmatch(r'[0-9a-f]{40}',candidate)
           baseline=json.loads(pathlib.Path('packaging/security-baseline.json').read_text())
           evidence=pathlib.Path('work/evidence')
+          snapshot=os.environ['SNAPSHOT_BUILD']=='true'
+          state=None
+          if snapshot:
+              base=pathlib.Path('work/provenance')
+              states=[json.loads((base/f'snapshot-provenance-{name}'/'source-state.json').read_text()) for name in ('guardrail','agent')]
+              state=source_provenance.validate(states[0],candidate)
+              assert source_provenance.validate(states[1],candidate)==state
           if svc!='redis':
               original=pathlib.Path('work/original'); e=original/'evidence'
               assert (e/'source-sha.txt').read_text().strip()==candidate
+              if snapshot: assert json.loads((e/'source-state.json').read_text())==state
               archive=original/'image.tar.gz'
               with archive.open('rb') as f: actual=hashlib.file_digest(f,'sha256').hexdigest()
               assert actual==(e/'archive.sha256').read_text().split()[0]
@@ -67,6 +87,7 @@ jobs:
               image=baseline['redis_target']
               subprocess.run(['docker','pull','--platform','linux/amd64',image],check=True)
           (evidence/'source-sha.txt').write_text(candidate+'\n')
+          if snapshot: (evidence/'source-state.json').write_text(json.dumps(state,sort_keys=True)+'\n')
           (evidence/'parent-image.txt').write_text(image+'\n')
           with open(os.environ['GITHUB_ENV'],'a') as f:
               f.write('BASELINE_IMAGE='+image+'\nREDIS_TARGET='+baseline['redis_target']+'\n')
