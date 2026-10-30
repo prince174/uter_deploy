@@ -235,7 +235,7 @@ _FENCE_EXECUTOR_MODULES = (
     'compose_nsfirewall_checkpoint', 'compose_fence_adapter', 'compose_fence_recovery_plan',
     'compose_redis_diagnostic', 'compose_systemd_activation', 'experimental_docker_activation_ci',
     'compose_snapshot_only', 'snapshot_only_receipts', 'compose_fence_start', 'compose_fence_resume', 'compose_fence_origin',
-    'compose_fence_finalize',
+    'compose_fence_finalize', 'compose_fenced_update',
 )
 
 
@@ -266,7 +266,7 @@ def _load_signed_fence_executor(executor_key):
     sys.modules['scripts']=package
     sys.path.insert(0,str(ROOT))
     for name in ('backup_installation','compose_nsfirewall_adapter','compose_nsfirewall_protocol',
-                 'redis_fence_journal','compose_snapshot_only','compose_fence_start','compose_fence_resume','compose_fence_finalize'):
+                 'redis_fence_journal','compose_snapshot_only','compose_fence_start','compose_fence_resume','compose_fence_finalize','compose_fenced_update'):
         importlib.import_module('scripts.'+name)
     for name,module in tuple(sys.modules.items()):
         if name.startswith('scripts.'):
@@ -307,7 +307,7 @@ def _fence_secret_inputs(home, backup_key_path):
 def _fence_current_record(home, bundle, publisher_key, allowed_phases):
     """Caller holds lock; bind journal to the exact signed installation."""
     from scripts import backup_installation, redis_fence_journal
-    if any(os.path.lexists(home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT)):
+    if any(os.path.lexists(home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT,redis_fence_journal.UPDATE_START,redis_fence_journal.UPDATE_RESULT)):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
     state=backup_installation.safe_json(home/'state.json')
     if (state.get('adopted_installer') is not True or state.get('pending') is not None
@@ -468,9 +468,67 @@ def finalize_compose_fence(home,bundle,publisher_key,executor_key,backup_key_pat
     print('Compose fence finalized after identity and health checks; backup was not restored or deleted.')
 
 
+def apply_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_key_path,destination,*,offline=False):
+    """One explicitly scoped same-epoch Compose update under the PID lock."""
+    from scripts import backup_installation, compose_fenced_update, redis_fence_journal
+    home,key_path,secret=_fence_secret_inputs(home,backup_key_path)
+    if destination is None or not Path(destination).is_absolute() or '..' in Path(destination).parts:
+        raise ValueError('FENCED_UPDATE_DESTINATION_INVALID')
+    destination=Path(destination)
+    try:parent=backup_installation.private_directory(destination.parent)
+    except backup_installation.BackupError:raise ValueError('FENCED_UPDATE_DESTINATION_INVALID') from None
+    destination=parent/destination.name
+    if (destination==home or destination.is_relative_to(home) or key_path==destination
+            or key_path.is_relative_to(destination) or os.path.lexists(destination)):
+        raise ValueError('FENCED_UPDATE_DESTINATION_INVALID')
+    with locked(home):
+        if redis_fence_journal.blocks_mutation(home):raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+        state=backup_installation.safe_json(home/'state.json')
+        site=site_config(home)
+        current=state.get('current')
+        if not isinstance(current,dict) or not VERSION.fullmatch(current.get('version','')):
+            raise ValueError('FENCED_UPDATE_CURRENT_INVALID')
+        source=home/'releases'/current['version']
+        old,new=compose_fenced_update.preflight(home,source,bundle,publisher_key,state,site)
+        staged=compose_fenced_update.stage_target(home,bundle,publisher_key,new)
+        compose_fenced_update.preflight(home,source,staged,publisher_key,state,site)
+        if not offline:compose_fenced_update.pull_writers(home,staged,new,site)
+        compose_fenced_update.capture_for_update(home,source,staged,publisher_key,executor_key,secret,destination)
+        compose_fenced_update.release_for_update(home,source,staged,publisher_key,executor_key,secret,destination)
+        compose_fenced_update.start_target(home,source,staged,publisher_key,executor_key,secret,destination)
+        result=compose_fenced_update.finalize_target(home,source,staged,publisher_key,executor_key,secret,destination)
+    print('Compose fenced update to '+result['version']+' completed; encrypted backup retained. '
+          'Traffic may have started before health checks; never restore an older backup over new data.')
+
+
+def finish_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_key_path,destination):
+    """Explicitly finish only a fully evidenced, healthy target update."""
+    from scripts import backup_installation, compose_fenced_update, redis_fence_journal
+    home,key_path,secret=_fence_secret_inputs(home,backup_key_path)
+    if destination is None or not Path(destination).is_absolute() or '..' in Path(destination).parts:
+        raise ValueError('FENCED_UPDATE_DESTINATION_INVALID')
+    try:destination=backup_installation.private_directory(destination)
+    except backup_installation.BackupError:raise ValueError('FENCED_UPDATE_DESTINATION_INVALID') from None
+    if destination==home or destination.is_relative_to(home) or key_path==destination or key_path.is_relative_to(destination):
+        raise ValueError('FENCED_UPDATE_DESTINATION_INVALID')
+    with locked(home):
+        if os.path.lexists(home/redis_fence_journal.FINALIZE_ANCHOR):raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+        record=redis_fence_journal.read(home)
+        if record['phase'] not in ('target_running','update_finalizing'):
+            raise ValueError('FENCED_UPDATE_RECOVERY_REQUIRES_INSPECTION')
+        state=backup_installation.safe_json(home/'state.json')
+        new=verify(bundle,publisher_key);current=state.get('current')
+        old=state.get('previous') if current==new else current
+        if not isinstance(old,dict) or not VERSION.fullmatch(old.get('version','')):
+            raise ValueError('FENCED_UPDATE_RECOVERY_REQUIRES_INSPECTION')
+        source=home/'releases'/old['version']
+        result=compose_fenced_update.finalize_target(home,source,bundle,publisher_key,executor_key,secret,destination)
+    print('Verified Compose fenced update to '+result['version']+' finalized; backup retained.')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize", "fence-finish-update"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
@@ -479,8 +537,21 @@ def main(argv=None):
     parser.add_argument("--backup-key", type=Path, help="Protected 32-byte backup encryption key")
     parser.add_argument("--executor-key", type=Path, help="Pre-trusted public key for the signed executor")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--fenced-update", action="store_true", help="Experimental same-epoch Compose fenced update")
     args = parser.parse_args(argv)
     home = args.home.resolve()
+    if args.fenced_update:
+        if args.command!='apply' or args.key is None or args.bundle is None or args.executor_key is None:
+            raise ValueError('FENCED_UPDATE_ARGUMENTS_REQUIRED')
+        _load_signed_fence_executor(args.executor_key)
+        apply_compose_fenced_update(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir,offline=args.offline)
+        return
+    if args.command=='fence-finish-update':
+        if args.key is None or args.bundle is None or args.executor_key is None:
+            raise ValueError('FENCED_UPDATE_ARGUMENTS_REQUIRED')
+        _load_signed_fence_executor(args.executor_key)
+        finish_compose_fenced_update(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir)
+        return
     if args.command in ("fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize"):
         if args.key is None or args.bundle is None or args.executor_key is None:
             raise ValueError('FENCE_RECOVERY_SIGNED_BUNDLE_REQUIRED')
@@ -488,7 +559,7 @@ def main(argv=None):
             raise ValueError('FENCE_RECOVERY_PATH_NOT_ABSOLUTE')
         _load_signed_fence_executor(args.executor_key)
         from scripts import redis_fence_journal
-        if any(os.path.lexists(args.home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT)):
+        if any(os.path.lexists(args.home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT,redis_fence_journal.UPDATE_START,redis_fence_journal.UPDATE_RESULT)):
             raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         if args.command == "fence-recover-redis":
             recover_compose_redis_before_snapshot(args.home, args.bundle, args.key, args.backup_key)
@@ -523,6 +594,8 @@ def main(argv=None):
             result = {'journal': 'absent', 'finalize_anchor':'present' if anchor else 'absent',
                       'live_fence_verified': False}
         result['update_intent'] = ('present' if os.path.lexists(home / redis_fence_journal.UPDATE_INTENT) else 'absent')
+        result['target_start'] = ('present' if os.path.lexists(home / redis_fence_journal.UPDATE_START) else 'absent')
+        result['target_result'] = ('present' if os.path.lexists(home / redis_fence_journal.UPDATE_RESULT) else 'absent')
         print(json.dumps(result, sort_keys=True))
         print('Journal observation only; Redis and workloads were not inspected.')
         return
@@ -571,7 +644,7 @@ def main(argv=None):
         # A fence operation can have changed Redis connectivity without
         # reaching a recoverable state. Never let a later managed mutation
         # proceed merely because the controller lock has been released.
-        if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json')):
+        if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json')):
             raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         # Re-read after acquiring the lock to reject stale concurrent operations.
         current_state = read(state_path) if state_path.exists() else {"current": None, "previous": None, "pending": None}

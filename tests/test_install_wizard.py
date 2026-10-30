@@ -264,7 +264,7 @@ class InstallWizardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             home=Path(temp); state=home/'install-state.json'
             state.write_text('{"status":"ready","acceptance":"not-run"}');state.chmod(0o600)
-            for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json'):
+            for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json'):
                 with self.subTest(name=name):
                     marker=home/name;marker.symlink_to(home/'missing')
                     with mock.patch.object(wizard,'smoke') as smoke:
@@ -280,10 +280,12 @@ class InstallWizardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             home=Path(temp);state=home/'install-state.json'
             state.write_text('{"status":"ready","acceptance":"not-run"}');state.chmod(0o600)
-            marker=home/'compose-fence-finalize-anchor.json';marker.symlink_to(home/'missing')
-            with self.assertRaisesRegex(wizard.WizardError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
-                wizard.mark_acceptance(home)
-            self.assertEqual(json.loads(state.read_text()),{'status':'ready','acceptance':'not-run'})
+            for name in ('compose-fence-finalize-anchor.json','compose-fenced-update-intent.json',
+                         'compose-fenced-target-start.json','compose-fenced-target-result.json'):
+                marker=home/name;marker.symlink_to(home/'missing')
+                with self.assertRaisesRegex(wizard.WizardError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                    wizard.mark_acceptance(home)
+                self.assertEqual(json.loads(state.read_text()),{'status':'ready','acceptance':'not-run'});marker.unlink()
 
     @unittest.skipUnless(os.name == 'posix', 'POSIX locking and private directories')
     def test_acceptance_holds_operation_lock_during_smoke_and_state_write(self):

@@ -124,7 +124,9 @@ class ControllerSessionGateTests(unittest.TestCase):
         before = (self.fx.home/'state.json').read_bytes()
         for dangling,marker_name in ((False,'redis-fence-operation.json'),(True,'redis-fence-operation.json'),
                                      (False,'compose-fence-finalize-anchor.json'),(True,'compose-fence-finalize-anchor.json'),
-                                     (False,'compose-fenced-update-intent.json'),(True,'compose-fenced-update-intent.json')):
+                                     (False,'compose-fenced-update-intent.json'),(True,'compose-fenced-update-intent.json'),
+                                     (False,'compose-fenced-target-start.json'),(True,'compose-fenced-target-start.json'),
+                                     (False,'compose-fenced-target-result.json'),(True,'compose-fenced-target-result.json')):
             with self.subTest(dangling=dangling,marker_name=marker_name):
                 marker = self.fx.home/marker_name
                 if dangling:

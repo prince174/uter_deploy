@@ -81,9 +81,10 @@ def _bound(adapter,record,executor_bundle,executor_publisher,destination):
     except Exception:raise SnapshotOnlyError('SNAPSHOT_IDENTITY_UNVERIFIED') from None
 
 
-def capture(adapter,record,executor_bundle,executor_publisher,destination):
-    """Capture only; leave Redis fenced and writers stopped on any outcome."""
+def _capture(adapter,record,executor_bundle,executor_publisher,destination,decision_action):
+    """Fixed decision profiles only; never start writers or change releases."""
     try:
+        if decision_action not in ('release','mutation'):raise ValueError
         _assert_adapter(adapter)
         if journal.read(adapter.home)!=record or record['phase']!='isolated':raise ValueError
         binding=_bound(adapter,record,executor_bundle,executor_publisher,destination)
@@ -117,14 +118,14 @@ def capture(adapter,record,executor_bundle,executor_publisher,destination):
         receipt={'schema':1,'operation':record['operation'],'descriptor_sha256':descriptor_hash,
                  'backup_id':manifest['id'],'manifest_sha256':_hash(_file(Path(destination)/'manifest.json'))}
         receipts.write_receipt(adapter.home,adapter.backup_key,receipt)
-        receipts.write_decision(adapter.home,adapter.backup_key,'release')
+        receipts.write_decision(adapter.home,adapter.backup_key,decision_action)
         journal.advance(adapter.home,operation=record['operation'],expected='capturing',next_phase='captured')
         return manifest['id']
     except Exception:raise SnapshotOnlyError('SNAPSHOT_CAPTURE_INCOMPLETE') from None
 
 
-def recover(adapter,executor_bundle,executor_publisher,destination):
-    """Only restore original Redis after proven snapshot-only decision; no writers."""
+def _recover(adapter,executor_bundle,executor_publisher,destination,decision_action):
+    """Release Redis under exactly the authenticated decision, never writers."""
     try:
         _assert_adapter(adapter)
         record=journal.read(adapter.home)
@@ -140,7 +141,7 @@ def recover(adapter,executor_bundle,executor_publisher,destination):
                 or descriptor['bundle_sha256']!=binding['bundle']
                 or descriptor['fence_checkpoint_sha256']!=binding['checkpoint']
                 or descriptor['backup_location_sha256']!=binding['destination']
-                or descriptor['executor_sha256']!=binding['executor'] or decision['action']!='release'):
+                or descriptor['executor_sha256']!=binding['executor'] or decision['action']!=decision_action):
             raise ValueError
         manifest_raw=_file(Path(destination)/'manifest.json')
         verified=backup_store.verify_set(destination,adapter.backup_key,home=adapter.home,
@@ -157,3 +158,30 @@ def recover(adapter,executor_bundle,executor_publisher,destination):
         journal.advance(adapter.home,operation=record['operation'],expected='snapshot_releasing',next_phase='redis_released')
         return verified['id']
     except Exception:raise SnapshotOnlyError('SNAPSHOT_RECOVERY_INCOMPLETE') from None
+
+
+def capture(adapter,record,executor_bundle,executor_publisher,destination):
+    """Snapshot-only decision: later release may resume only original writers."""
+    return _capture(adapter,record,executor_bundle,executor_publisher,destination,'release')
+
+
+def capture_for_mutation(adapter,record,executor_bundle,executor_publisher,destination):
+    """Update decision: excludes snapshot-only release/recovery permanently."""
+    return _capture(adapter,record,executor_bundle,executor_publisher,destination,'mutation')
+
+
+def recover(adapter,executor_bundle,executor_publisher,destination):
+    """Snapshot-only recovery excludes a durable mutation decision."""
+    if any(os.path.lexists(Path(adapter.home)/name) for name in (journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT)):
+        raise SnapshotOnlyError('SNAPSHOT_RECOVERY_INCOMPLETE')
+    return _recover(adapter,executor_bundle,executor_publisher,destination,'release')
+
+
+def release_for_mutation(adapter,executor_bundle,executor_publisher,destination,target):
+    """Release once only with a fully bound update intent and mutation decision."""
+    from scripts import compose_fenced_update as update
+    record=journal.read(adapter.home)
+    if record['phase']!='captured':raise SnapshotOnlyError('SNAPSHOT_RECOVERY_INCOMPLETE')
+    update._verify_binding(adapter.home,adapter.bundle,target,adapter.publisher_key,
+                           executor_publisher,adapter.backup_key,destination,record)
+    return _recover(adapter,executor_bundle,executor_publisher,destination,'mutation')

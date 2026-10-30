@@ -54,6 +54,14 @@ class SnapshotOnlyTests(unittest.TestCase):
         self.adapter._recover_snapshot_only.assert_called_once()
         self.adapter.resume_writers.assert_not_called()
 
+    def test_snapshot_only_recovery_rejects_dangling_update_intent(self):
+        receipts.write_decision(self.home,self.key,'release')
+        for name in (journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT):
+            marker=self.home/name;marker.symlink_to(self.home/'missing')
+            with self.assertRaisesRegex(subject.SnapshotOnlyError,'RECOVERY_INCOMPLETE'):self.recover()
+            self.adapter._attach_snapshot_recovery.assert_not_called()
+            self.assertEqual(journal.read(self.home)['phase'],'captured');marker.unlink()
+
     def test_mutation_decision_and_tampered_backup_never_remove_fence(self):
         receipts.write_decision(self.home,self.key,'mutation')
         with self.assertRaisesRegex(subject.SnapshotOnlyError,'RECOVERY_INCOMPLETE'):self.recover()
@@ -64,6 +72,38 @@ class SnapshotOnlyTests(unittest.TestCase):
         with self.assertRaisesRegex(subject.SnapshotOnlyError,'RECOVERY_INCOMPLETE'):self.recover()
         self.assertEqual(journal.read(self.home)['phase'],'captured')
         self.adapter._attach_snapshot_recovery.assert_not_called()
+
+    def test_mutation_release_rejects_missing_wrong_or_tampered_decision(self):
+        from scripts import compose_fenced_update
+        self.adapter.bundle=self.root/'old';self.adapter.publisher_key='publisher'
+        with patch.object(compose_fenced_update,'_verify_binding'),patch.object(subject,'_bound',return_value=self.binding), \
+             patch.object(subject,'_assert_adapter'):
+            with self.assertRaisesRegex(subject.SnapshotOnlyError,'RECOVERY_INCOMPLETE'):
+                subject.release_for_mutation(self.adapter,'executor','key',self.dest,'target')
+            receipts.write_decision(self.home,self.key,'release')
+            with self.assertRaisesRegex(subject.SnapshotOnlyError,'RECOVERY_INCOMPLETE'):
+                subject.release_for_mutation(self.adapter,'executor','key',self.dest,'target')
+            (self.home/receipts.DECISION).unlink();receipts.write_decision(self.home,self.key,'mutation')
+            path=self.home/receipts.DECISION
+            path.write_bytes(path.read_bytes().replace(b'mutation',b'release'))
+            with self.assertRaisesRegex(subject.SnapshotOnlyError,'RECOVERY_INCOMPLETE'):
+                subject.release_for_mutation(self.adapter,'executor','key',self.dest,'target')
+        self.adapter._attach_snapshot_recovery.assert_not_called()
+        self.assertEqual(journal.read(self.home)['phase'],'captured')
+
+    def test_mutation_release_requires_authenticated_update_binding_and_never_resumes_writers(self):
+        from scripts import compose_fenced_update
+        self.adapter.bundle=self.root/'old';self.adapter.publisher_key='publisher'
+        receipts.write_decision(self.home,self.key,'mutation')
+        with patch.object(compose_fenced_update,'_verify_binding',side_effect=ValueError('unbound')):
+            with self.assertRaises(ValueError):
+                subject.release_for_mutation(self.adapter,'executor','key',self.dest,'target')
+        self.adapter._attach_snapshot_recovery.assert_not_called()
+        with patch.object(compose_fenced_update,'_verify_binding'),patch.object(subject,'_bound',return_value=self.binding), \
+             patch.object(subject,'_assert_adapter'):
+            self.assertEqual(subject.release_for_mutation(self.adapter,'executor','key',self.dest,'target'),self.manifest['id'])
+        self.adapter._recover_snapshot_only.assert_called_once();self.adapter.resume_writers.assert_not_called()
+        self.assertEqual(journal.read(self.home)['phase'],'redis_released')
 
     def test_failed_redis_release_retains_durable_releasing_phase(self):
         receipts.write_decision(self.home,self.key,'release')

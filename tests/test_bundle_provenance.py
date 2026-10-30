@@ -77,7 +77,7 @@ class BundleProvenanceTests(unittest.TestCase):
                      'compose_nsfirewall_checkpoint.py','compose_fence_adapter.py','compose_fence_recovery_plan.py',
                      'compose_redis_diagnostic.py','compose_systemd_activation.py','experimental_docker_activation_ci.py',
                      'compose_snapshot_only.py','snapshot_only_receipts.py','compose_fence_start.py','compose_fence_resume.py',
-                     'compose_fence_origin.py','compose_fence_finalize.py'):
+                     'compose_fence_origin.py','compose_fence_finalize.py','compose_fenced_update.py'):
             with self.subTest(name=name):
                 path=result/'scripts'/name
                 self.assertEqual(path.read_bytes(),(uterctl.ROOT/'scripts'/name).read_bytes())

@@ -152,11 +152,12 @@ class ComposeFenceFinalizeTests(unittest.TestCase):
         inspection.assert_not_called();self.assertEqual(journal.read(self.home)['phase'],'writers_resumed')
 
     def test_pending_fenced_update_blocks_finalize_before_live_inspection(self):
-        (self.home/journal.UPDATE_INTENT).symlink_to(self.home/'missing')
-        with patch.object(finalize.diagnostic,'inspect_installation') as inspection:
-            with self.assertRaises(ValueError):
-                finalize._validate_live(self.adapter,self.record,'executor-key',None)
-        inspection.assert_not_called();self.assertEqual(journal.read(self.home)['phase'],'writers_resumed')
+        for name in (journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT):
+            marker=self.home/name;marker.symlink_to(self.home/'missing')
+            with patch.object(finalize.diagnostic,'inspect_installation') as inspection:
+                with self.assertRaises(ValueError):
+                    finalize._validate_live(self.adapter,self.record,'executor-key',None)
+            inspection.assert_not_called();self.assertEqual(journal.read(self.home)['phase'],'writers_resumed');marker.unlink()
 
     def test_live_validation_rejects_foreign_resume_binding_or_pending_deployment(self):
         import uterctl

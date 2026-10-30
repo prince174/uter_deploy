@@ -14,15 +14,17 @@ import stat
 NAME = 'redis-fence-operation.json'
 FINALIZE_ANCHOR = 'compose-fence-finalize-anchor.json'
 UPDATE_INTENT = 'compose-fenced-update-intent.json'
+UPDATE_START = 'compose-fenced-target-start.json'
+UPDATE_RESULT = 'compose-fenced-target-result.json'
 
 
 def blocks_mutation(directory):
     """Both names block; a dangling link or partial cleanup is never ignored."""
     directory=Path(directory)
-    return any(os.path.lexists(directory/name) for name in (NAME,FINALIZE_ANCHOR,UPDATE_INTENT))
+    return any(os.path.lexists(directory/name) for name in (NAME,FINALIZE_ANCHOR,UPDATE_INTENT,UPDATE_START,UPDATE_RESULT))
 
 
-PHASES = ('prepared', 'isolating', 'isolated', 'capturing', 'captured', 'snapshot_releasing', 'releasing', 'aborting', 'pre_capture_aborting', 'redis_released', 'writers_resuming', 'writers_resumed', 'finalizing', 'restored')
+PHASES = ('prepared', 'isolating', 'isolated', 'capturing', 'captured', 'snapshot_releasing', 'releasing', 'aborting', 'pre_capture_aborting', 'redis_released', 'writers_resuming', 'writers_resumed', 'finalizing', 'target_starting', 'target_running', 'update_finalizing', 'restored')
 TRANSITIONS = {
     'prepared': frozenset(('isolating', 'aborting', 'pre_capture_aborting')),
     'isolating': frozenset(('isolated', 'aborting', 'pre_capture_aborting')),
@@ -33,10 +35,13 @@ TRANSITIONS = {
     'releasing': frozenset(('restored', 'aborting')),
     'aborting': frozenset(('restored', 'redis_released')),
     'pre_capture_aborting': frozenset(('redis_released',)),
-    'redis_released': frozenset(('restored', 'writers_resuming')),
+    'redis_released': frozenset(('restored', 'writers_resuming', 'target_starting')),
     'writers_resuming': frozenset(('writers_resumed',)),
     'writers_resumed': frozenset(('finalizing',)),
     'finalizing': frozenset(),
+    'target_starting': frozenset(('target_running',)),
+    'target_running': frozenset(('update_finalizing',)),
+    'update_finalizing': frozenset(),
     'restored': frozenset(),
 }
 FIELDS = frozenset(('schema', 'operation', 'backend', 'site', 'resource', 'plan_sha256', 'phase'))
