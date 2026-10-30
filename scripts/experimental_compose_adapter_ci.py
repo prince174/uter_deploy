@@ -115,6 +115,25 @@ def main():
                         # NOT a signed-installation test. Still require the real lock.
                         self._lock()
                         if supplied != plan: raise RuntimeError('fixture plan changed')
+                    def _verify_process(self, supplied):
+                        try:
+                            return super()._verify_process(supplied)
+                        except fence.ComposeFenceAdapterError:
+                            # Synthetic-only fixed diagnostics: never return process
+                            # names, argv, environment, paths or Docker output.
+                            code=("n=0; for f in /proc/[0-9]*/comm; do "
+                                  "IFS= read -r name < \"$f\" || { printf COMM_UNREADABLE; exit 0; }; "
+                                  "[ \"$name\" = redis-server ] || continue; n=$((n+1)); "
+                                  "p=${f%/comm}; target=$(/bin/readlink \"$p/exe\" 2>/dev/null) "
+                                  "|| { printf EXE_UNREADABLE; exit 0; }; "
+                                  "[ \"$target\" = /usr/local/bin/redis-server ] "
+                                  "|| { printf EXE_MISMATCH; exit 0; }; done; "
+                                  "[ \"$n\" = 1 ] && printf PROCESS_MATCH || printf PROCESS_COUNT")
+                            result=helpers.docker('exec','--user','999:1000',redis,'/bin/sh','-ec',code)
+                            if result not in ('COMM_UNREADABLE','EXE_UNREADABLE','EXE_MISMATCH','PROCESS_MATCH','PROCESS_COUNT'):
+                                result='DIAGNOSTIC_UNKNOWN'
+                            print('Synthetic process check: '+result,flush=True)
+                            raise
                 adapter=FixtureAdapter(home,home/'unused',home/'unused',key)
                 PHASE='reject-shared-namespace'
                 # A container sharing the Redis netns must prevent any mutation.
