@@ -182,6 +182,22 @@ def main():
                 # not a guarantee for any other Docker daemon or network.
                 helpers.docker('network','disconnect',net,redis)
                 helpers.cleanup('container',other,owner);containers.remove(other)
+                # Probe whether an address can be requested after the conflict
+                # disappears on a network with an automatically allocated subnet.
+                # Success here is not a production restore authorization.
+                PHASE='synthetic-explicit-dynamic-ip'
+                try:
+                    helpers.docker('network','connect','--ip',endpoint['IPAddress'],net,redis)
+                except RuntimeError:
+                    if diag._redis_inspect(redis)['networks']:
+                        raise RuntimeError('failed synthetic explicit-IP attempt changed network')
+                    print('Synthetic explicit original IP request rejected on auto subnet.',flush=True)
+                else:
+                    explicit=diag._redis_inspect(redis)['networks'][netname]
+                    if explicit.get('IPAddress')!=endpoint['IPAddress']:
+                        raise RuntimeError('synthetic explicit IP request returned different address')
+                    print('Synthetic explicit original IP request succeeded after conflict removal.',flush=True)
+                    helpers.docker('network','disconnect',net,redis)
                 helpers.docker(*network_args,net,redis)
                 restored=diag._redis_inspect(redis)['networks'][netname]
                 changed_ip=restored['IPAddress'] != endpoint['IPAddress']
