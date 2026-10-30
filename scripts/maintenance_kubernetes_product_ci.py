@@ -23,7 +23,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts import (kubernetes_fence_finalizer, kubernetes_maintenance_preflight, kubernetes_maintenance_runtime,
-                     kubernetes_sealed_config, kubernetes_trusted_kubectl,
+                     kubernetes_sealed_config, kubernetes_signed_maintenance_product_ci, kubernetes_trusted_kubectl,
                      maintenance_evidence, maintenance_protocol, maintenance_transport, redis_fence_journal)
 
 NODE = 'kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0'
@@ -287,6 +287,9 @@ containerdConfigPatches:
         PHASE = 'KUBE_PREFLIGHT_INITIAL'
         with patch.object(maintenance_protocol, 'verify_capability', return_value=session.manifest):
             preflight_initial = kubernetes_maintenance_preflight.observe(session)
+        PHASE = 'SIGNED_KUBE_CLI_CHECK'
+        kubernetes_signed_maintenance_product_ci.exercise(root=ROOT,work=work,home=home,kubeconfig=kubeconfig,
+            kube=kube,site=SITE,context=CONTEXT,images=images)
         PHASE = 'TRUSTED_JOURNAL_CREATE'
         proof = work/'proof'; proof.mkdir(mode=0o700); operation = secrets.token_hex(16); plan = secrets.token_hex(32)
         redis_fence_journal.create(proof, backend='kubernetes', site=SITE, resource=pinned['redis']['uid'],
@@ -352,6 +355,7 @@ containerdConfigPatches:
         evidence = ROOT/'work/maintenance-kubernetes-evidence'; evidence.mkdir(mode=0o700)
         (evidence/'maintenance.txt').write_text('Agent and Guardrail receipts verified on exact kind Pods.\n'
             'Read-only preflight checked real Pod identity before and after quiescence using a fixture signing shim.\n'
+            'The signed isolated CLI checked the same Pod using fixture-generated profile and trust roots.\n'
             'A fixture Secret metadata change invalidated the durable inventory.\n'
             'Deleting a receipted Agent Pod invalidated the inventory.\n'
             'Redis fence, backup, update and recovery were not tested by this probe.\n', encoding='utf-8')
