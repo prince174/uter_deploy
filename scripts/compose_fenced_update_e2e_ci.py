@@ -44,6 +44,8 @@ APPLY_CODES=APPLY_CODES | frozenset('FENCED_UPDATE_CAPTURE_'+code
                                    if code in compose_fenced_update._SAFE_START_CODES)
 APPLY_CODES=APPLY_CODES | frozenset('FENCED_UPDATE_CAPTURE_'+stage+'_UNCERTAIN'
                                    for stage in ('PRECHECK','FENCE_START','ADAPTER_ATTACH','BACKUP_CAPTURE','RECEIPT','INTENT'))
+APPLY_CODES=APPLY_CODES | frozenset('FENCED_UPDATE_CAPTURE_SNAPSHOT_CAPTURE_'+stage+'_UNCERTAIN'
+                                   for stage in compose_fenced_update.snapshot.CAPTURE_STAGES)
 JOURNAL_PHASES=frozenset(('NONE','INVALID','PREPARED','ISOLATING','ISOLATED','CAPTURING','CAPTURED',
                           'SNAPSHOT_RELEASING','REDIS_RELEASED','TARGET_STARTING','TARGET_RUNNING','UPDATE_FINALIZING'))
 APPLY_PHASES=frozenset('APPLY_'+code+'_PHASE_'+phase for code in APPLY_CODES|{'UNKNOWN'} for phase in JOURNAL_PHASES)

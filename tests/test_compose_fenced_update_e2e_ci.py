@@ -107,6 +107,8 @@ class SyntheticUpdateCITests(unittest.TestCase):
                          'APPLY_FENCED_UPDATE_CAPTURE_INCOMPLETE_PHASE_NONE')
         self.assertEqual(ci.apply_error(b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_FENCE_START_WRITER_STOP_GUARDRAIL_EXIT_TERM_LIKE_OOM_FALSE\n',self.root),
                          'APPLY_FENCED_UPDATE_CAPTURE_FENCE_START_WRITER_STOP_GUARDRAIL_EXIT_TERM_LIKE_OOM_FALSE_PHASE_NONE')
+        self.assertEqual(ci.apply_error(b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_SNAPSHOT_CAPTURE_AUDIT_CAPTURE_UNCERTAIN\n',self.root),
+                         'APPLY_FENCED_UPDATE_CAPTURE_SNAPSHOT_CAPTURE_AUDIT_CAPTURE_UNCERTAIN_PHASE_NONE')
         for stage in ('PRECHECK','FENCE_START','ADAPTER_ATTACH','BACKUP_CAPTURE','RECEIPT','INTENT'):
             code='FENCED_UPDATE_CAPTURE_'+stage+'_UNCERTAIN'
             self.assertEqual(ci.apply_error(('uterctl: FencedUpdateError: '+code+'\n').encode(),self.root),

@@ -81,23 +81,35 @@ def _bound(adapter,record,executor_bundle,executor_publisher,destination):
     except Exception:raise SnapshotOnlyError('SNAPSHOT_IDENTITY_UNVERIFIED') from None
 
 
+CAPTURE_STAGES=frozenset(('PRECHECK','BINDING','FENCE_BEFORE','BACKUP_OPEN','DESCRIPTOR','JOURNAL',
+                          'RUNTIME','WRITER_ID','REDIS_CAPTURE','AUDIT_CAPTURE','RUNTIME_VALIDATE',
+                          'AUDIT_VALIDATE','RDB_VALIDATE','FENCE_AFTER','MANIFEST','BACKUP_VERIFY',
+                          'FENCE_FINAL','RECEIPT','DECISION','CAPTURED'))
+
+
 def _capture(adapter,record,executor_bundle,executor_publisher,destination,decision_action):
     """Fixed decision profiles only; never start writers or change releases."""
+    phase='PRECHECK'
     try:
         if decision_action not in ('release','mutation'):raise ValueError
         _assert_adapter(adapter)
         if journal.read(adapter.home)!=record or record['phase']!='isolated':raise ValueError
-        binding=_bound(adapter,record,executor_bundle,executor_publisher,destination)
+        phase='BINDING';binding=_bound(adapter,record,executor_bundle,executor_publisher,destination)
+        phase='FENCE_BEFORE'
         if adapter.verify_fenced(record) is not True:raise ValueError
+        phase='BACKUP_OPEN'
         writer=backup_store.BackupWriter(destination,adapter.backup_key,adapter.home,binding['site'],binding['current']['version'])
         descriptor={'schema':1,'operation':record['operation'],'backend':'compose','site':record['site'],
                     'resource':record['resource'],'release_version':binding['current']['version'],
                     'bundle_sha256':binding['bundle'],'fence_checkpoint_sha256':binding['checkpoint'],
                     'identity_sha256':record['plan_sha256'],'backup_id':writer.manifest['id'],
                     'backup_location_sha256':binding['destination'],'executor_sha256':binding['executor']}
-        descriptor_hash=receipts.write_descriptor(adapter.home,adapter.backup_key,descriptor)
+        phase='DESCRIPTOR';descriptor_hash=receipts.write_descriptor(adapter.home,adapter.backup_key,descriptor)
+        phase='JOURNAL'
         journal.advance(adapter.home,operation=record['operation'],expected='isolated',next_phase='capturing')
+        phase='RUNTIME'
         backup_snapshot.archive_runtime(adapter.home,writer)
+        phase='WRITER_ID'
         plan=binding['plan'];redis=plan['container_id']
         guard=adapter._run('ps','-aq','--filter','label=com.docker.compose.project='+plan['site'],
                            '--filter','label=com.docker.compose.service=guardrail')
@@ -106,22 +118,28 @@ def _capture(adapter,record,executor_bundle,executor_publisher,destination,decis
                    'export REDISCLI_AUTH="$(cat /run/secrets/redis_password)"; exec redis-cli --rdb -']
         audit=['docker','--context','default','cp',guard+':/var/lib/uter/audit/.','-']
         check=['docker','--context','default','exec','-i',redis,'redis-check-rdb','/dev/stdin']
-        backup_snapshot.process_component(writer,'redis',redis_cmd,prefix=b'REDIS')
-        backup_snapshot.process_component(writer,'audit',audit)
-        backup_snapshot.verify_encrypted_tar(writer,'runtime');backup_snapshot.verify_encrypted_tar(writer,'audit')
-        backup_snapshot.verify_redis_snapshot(writer,check)
+        phase='REDIS_CAPTURE';backup_snapshot.process_component(writer,'redis',redis_cmd,prefix=b'REDIS')
+        phase='AUDIT_CAPTURE';backup_snapshot.process_component(writer,'audit',audit)
+        phase='RUNTIME_VALIDATE';backup_snapshot.verify_encrypted_tar(writer,'runtime')
+        phase='AUDIT_VALIDATE';backup_snapshot.verify_encrypted_tar(writer,'audit')
+        phase='RDB_VALIDATE';backup_snapshot.verify_redis_snapshot(writer,check)
+        phase='FENCE_AFTER'
         if adapter.verify_fenced(record) is not True:raise ValueError
-        manifest=writer.finish()
+        phase='MANIFEST';manifest=writer.finish()
+        phase='BACKUP_VERIFY'
         verified=backup_store.verify_set(destination,adapter.backup_key,home=adapter.home,
                                          site=binding['site'],version=binding['current']['version'])
-        if verified!=manifest or adapter.verify_fenced(record) is not True:raise ValueError
+        if verified!=manifest:raise ValueError
+        phase='FENCE_FINAL'
+        if adapter.verify_fenced(record) is not True:raise ValueError
         receipt={'schema':1,'operation':record['operation'],'descriptor_sha256':descriptor_hash,
                  'backup_id':manifest['id'],'manifest_sha256':_hash(_file(Path(destination)/'manifest.json'))}
-        receipts.write_receipt(adapter.home,adapter.backup_key,receipt)
-        receipts.write_decision(adapter.home,adapter.backup_key,decision_action)
+        phase='RECEIPT';receipts.write_receipt(adapter.home,adapter.backup_key,receipt)
+        phase='DECISION';receipts.write_decision(adapter.home,adapter.backup_key,decision_action)
+        phase='CAPTURED'
         journal.advance(adapter.home,operation=record['operation'],expected='capturing',next_phase='captured')
         return manifest['id']
-    except Exception:raise SnapshotOnlyError('SNAPSHOT_CAPTURE_INCOMPLETE') from None
+    except Exception:raise SnapshotOnlyError('SNAPSHOT_CAPTURE_'+phase+'_UNCERTAIN') from None
 
 
 def _recover(adapter,executor_bundle,executor_publisher,destination,decision_action):

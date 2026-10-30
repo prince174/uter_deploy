@@ -194,6 +194,31 @@ class ComposeFencedUpdateTests(unittest.TestCase):
                     self.assertNotIn('secret-canary',str(error.exception));adapter.close.assert_called_once()
 
     @unittest.skipUnless(os.name=='posix','private POSIX journal')
+    def test_capture_propagates_only_exact_snapshot_stage_code(self):
+        for code,expected in (('SNAPSHOT_CAPTURE_AUDIT_CAPTURE_UNCERTAIN',
+                               'FENCED_UPDATE_CAPTURE_SNAPSHOT_CAPTURE_AUDIT_CAPTURE_UNCERTAIN'),
+                              ('SNAPSHOT_CAPTURE_secret_canary_UNCERTAIN',
+                               'FENCED_UPDATE_CAPTURE_BACKUP_CAPTURE_UNCERTAIN')):
+            with self.subTest(code=code),tempfile.TemporaryDirectory() as temp:
+                home=Path(temp);home.chmod(0o700);(home/'state.json').write_text('{}')
+                source=home/'releases'/'1.0.0';source.mkdir(parents=True);dest=home.parent/'unused-test-backup'
+                def start(*args):
+                    record=journal.create(home,backend='compose',site='test',resource='a'*64,plan_sha256='b'*64)
+                    for old,new in (('prepared','isolating'),('isolating','isolated')):
+                        record=journal.advance(home,operation=record['operation'],expected=old,next_phase=new)
+                    return record['operation']
+                adapter=Mock();adapter.attach_before_capture_recovery.return_value=True;adapter.verify_fenced.return_value=True
+                with patch.object(update.backup_installation,'private_directory'),patch.object(update.uterctl,'site_config',return_value={}), \
+                     patch.object(update,'preflight',return_value=(self.old,self.new)), \
+                     patch.object(update.snapshot,'_executor',return_value='a'*64), \
+                     patch.object(update.compose_fence_start,'start',side_effect=start), \
+                     patch.object(update.compose_nsfirewall_adapter,'Adapter',return_value=adapter), \
+                     patch.object(update.snapshot,'capture_for_mutation',side_effect=update.snapshot.SnapshotOnlyError(code)):
+                    with self.assertRaises(update.FencedUpdateError) as error:
+                        update.capture_for_update(home,source,'target','publisher','executor',b'k'*32,dest)
+                    self.assertEqual(str(error.exception),expected);self.assertNotIn('secret',str(error.exception))
+
+    @unittest.skipUnless(os.name=='posix','private POSIX journal')
     def test_release_uncertainty_is_never_replayed(self):
         with tempfile.TemporaryDirectory() as temp:
             home=Path(temp);home.chmod(0o700);(home/'operation.lock').write_text(str(os.getpid()))

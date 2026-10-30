@@ -273,6 +273,12 @@ def capture_for_update(home,source,target,publisher,executor_key,key,destination
         if phase=='FENCE_START' and code in _SAFE_START_CODES:
             raise FencedUpdateError('FENCED_UPDATE_CAPTURE_'+code) from None
         raise FencedUpdateError('FENCED_UPDATE_CAPTURE_'+phase+'_UNCERTAIN') from None
+    except snapshot.SnapshotOnlyError as error:
+        code=str(error)
+        allowed={'SNAPSHOT_CAPTURE_'+stage+'_UNCERTAIN' for stage in snapshot.CAPTURE_STAGES}
+        if phase=='BACKUP_CAPTURE' and code in allowed:
+            raise FencedUpdateError('FENCED_UPDATE_CAPTURE_'+code) from None
+        raise FencedUpdateError('FENCED_UPDATE_CAPTURE_'+phase+'_UNCERTAIN') from None
     except Exception:raise FencedUpdateError('FENCED_UPDATE_CAPTURE_'+phase+'_UNCERTAIN') from None
 
 

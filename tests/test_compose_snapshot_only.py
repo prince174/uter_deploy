@@ -143,3 +143,40 @@ class SnapshotOnlyTests(unittest.TestCase):
         signed=executor/'scripts'/'compose_snapshot_only.py'
         signed.write_bytes(signed.read_bytes()+b'\n# alteration\n')
         with self.assertRaisesRegex(subject.SnapshotOnlyError,'EXECUTOR_UNVERIFIED'):subject._executor(executor,pub)
+
+
+class CaptureStageDiagnosticTests(unittest.TestCase):
+    def test_capture_errors_expose_only_fixed_stage_without_runtime_data(self):
+        from types import SimpleNamespace
+        record={'phase':'isolated','operation':'a'*32,'site':'fixture','resource':'b'*64,'plan_sha256':'c'*64}
+        binding={'site':{'name':'fixture'},'current':{'version':'1.0.0'},'bundle':'d'*64,
+                 'checkpoint':'e'*64,'executor':'f'*64,'destination':'1'*64,
+                 'plan':{'site':'fixture','container_id':'b'*64}}
+        adapter=SimpleNamespace(home='/fixture',backup_key=b'k'*32,verify_fenced=Mock(return_value=True),
+                                _run=Mock(return_value='guard'))
+        writer=SimpleNamespace(manifest={'id':'2'*32})
+        for failing,expected in (('runtime','RUNTIME'),('redis','REDIS_CAPTURE'),('audit','AUDIT_CAPTURE'),
+                                 ('runtime_validate','RUNTIME_VALIDATE'),('audit_validate','AUDIT_VALIDATE'),
+                                 ('rdb','RDB_VALIDATE')):
+            def crash(*args,**kwargs):
+                target=args[1] if len(args)>1 else None
+                if target==failing:raise ValueError('secret-canary')
+            def archive(*args,**kwargs):
+                if failing=='runtime':raise ValueError('secret-canary')
+            def rdb(*args,**kwargs):
+                if failing=='rdb':raise ValueError('secret-canary')
+            def validate(writer,name):
+                if failing==name+'_validate':raise ValueError('secret-canary')
+            with self.subTest(stage=failing),patch.object(subject,'_assert_adapter'), \
+                 patch.object(subject.journal,'read',return_value=record),patch.object(subject.journal,'advance'), \
+                 patch.object(subject,'_bound',return_value=binding), \
+                 patch.object(subject.backup_store,'BackupWriter',return_value=writer), \
+                 patch.object(subject.receipts,'write_descriptor',return_value='3'*64), \
+                 patch.object(subject.backup_snapshot,'archive_runtime',side_effect=archive), \
+                 patch.object(subject.backup_snapshot,'process_component',side_effect=crash), \
+                 patch.object(subject.backup_snapshot,'verify_encrypted_tar',side_effect=validate), \
+                 patch.object(subject.backup_snapshot,'verify_redis_snapshot',side_effect=rdb):
+                with self.assertRaises(subject.SnapshotOnlyError) as error:
+                    subject.capture_for_mutation(adapter,record,'executor','publisher','destination')
+                self.assertEqual(str(error.exception),'SNAPSHOT_CAPTURE_'+expected+'_UNCERTAIN')
+                self.assertNotIn('secret',str(error.exception))
