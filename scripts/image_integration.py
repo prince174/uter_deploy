@@ -93,6 +93,7 @@ def main():
         if endpoint != 'unix:///var/run/docker.sock': raise SystemExit('Local disposable Docker required')
     home = ROOT / "work/integration"
     home.mkdir(parents=True, exist_ok=False)
+    if acl_test: home.chmod(0o700)
     evidence = ROOT / "work/integration-evidence"
     evidence.mkdir(parents=True, exist_ok=True)
     source = ROOT / "work/images/protected-guardrail/evidence"
@@ -115,12 +116,14 @@ def main():
     (home / "agent.env").write_text(f"AGENT_INTERNAL_SHARED_SECRET={shared}\nGUARDRAIL_SERVICE_PASSWORD={service}\n")
     (home / "redis-password").write_text(redis_password)
     (home / "audit-hmac-key").write_text(hmac)
-    redis_config = f"bind 0.0.0.0\nappendonly yes\ndir /data\nrequirepass {redis_password}\n"
+    redis_config = "bind 0.0.0.0\nappendonly yes\ndir /data\n"
     if acl_test:
         commands = ('ping get set del eval incr ttl expire lpush ltrim lrange multi exec discard '
                     'smembers sismember scard sadd srem hgetall hexists hlen hset hdel client|setinfo')
-        redis_config += 'user default on ~* &* -@all ' + ' '.join('+'+x for x in commands.split()) + '\n'
+        redis_config += 'user default on >'+redis_password+' ~* &* -@all ' + ' '.join('+'+x for x in commands.split()) + '\n'
         redis_config += 'user uter-maint-test on >'+acl_admin+' ~* &* +@all\n'
+    else:
+        redis_config += 'requirepass '+redis_password+'\n'
     (home / "redis.conf").write_text(redis_config)
     (home / "empty.env").write_text("")
     override = {"services": {
