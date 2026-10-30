@@ -1,7 +1,12 @@
 import json
+import io
+import os
 import sys
+import tempfile
 import unittest
-from types import SimpleNamespace
+from contextlib import redirect_stdout
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 from scripts import maintenance_transport as transport
@@ -61,6 +66,39 @@ class TransportTests(unittest.TestCase):
             transport.request(service='guardrail', method='GET', session=session,
                               pod='uter-test-agent-abcd-xyz', identity_guard=lambda: True)
         run.assert_not_called()
+
+    def test_fixed_client_bounds_stream_and_does_not_print_key(self):
+        secret = 'test-secret-' + 'x'*40
+        fake = ModuleType('httpx')
+        class Response:
+            status_code = 200
+            headers = {}
+            chunks = [b'{"state":"running"}']
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def iter_raw(self, chunk_size): return iter(self.chunks)
+        class Client:
+            def __init__(self, **kwargs): self.options = kwargs
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def stream(self, *args, **kwargs):
+                self.assertions = kwargs
+                return Response()
+        fake.Client = Client
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'secret'; path.write_text(secret)
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, {'UTER_MAINTENANCE_KEY_FILE': str(path)}), \
+                 mock.patch.dict(sys.modules, {'httpx': fake}), mock.patch.object(sys, 'argv', ['client', 'GET', '8000']), \
+                 redirect_stdout(out):
+                exec(compile(transport._CLIENT, '<client>', 'exec'), {})
+            self.assertNotIn(secret, out.getvalue())
+            self.assertEqual(json.loads(out.getvalue())['status'], 200)
+            Response.chunks = [b'x'*4096] * 5
+            with mock.patch.dict(os.environ, {'UTER_MAINTENANCE_KEY_FILE': str(path)}), \
+                 mock.patch.dict(sys.modules, {'httpx': fake}), mock.patch.object(sys, 'argv', ['client', 'GET', '8000']), \
+                 redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                exec(compile(transport._CLIENT, '<client>', 'exec'), {})
 
 
 if __name__ == '__main__':

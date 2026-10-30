@@ -23,11 +23,19 @@ class TransportError(ValueError):
 _CLIENT = '''import json,os,sys
 from pathlib import Path
 import httpx
-key=Path(os.environ["UTER_MAINTENANCE_KEY_FILE"]).read_text(encoding="utf-8").strip()
+with Path(os.environ["UTER_MAINTENANCE_KEY_FILE"]).open("rb") as source:
+    raw=source.read(4097)
+if len(raw)>4096:raise ValueError()
+key=raw.decode("utf-8").strip()
+if len(key)<32:raise ValueError()
 with httpx.Client(trust_env=False,timeout=5) as client:
-    response=client.request(sys.argv[1],"http://127.0.0.1:"+sys.argv[2]+"/internal/maintenance",headers={"X-Uter-Maintenance-Key":key})
-    if len(response.content)>16384:raise ValueError()
-    print(json.dumps({"status":response.status_code,"body":response.text}))
+    with client.stream(sys.argv[1],"http://127.0.0.1:"+sys.argv[2]+"/internal/maintenance",headers={"X-Uter-Maintenance-Key":key,"Accept-Encoding":"identity"}) as response:
+        if response.headers.get("content-encoding", "identity").lower() not in ("", "identity"):raise ValueError()
+        body=bytearray()
+        for chunk in response.iter_raw(chunk_size=4096):
+            body.extend(chunk)
+            if len(body)>16384:raise ValueError()
+        print(json.dumps({"status":response.status_code,"body":bytes(body).decode("utf-8")}))
 '''
 
 
