@@ -73,5 +73,5 @@ class SealedConfigTests(unittest.TestCase):
                 self.assertEqual(api._call(['version']).decode().strip(),digest)
                 api.config_sha256='0'*64
                 with patch.object(finalizer.subprocess,'Popen') as spawn:
-                    with self.assertRaises(sealed.SealedConfigError):api._call(['version'])
+                    with self.assertRaises(finalizer.FinalizerError):api._call(['version'])
                     spawn.assert_not_called()

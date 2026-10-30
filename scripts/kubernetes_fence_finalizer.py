@@ -128,7 +128,9 @@ class Kubectl:
             inherited=()
             if self.config_fd is not None:
                 from scripts import kubernetes_sealed_config
-                kubernetes_sealed_config.verify_sealed(self.config_fd,self.config_sha256)
+                try:kubernetes_sealed_config.verify_sealed(self.config_fd,self.config_sha256)
+                except kubernetes_sealed_config.SealedConfigError:
+                    raise FinalizerError('KUBE_FINALIZER_API_UNCERTAIN') from None
                 command.append('--kubeconfig=/proc/self/fd/'+str(self.config_fd))
                 inherited=(self.config_fd,)
             command+=['--context='+self.context,'--namespace='+self.namespace,*args]
