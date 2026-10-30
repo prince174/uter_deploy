@@ -42,6 +42,13 @@ class ComposeFenceProbeTests(unittest.TestCase):
                 else:
                     with self.assertRaises(SystemExit): exec(probe.BLOCKED, {})
 
+    def test_detached_probe_handles_connect_timeout(self):
+        socket_instance = mock.Mock()
+        socket_instance.connect_ex.side_effect = TimeoutError()
+        with mock.patch('socket.socket', return_value=socket_instance), \
+                mock.patch('sys.argv', ['probe', '192.0.2.1']), mock.patch('builtins.print'):
+            exec(probe.BLOCKED, {})
+
     def test_tcp_fixture_treats_timeout_as_inconclusive(self):
         self.assertIn('except TimeoutError: raise',probe.CLIENT)
 

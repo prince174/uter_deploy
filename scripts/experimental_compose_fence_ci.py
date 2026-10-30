@@ -18,7 +18,8 @@ PYTHON = common.PYTHON
 LABEL = 'io.uter-deploy.synthetic-compose-fence'
 BLOCKED = r'''import errno,socket,sys
 s=socket.socket();s.settimeout(3)
-code=s.connect_ex((sys.argv[1],6379))
+try: code=s.connect_ex((sys.argv[1],6379))
+except TimeoutError: code=errno.ETIMEDOUT
 if code not in (errno.ECONNREFUSED,errno.ENETUNREACH,errno.EHOSTUNREACH,errno.ETIMEDOUT):
  raise SystemExit(1)
 print("BLOCKED")'''
