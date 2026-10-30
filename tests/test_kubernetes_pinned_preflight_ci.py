@@ -15,6 +15,14 @@ else:
 
 @unittest.skipUnless(sys.platform.startswith('linux'),'Linux sealed kubeconfig required')
 class PinnedPreflightCITests(unittest.TestCase):
+    def test_writer_diagnostics_are_fixed_and_never_expose_exception_text(self):
+        with patch.object(ci,'_material',side_effect=ValueError('sensitive detail')):
+            with self.assertRaises(ci.PinnedCITestError) as error:
+                ci.quiesce_writers('home','bundle','key',{},'0'*32)
+        self.assertEqual(error.exception.stage,'WRITER_QUIESCE_MATERIAL')
+        self.assertEqual(str(error.exception),'KUBE_WRITER_CI_UNVERIFIED')
+        self.assertNotIn('sensitive detail',str(error.exception))
+
     def test_bad_fixture_rejected_without_printing_credentials(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);work=root/'work';work.mkdir()

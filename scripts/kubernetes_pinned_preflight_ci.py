@@ -75,18 +75,24 @@ def verify(home,bundle,key,manifest):
 
 def quiesce_writers(home,bundle,key,manifest,operation):
     """Run the exact two writer CAS mutations on this disposable fixture."""
+    stage='WRITER_QUIESCE_MATERIAL'
     try:
         raw,profile=_material(home,bundle,key)
         qkey=os.urandom(32)
+        stage='WRITER_QUIESCE_SESSION'
         with preflight.checked_session(home,bundle,key,raw,profile) as session:
             if session.manifest!=manifest:raise ValueError
             # CI synthesized these UIDs from its newly created fixture. A real
             # operation requires separate administrator-provisioned writer pins.
+            stage='WRITER_QUIESCE_UID'
             uids={service:session._query(['get','deployment',session.site+'-'+service])['metadata']['uid']
                   for service in quiesce.SERVICES}
+            stage='WRITER_QUIESCE_PREPARE'
             quiesce.prepare(home,session,operation,uids,qkey)
             for service in quiesce.SERVICES:
+                stage='WRITER_POD_PREPARE'
                 writer_finalizer.prepare(home,session,operation,service,qkey)
+                stage='WRITER_FINALIZER_HOLD'
                 writer_finalizer.hold(home,session,operation,service,qkey)
             real_call=session.api._call;counts={'attempted':0,'succeeded':0}
             def timeout_after_guardrail_patch(args):
@@ -96,34 +102,41 @@ def quiesce_writers(home,bundle,key,manifest,operation):
                 return real_call(args)
             session.api._call=timeout_after_guardrail_patch
             try:
+                stage='WRITER_GUARDRAIL_STOP'
                 try:quiesce.stop(home,session,operation,'guardrail',qkey)
                 except quiesce.QuiesceError:pass
                 else:raise ValueError
                 if counts!={'attempted':1,'succeeded':1}:raise ValueError
+                stage='WRITER_GUARDRAIL_CLASSIFY'
                 if quiesce.classify(home,session,operation,'guardrail',qkey)['state']!='stopped_spec_observed':raise ValueError
+                stage='WRITER_GUARDRAIL_RETRY'
                 try:quiesce.stop(home,session,operation,'guardrail',qkey)
                 except quiesce.QuiesceError:pass
                 else:raise ValueError
                 if counts!={'attempted':1,'succeeded':1}:raise ValueError
             finally:session.api._call=real_call
+            stage='WRITER_AGENT_STOP'
             quiesce.stop(home,session,operation,'agent',qkey)
             for service in quiesce.SERVICES:
-                deadline=time.monotonic()+180;stage='UNVERIFIED'
+                stage='WRITER_TERMINATION_UNVERIFIED'
+                deadline=time.monotonic()+180;termination_stage='UNVERIFIED'
                 while time.monotonic()<deadline:
                     try:
                         observed=writer_finalizer.observe(home,session,operation,service,qkey)
                         if observed.get('result')=='writer_termination_observed':break
                     except writer_finalizer.WriterFinalizerError as error:
-                        stage=error.stage;time.sleep(.5)
+                        termination_stage=error.stage;time.sleep(.5)
                 else:
                     allowed={'POD_FETCH','IDENTITY','CONTAINER','TERMINATED_STATE','EXIT_CODE','SIGNAL','REASON'}
                     raise PinnedCITestError('KUBE_WRITER_CI_UNVERIFIED',
-                                            'WRITER_TERMINATION_'+(stage if stage in allowed else 'UNVERIFIED'))
+                                            'WRITER_TERMINATION_'+(termination_stage if termination_stage in allowed else 'UNVERIFIED'))
                 if observed.get('audit_durability_verified') is not False or observed.get('safe_to_backup') is not False:
                     raise ValueError
+                stage='WRITER_FINALIZER_RELEASE'
                 released=writer_finalizer.release(home,session,operation,service,qkey)
                 if released!={'result':'writer_finalizer_release_requested','termination_verified':True,
                               'audit_durability_verified':False,'safe_to_backup':False}:raise ValueError
+            stage='WRITER_STOPPED_OBSERVE'
             deadline=time.monotonic()+180
             while time.monotonic()<deadline:
                 try:
@@ -135,5 +148,6 @@ def quiesce_writers(home,bundle,key,manifest,operation):
                         'old_writer_termination_observed':True,'unforced_deletion_verified':False,'audit_durability_verified':False,
                         'redis_isolated':False,'safe_to_backup':False,'safe_to_update':False}:raise ValueError
         return qkey
-    except PinnedCITestError:raise
-    except Exception:raise PinnedCITestError('KUBE_WRITER_CI_UNVERIFIED') from None
+    except PinnedCITestError as error:
+        raise PinnedCITestError('KUBE_WRITER_CI_UNVERIFIED',error.stage or stage) from None
+    except Exception:raise PinnedCITestError('KUBE_WRITER_CI_UNVERIFIED',stage) from None

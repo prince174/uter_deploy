@@ -53,6 +53,30 @@ class SignedNamespaceCITests(unittest.TestCase):
                       b'uterctl: ValueError: FENCE_RECOVERY_PATH_UNSAFE secret\n',b'\xff'):
             self.assertIsNone(ci._recovery_diagnostic(value))
 
+    def test_signed_inspection_reaches_redis_diagnostic_without_local_shadowing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);work=root/'work';home=work/'home';bundle=work/'bundle'
+            home.mkdir(parents=True);bundle.mkdir();publisher=work/'public.pem';publisher.write_text('fixture')
+            cfg={'name':'uter-upgrade-ci','backend':'compose','context':'default'}
+            site={'name':'uter-upgrade-ci','backend':'compose'};manifest={'version':'0.1.6'}
+            env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','RUNNER_OS':'Linux',
+                 'UTER_CI_STRICT_RUNNER':'true','BACKEND':'compose'}
+            def command(args,**kwargs):
+                if args[-2:]==['context','show']:return 'default'
+                if 'context' in args and 'inspect' in args:return '"unix:///var/run/docker.sock"'
+                if 'compose' in args:return 'a'*12
+                if 'inspect' in args:return '"'+('a'*64)+'"'
+                raise AssertionError('unexpected command')
+            with mock.patch.object(ci,'ROOT',root),mock.patch.dict(os.environ,env,clear=True), \
+                 mock.patch.object(ci.uterctl,'read',return_value=cfg),mock.patch.object(ci.uterctl,'site_config',return_value=site), \
+                 mock.patch.object(ci.uterctl,'verify',return_value=manifest), \
+                 mock.patch.object(ci.install,'commands',return_value=(['docker','compose','-f','fixture'],{})), \
+                 mock.patch.object(ci.install_recovery,'run_readonly',side_effect=command), \
+                 mock.patch.object(ci.diagnostic,'_redis_inspect',side_effect=RuntimeError('inspection reached')) as inspected:
+                with self.assertRaisesRegex(RuntimeError,'inspection reached'):
+                    ci._verify(home,bundle,publisher,manifest)
+                inspected.assert_called_once_with('a'*64)
+
     @unittest.skipUnless(os.name=='posix','POSIX lock check')
     def test_ci_stale_lock_requires_exact_fixture_and_killed_child_pid(self):
         env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','UTER_CI_STRICT_RUNNER':'true'}

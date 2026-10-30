@@ -471,8 +471,8 @@ def _verify(home, bundle, publisher, manifest):
     try:
         try:_ci_wait_recovery_child(recovery_pid)
         except SignedComposeFenceCheckFailure:
-            diagnostic=os.read(diagnostic_r,256).decode('ascii',errors='ignore')
-            if diagnostic in CRASH_DIAGNOSTICS.values():raise SignedComposeFenceCheckFailure(diagnostic) from None
+            diagnostic_code=os.read(diagnostic_r,256).decode('ascii',errors='ignore')
+            if diagnostic_code in CRASH_DIAGNOSTICS.values():raise SignedComposeFenceCheckFailure(diagnostic_code) from None
             raise
     finally:
         os.close(diagnostic_r)
