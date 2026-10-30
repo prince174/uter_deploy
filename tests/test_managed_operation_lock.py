@@ -115,6 +115,23 @@ class ManagedLockTests(unittest.TestCase):
             child=subprocess.run([sys.executable,'-c',code,str(self.home)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
             self.assertNotEqual(child.returncode,0);subject.assert_held(self.home)
 
+    def test_forked_child_does_not_inherit_owner_capability(self):
+        read_fd,write_fd=os.pipe()
+        with subject.locked(self.home):
+            child=os.fork()
+            if child==0:
+                os.close(read_fd)
+                try:subject.assert_held(self.home)
+                except subject.ManagedLockError:os.write(write_fd,b'R');os._exit(0)
+                os._exit(1)
+            os.close(write_fd)
+            try:
+                self.assertEqual(os.read(read_fd,1),b'R')
+                waited,status=os.waitpid(child,0)
+                self.assertEqual(waited,child);self.assertEqual(os.waitstatus_to_exitcode(status),0)
+                subject.assert_held(self.home)
+            finally:os.close(read_fd)
+
     def test_hosted_probe_uses_isolated_fixture_and_real_sigkill(self):
         import contextlib,io
         from scripts import managed_operation_lock_ci
