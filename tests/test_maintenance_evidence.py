@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts import maintenance_evidence as evidence, redis_fence_journal as journal
+from scripts import maintenance_evidence as evidence, maintenance_protocol as protocol, redis_fence_journal as journal
 
 
 class EvidenceTests(unittest.TestCase):
@@ -54,6 +54,35 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(evidence.EvidenceError):
             self.recorder.receipt('guardrail', 'instance', self.boot, self.receipt)
         self.assertFalse(list(self.home.glob('maintenance-receipt-*')))
+
+    def test_coordinator_records_both_receipts_before_completion(self):
+        inventory = {'agent': ('agent-id',), 'guardrail': ('guard-id',)}
+        boots = {'agent-id': 'e'*32, 'guard-id': 'f'*32}
+        states = dict.fromkeys(boots, 'running')
+        def request(service, instance, method, timeout):
+            if method == 'POST':
+                states[instance] = 'quiesced'; state = 'draining'
+            else:
+                state = states[instance]
+            data = dict(self.receipt, boot_id=boots[instance], state=state, safe_to_stop=state == 'quiesced',
+                        evidence=None)
+            if state == 'quiesced':
+                data['evidence'] = (self.receipt['evidence'] if service == 'agent' else
+                                    {'redis_closed': True, 'audit': {'last_seq': 1, 'last_hash': 'd'*64,
+                                                                     'fsynced': True, 'verified': True}})
+            return (202 if state == 'draining' else 200), json.dumps(data).encode()
+        receipts = protocol.collect(inventory, observe_inventory=lambda: dict(inventory), request=request,
+                                    record_intent=self.recorder.intent, record_receipt=self.recorder.receipt)
+        self.assertEqual(set(receipts), set(boots))
+        self.assertEqual(len(list(self.home.glob('maintenance-intent-*'))), 2)
+        self.assertEqual(len(list(self.home.glob('maintenance-receipt-*'))), 2)
+        self.assertEqual(journal.read(self.home)['phase'], 'prepared')
+
+    def test_partial_operation_cannot_replay_intent(self):
+        self.recorder.intent('agent', 'instance', self.boot)
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.intent('agent', 'instance', self.boot)
+        self.assertEqual(journal.read(self.home)['phase'], 'prepared')
 
 
 if __name__ == '__main__':
