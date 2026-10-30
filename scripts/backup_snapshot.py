@@ -88,6 +88,10 @@ def verify_redis_snapshot(writer, command, *, env=None):
         backup_crypto.decrypt_verify(writer.path/'redis.enc',writer.key,
             backup_store.aad(writer.manifest['id'],'redis'),metadata,process.stdin)
         process.stdin.close()
+        # The timer callback may call poll() and reap the child. Join it before
+        # wait() can reap the same child and permit its PID to be reused.
+        timer.cancel()
+        timer.join()
         if process.wait(timeout=RDB_EXIT_TIMEOUT) != 0: raise ValueError('Redis snapshot failed structural validation')
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('Redis snapshot validation failed or timed out') from None

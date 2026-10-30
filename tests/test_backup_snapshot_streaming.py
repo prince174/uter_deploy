@@ -77,6 +77,60 @@ class StreamingSnapshotTests(unittest.TestCase):
                 backup_snapshot.verify_redis_snapshot(self.writer, checker)
         self.assertLess(time.monotonic() - started, 5)
 
+    def test_timer_is_joined_before_child_can_be_reaped_on_success_or_failure(self):
+        for fail_decryption in (False, True):
+            events = []
+
+            class Timer:
+                def __init__(self, delay, callback):
+                    self.joined = False
+                def start(self): events.append('timer-start')
+                def cancel(self): events.append('timer-cancel')
+                def join(self):
+                    self.joined = True
+                    events.append('timer-join')
+
+            class Process:
+                def __init__(self):
+                    self.stdin = io.BytesIO()
+                    self.returncode = None
+                def poll(self):
+                    self.assert_timer_joined()
+                    events.append('poll')
+                    return self.returncode
+                def kill(self):
+                    self.assert_timer_joined()
+                    events.append('kill')
+                    self.returncode = -9
+                def wait(self, timeout=None):
+                    self.assert_timer_joined()
+                    events.append('wait')
+                    if self.returncode is None:
+                        self.returncode = 0
+                    return self.returncode
+                def assert_timer_joined(self):
+                    self_test.assertTrue(timer.joined, 'process reaped or signalled before timer callback joined')
+
+            self_test = self
+            timer = Timer(0, None)
+            process = Process()
+            def decrypt(*args):
+                if fail_decryption:
+                    raise ValueError('synthetic decryption failure')
+                args[-1].write(b'fixture')
+            with self.subTest(fail_decryption=fail_decryption), \
+                    patch.object(backup_snapshot.threading, 'Timer', return_value=timer), \
+                    patch.object(backup_snapshot.subprocess, 'Popen', return_value=process), \
+                    patch.object(backup_snapshot.backup_crypto, 'decrypt_verify', side_effect=decrypt):
+                if fail_decryption:
+                    with self.assertRaisesRegex(ValueError, 'synthetic decryption failure'):
+                        backup_snapshot.verify_redis_snapshot(self.writer, ['checker'])
+                else:
+                    backup_snapshot.verify_redis_snapshot(self.writer, ['checker'])
+            self.assertLess(events.index('timer-join'), events.index('wait'))
+            self.assertLess(events.index('timer-join'), events.index('poll'))
+            self.assertTrue(process.stdin.closed)
+
     def test_limit_refuses_before_starting_checker(self):
         self.writer.manifest['files']['redis']['plaintext_bytes'] = backup_snapshot.RDB_MAX_BYTES + 1
         with patch.object(backup_snapshot.subprocess, 'Popen') as popen:
