@@ -39,7 +39,7 @@ class SnapshotTests(unittest.TestCase):
 
     def test_resume_refuses_any_fence_marker_before_touching_either_backend(self):
         for backend,kind,marker_name in itertools.product(('compose','helm'),('file','dangling_symlink'),
-                                                            ('redis-fence-operation.json','compose-fence-finalize-anchor.json')):
+                                                            ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json')):
             with self.subTest(backend=backend,kind=kind,marker_name=marker_name):
                 marker=self.home/marker_name
                 if kind=='file':marker.write_text('invalid',encoding='utf-8')
@@ -124,7 +124,7 @@ class SnapshotTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX symlink handling')
     def test_fence_journal_refuses_snapshot_before_workloads_change(self):
-        for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json'):
+        for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json'):
             with self.subTest(name=name):
                 marker=self.home/name;marker.symlink_to(self.home/'missing')
                 with patch.object(backup_snapshot.adopt_installation,'verify_live') as live, \

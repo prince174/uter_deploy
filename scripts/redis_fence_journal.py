@@ -13,12 +13,13 @@ import stat
 
 NAME = 'redis-fence-operation.json'
 FINALIZE_ANCHOR = 'compose-fence-finalize-anchor.json'
+UPDATE_INTENT = 'compose-fenced-update-intent.json'
 
 
 def blocks_mutation(directory):
     """Both names block; a dangling link or partial cleanup is never ignored."""
     directory=Path(directory)
-    return os.path.lexists(directory/NAME) or os.path.lexists(directory/FINALIZE_ANCHOR)
+    return any(os.path.lexists(directory/name) for name in (NAME,FINALIZE_ANCHOR,UPDATE_INTENT))
 
 
 PHASES = ('prepared', 'isolating', 'isolated', 'capturing', 'captured', 'snapshot_releasing', 'releasing', 'aborting', 'pre_capture_aborting', 'redis_released', 'writers_resuming', 'writers_resumed', 'finalizing', 'restored')

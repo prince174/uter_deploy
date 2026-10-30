@@ -181,7 +181,7 @@ def installation_metadata(home):
         raise BackupError('CONTROLLER_OPERATION_PENDING')
     if present(home / 'backup-operation.json'):
         raise BackupError('PREVIOUS_BACKUP_REQUIRES_INSPECTION')
-    if present(home / 'redis-fence-operation.json') or present(home / 'compose-fence-finalize-anchor.json'):
+    if any(present(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json')):
         raise BackupError('REDIS_FENCE_REQUIRES_INSPECTION')
     recovery = home / 'recovery-operation.json'
     if present(recovery) and safe_json(recovery).get('phase') != 'complete':

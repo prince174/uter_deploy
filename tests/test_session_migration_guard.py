@@ -123,7 +123,8 @@ class ControllerSessionGateTests(unittest.TestCase):
     def test_existing_fence_journal_blocks_controller_before_backup_or_deploy(self):
         before = (self.fx.home/'state.json').read_bytes()
         for dangling,marker_name in ((False,'redis-fence-operation.json'),(True,'redis-fence-operation.json'),
-                                     (False,'compose-fence-finalize-anchor.json'),(True,'compose-fence-finalize-anchor.json')):
+                                     (False,'compose-fence-finalize-anchor.json'),(True,'compose-fence-finalize-anchor.json'),
+                                     (False,'compose-fenced-update-intent.json'),(True,'compose-fenced-update-intent.json')):
             with self.subTest(dangling=dangling,marker_name=marker_name):
                 marker = self.fx.home/marker_name
                 if dangling:

@@ -307,7 +307,7 @@ def _fence_secret_inputs(home, backup_key_path):
 def _fence_current_record(home, bundle, publisher_key, allowed_phases):
     """Caller holds lock; bind journal to the exact signed installation."""
     from scripts import backup_installation, redis_fence_journal
-    if os.path.lexists(home/redis_fence_journal.FINALIZE_ANCHOR):
+    if any(os.path.lexists(home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT)):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
     state=backup_installation.safe_json(home/'state.json')
     if (state.get('adopted_installer') is not True or state.get('pending') is not None
@@ -488,7 +488,7 @@ def main(argv=None):
             raise ValueError('FENCE_RECOVERY_PATH_NOT_ABSOLUTE')
         _load_signed_fence_executor(args.executor_key)
         from scripts import redis_fence_journal
-        if os.path.lexists(args.home / redis_fence_journal.FINALIZE_ANCHOR):
+        if any(os.path.lexists(args.home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT)):
             raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         if args.command == "fence-recover-redis":
             recover_compose_redis_before_snapshot(args.home, args.bundle, args.key, args.backup_key)
@@ -522,6 +522,7 @@ def main(argv=None):
         else:
             result = {'journal': 'absent', 'finalize_anchor':'present' if anchor else 'absent',
                       'live_fence_verified': False}
+        result['update_intent'] = ('present' if os.path.lexists(home / redis_fence_journal.UPDATE_INTENT) else 'absent')
         print(json.dumps(result, sort_keys=True))
         print('Journal observation only; Redis and workloads were not inspected.')
         return
@@ -570,7 +571,7 @@ def main(argv=None):
         # A fence operation can have changed Redis connectivity without
         # reaching a recoverable state. Never let a later managed mutation
         # proceed merely because the controller lock has been released.
-        if os.path.lexists(home / 'redis-fence-operation.json') or os.path.lexists(home / 'compose-fence-finalize-anchor.json'):
+        if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json')):
             raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         # Re-read after acquiring the lock to reject stale concurrent operations.
         current_state = read(state_path) if state_path.exists() else {"current": None, "previous": None, "pending": None}

@@ -66,6 +66,12 @@ for _prefix,_suffixes in (
     for _suffix in _suffixes:
         _name=_prefix+'_'+_suffix
         START_DIAGNOSTICS[_name]='COMPOSE_START_CI_'+_name
+for _stage in ('SIGNED_LIVE','WRITER_IDENTITIES','REDIS_INSPECT','PLAN_VALIDATE','CONFIG',
+               'STATE','NETWORK','PEERS','REINSPECT','BUNDLE_HASH'):
+    for _code in ('ERROR','KEY_ERROR','TYPE_ERROR',*compose_fence_start._OBSERVE_DIAGNOSTIC_CODES,
+                  *compose_fence_start._OBSERVE_ADAPTER_CODES):
+        _name='FENCE_START_OBSERVE_'+_stage+'_'+_code
+        START_DIAGNOSTICS[_name]='COMPOSE_START_CI_'+_name
 CRASH_DIAGNOSTICS={name:'COMPOSE_CRASH_CI_'+name for name in (
     'COMMAND','COMMAND_TIMEOUT','LOCK','JOURNAL','SIGNED','READ','ENDPOINT','DELETE',
     'PLAN','CHECKPOINT','ORIGIN','CLEANUP',

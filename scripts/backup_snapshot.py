@@ -234,7 +234,7 @@ def _require_legacy_operation_lock(home):
 def resume_writers(home, cfg, site, current):
     # Do not restart writers while a Redis isolation operation is unresolved.
     # The caller must hold the same controller lock as fence operations.
-    if os.path.lexists(Path(home)/'redis-fence-operation.json') or os.path.lexists(Path(home)/'compose-fence-finalize-anchor.json'):
+    if any(os.path.lexists(Path(home)/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json')):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
     _require_legacy_operation_lock(home)
     from scripts import install as installer
@@ -261,7 +261,7 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
     from scripts import install as installer
     import uterctl
     home=Path(home);journal=home/'backup-operation.json'
-    if os.path.lexists(home/'redis-fence-operation.json') or os.path.lexists(home/'compose-fence-finalize-anchor.json'):
+    if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json')):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
     _require_legacy_operation_lock(home)
     if journal.exists(): raise ValueError('Previous backup operation requires inspection')

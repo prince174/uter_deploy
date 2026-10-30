@@ -41,6 +41,8 @@ class SignedNamespaceCITests(unittest.TestCase):
         self.assertEqual(ci._start_diagnostic(valid),ci.START_DIAGNOSTICS['FENCE_START_WRITER_EXIT_UNVERIFIED'])
         detail=b'uterctl: StartError: FENCE_START_RECHECK_PLAN_ENDPOINT_ID\n'
         self.assertEqual(ci._start_diagnostic(detail),ci.START_DIAGNOSTICS['FENCE_START_RECHECK_PLAN_ENDPOINT_ID'])
+        detail=b'uterctl: StartError: FENCE_START_OBSERVE_STATE_COMPOSE_FENCE_REDIS_CHANGED\n'
+        self.assertEqual(ci._start_diagnostic(detail),ci.START_DIAGNOSTICS['FENCE_START_OBSERVE_STATE_COMPOSE_FENCE_REDIS_CHANGED'])
         for raw in (b'uterctl: StartError: FENCE_START_WRITER_EXIT_UNVERIFIED secret\n',
                     b'uterctl: StartError: FENCE_START_UNKNOWN\n',
                     b'secret\n'+valid,valid+b'secret\n',b'\xff'):

@@ -48,7 +48,7 @@ class ManagedUpdateTests(unittest.TestCase):
         self.assertFalse((self.home/'state.json').exists())
 
     def test_incomplete_redis_fence_blocks_before_key_creation(self):
-        for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json'):
+        for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json'):
             with self.subTest(name=name):
                 marker=self.home/name;marker.symlink_to(self.home/'missing')
                 with patch('scripts.update_installation.adopt_managed.adopt') as adopt:

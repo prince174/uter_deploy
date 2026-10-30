@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import stat
@@ -22,6 +23,36 @@ NAME='compose-fence-start-intent.json'
 
 
 class StartError(ValueError): pass
+
+
+_OBSERVE_DIAGNOSTIC_CODES=frozenset(('COMPOSE_DIAGNOSTIC_DAEMON_INVALID','COMPOSE_DIAGNOSTIC_DATA_VOLUME_INVALID',
+    'COMPOSE_DIAGNOSTIC_FAILED','COMPOSE_DIAGNOSTIC_IDENTITY_INVALID','COMPOSE_DIAGNOSTIC_IMAGE_CHANGED',
+    'COMPOSE_DIAGNOSTIC_INSTALLED_BUNDLE_MISMATCH','COMPOSE_DIAGNOSTIC_NETWORK_INVALID',
+    'COMPOSE_DIAGNOSTIC_QUERY_FAILED','COMPOSE_DIAGNOSTIC_REDIS_INVALID','COMPOSE_DIAGNOSTIC_RESPONSE_INVALID',
+    'COMPOSE_DIAGNOSTIC_STATE_CHANGED','COMPOSE_DIAGNOSTIC_VOLUME_INVALID'))
+_OBSERVE_ADAPTER_CODES=frozenset(('COMPOSE_FENCE_AOF_UNHEALTHY','COMPOSE_FENCE_CONFIG_UNSUPPORTED',
+    'COMPOSE_FENCE_DOCKER_UNCERTAIN','COMPOSE_FENCE_EXECUTABLE_UNVERIFIED','COMPOSE_FENCE_IDENTITY_INVALID',
+    'COMPOSE_FENCE_INSPECTION_FAILED','COMPOSE_FENCE_LOCK_INVALID','COMPOSE_FENCE_MODULES_UNSUPPORTED',
+    'COMPOSE_FENCE_MOUNTS_UNSUPPORTED','COMPOSE_FENCE_NETWORK_CHANGED','COMPOSE_FENCE_PEERS_UNKNOWN',
+    'COMPOSE_FENCE_PLAN_INVALID','COMPOSE_FENCE_REDIS_CHANGED','COMPOSE_FENCE_REPLICATION_UNSUPPORTED',
+    'COMPOSE_FENCE_SHARED_NAMESPACE','COMPOSE_FENCE_SHARED_VOLUME','COMPOSE_FENCE_UNIX_SOCKET_UNSUPPORTED',
+    'COMPOSE_FENCE_VOLUME_CHANGED'))
+
+
+@contextmanager
+def _observe_stage(stage):
+    """Emit only a fixed category, never exception contents or external output."""
+    try:yield
+    except StartError:raise
+    except Exception as error:
+        code='ERROR'
+        if isinstance(error,diagnostic.ComposeDiagnosticError) and str(error) in _OBSERVE_DIAGNOSTIC_CODES:
+            code=str(error)
+        elif isinstance(error,fence.compose.ComposeFenceAdapterError) and str(error) in _OBSERVE_ADAPTER_CODES:
+            code=str(error)
+        elif isinstance(error,KeyError):code='KEY_ERROR'
+        elif isinstance(error,TypeError):code='TYPE_ERROR'
+        raise StartError('FENCE_START_OBSERVE_'+stage+'_'+code) from None
 
 
 def _canonical(value):
@@ -197,41 +228,52 @@ def _writers_stopped(writers,site):
 
 def _observe(home,bundle,publisher,key,adapter):
     """Read-only preflight; every assumption is rechecked before writer stop."""
-    diagnostic.inspect_installation(home,bundle,publisher)
-    manifest=uterctl.verify(bundle,publisher);cfg=uterctl.read(Path(home)/'install.json')
-    command,env=install.commands(home,cfg)
-    command[command.index('-f')+1]=str(Path(home)/'releases'/manifest['version']/'compose/compose.yaml')
-    writers=_writers(command,env,cfg['name'],manifest)
-    short=diagnostic._read(command+['ps','-q','redis'],env).strip()
-    if not re.fullmatch(r'[0-9a-f]{12,64}',short):raise StartError('FENCE_START_REDIS_UNVERIFIED')
-    redis=diagnostic._json(diagnostic._docker('inspect','--format','{{json .Id}}',short))
-    if not isinstance(redis,str) or not re.fullmatch(r'[0-9a-f]{64}',redis):
-        raise StartError('FENCE_START_REDIS_UNVERIFIED')
-    live=diagnostic._redis_inspect(redis)
-    netid,_=diagnostic._require_redis(live,cfg['name'],redis,manifest['images']['redis'])
-    endpoint=live['networks'][cfg['name']+'_backend']
-    ipam=diagnostic._json(diagnostic._docker('network','inspect','--format','{{json .IPAM}}',netid))
-    if not isinstance(ipam,dict) or len(ipam.get('Config',[]))!=1:raise StartError('FENCE_START_NETWORK_UNVERIFIED')
-    config=ipam['Config'][0]
-    plan={'schema':1,'operation':plans.new_operation(),'site':cfg['name'],'container_id':redis,
-          'started_at':live['started'],'restart_count':live['restart_count'],'image_ref':manifest['images']['redis'],
-          'image_config_id':live['image_id'],'restart_policy':'unless-stopped','volume_name':cfg['name']+'_redis-data',
-          'volume_driver':'local','network_id':netid,'network_name':cfg['name']+'_backend','network_driver':'bridge',
-          'network_scope':'local','network_internal':True,'network_subnet':config['Subnet'],
-          'network_gateway':config['Gateway'],'endpoint_id':endpoint['EndpointID'],
-          'endpoint_ipv4':endpoint['IPAddress'],'endpoint_static_ipv4':None,'endpoint_aliases':endpoint['Aliases'],
-          'endpoint_mac':endpoint['MacAddress'].lower(),'ipv6_enabled':False,'network_options':{},'endpoint_driver_options':{}}
-    plans.validate(plan)
+    with _observe_stage('SIGNED_LIVE'):
+        diagnostic.inspect_installation(home,bundle,publisher)
+        manifest=uterctl.verify(bundle,publisher);cfg=uterctl.read(Path(home)/'install.json')
+        command,env=install.commands(home,cfg)
+        command[command.index('-f')+1]=str(Path(home)/'releases'/manifest['version']/'compose/compose.yaml')
+    with _observe_stage('WRITER_IDENTITIES'):
+        writers=_writers(command,env,cfg['name'],manifest)
+    with _observe_stage('REDIS_INSPECT'):
+        short=diagnostic._read(command+['ps','-q','redis'],env).strip()
+        if not re.fullmatch(r'[0-9a-f]{12,64}',short):raise StartError('FENCE_START_REDIS_UNVERIFIED')
+        redis=diagnostic._json(diagnostic._docker('inspect','--format','{{json .Id}}',short))
+        if not isinstance(redis,str) or not re.fullmatch(r'[0-9a-f]{64}',redis):
+            raise StartError('FENCE_START_REDIS_UNVERIFIED')
+        live=diagnostic._redis_inspect(redis)
+        netid,_=diagnostic._require_redis(live,cfg['name'],redis,manifest['images']['redis'])
+        endpoint=live['networks'][cfg['name']+'_backend']
+    with _observe_stage('PLAN_VALIDATE'):
+        ipam=diagnostic._json(diagnostic._docker('network','inspect','--format','{{json .IPAM}}',netid))
+        if not isinstance(ipam,dict) or len(ipam.get('Config',[]))!=1:raise StartError('FENCE_START_NETWORK_UNVERIFIED')
+        config=ipam['Config'][0]
+        plan={'schema':1,'operation':plans.new_operation(),'site':cfg['name'],'container_id':redis,
+              'started_at':live['started'],'restart_count':live['restart_count'],'image_ref':manifest['images']['redis'],
+              'image_config_id':live['image_id'],'restart_policy':'unless-stopped','volume_name':cfg['name']+'_redis-data',
+              'volume_driver':'local','network_id':netid,'network_name':cfg['name']+'_backend','network_driver':'bridge',
+              'network_scope':'local','network_internal':True,'network_subnet':config['Subnet'],
+              'network_gateway':config['Gateway'],'endpoint_id':endpoint['EndpointID'],
+              'endpoint_ipv4':endpoint['IPAddress'],'endpoint_static_ipv4':None,'endpoint_aliases':endpoint['Aliases'],
+              'endpoint_mac':endpoint['MacAddress'].lower(),'ipv6_enabled':False,'network_options':{},'endpoint_driver_options':{}}
+        plans.validate(plan)
     # These checks validate process, mounts, config, shared namespaces/volume
     # and exact network fields before stopping an otherwise working service.
-    adapter._lock();adapter._config(Path(home)/'releases'/manifest['version'])
-    adapter._state(plan,detached=False,restart='unless-stopped',original_endpoint=True)
-    adapter._network_and_volume(plan);adapter._peers(plan)
-    again=diagnostic._redis_inspect(redis)
-    if again!=live:raise StartError(_redis_change(live,again))
-    other_writers=_writers(command,env,cfg['name'],manifest)
-    if other_writers!=writers:raise StartError(_writers_change(writers,other_writers,'FENCE_START_OBSERVE_WRITERS'))
-    return plan,writers,hashlib.sha256((Path(bundle)/'checksums.json').read_bytes()).hexdigest()
+    with _observe_stage('CONFIG'):
+        adapter._lock();adapter._config(Path(home)/'releases'/manifest['version'])
+    with _observe_stage('STATE'):
+        adapter._state(plan,detached=False,restart='unless-stopped',original_endpoint=True)
+    with _observe_stage('NETWORK'):
+        adapter._network_and_volume(plan)
+    with _observe_stage('PEERS'):
+        adapter._peers(plan)
+    with _observe_stage('REINSPECT'):
+        again=diagnostic._redis_inspect(redis)
+        if again!=live:raise StartError(_redis_change(live,again))
+        other_writers=_writers(command,env,cfg['name'],manifest)
+        if other_writers!=writers:raise StartError(_writers_change(writers,other_writers,'FENCE_START_OBSERVE_WRITERS'))
+    with _observe_stage('BUNDLE_HASH'):
+        return plan,writers,hashlib.sha256((Path(bundle)/'checksums.json').read_bytes()).hexdigest()
 
 
 def start(home,bundle,publisher,key):
@@ -240,7 +282,7 @@ def start(home,bundle,publisher,key):
     phase='PRECHECK'
     try:
         adapter._lock()
-        for name in (journal.NAME,journal.FINALIZE_ANCHOR,plans.NAME,NAME,'backup-operation.json','session-migration-block.json'):
+        for name in (journal.NAME,journal.FINALIZE_ANCHOR,journal.UPDATE_INTENT,plans.NAME,NAME,'backup-operation.json','session-migration-block.json'):
             if os.path.lexists(Path(home)/name):raise StartError('FENCE_START_PRIOR_OPERATION')
         plan,writers,bundle_hash=_observe(home,bundle,publisher,key,adapter)
         phase='PLAN'

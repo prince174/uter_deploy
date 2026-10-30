@@ -15,6 +15,23 @@ from scripts import backup_crypto
 from tests import test_controller as fixtures
 
 
+class ObserveStageCategoryTests(unittest.TestCase):
+    def test_only_fixed_exception_categories_are_exposed(self):
+        cases=[(start.diagnostic.ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_QUERY_FAILED'),
+                'COMPOSE_DIAGNOSTIC_QUERY_FAILED'),
+               (start.fence.compose.ComposeFenceAdapterError('COMPOSE_FENCE_REDIS_CHANGED'),
+                'COMPOSE_FENCE_REDIS_CHANGED'),
+               (start.diagnostic.ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_TOKEN_secret'),'ERROR'),
+               (KeyError('secret'),'KEY_ERROR'),(TypeError('secret'),'TYPE_ERROR'),
+               (RuntimeError('secret'),'ERROR')]
+        for error,category in cases:
+            with self.subTest(category=category):
+                with self.assertRaises(start.StartError) as result:
+                    with start._observe_stage('SIGNED_LIVE'):raise error
+                self.assertEqual(str(result.exception),'FENCE_START_OBSERVE_SIGNED_LIVE_'+category)
+                self.assertNotIn('secret',str(result.exception))
+
+
 @unittest.skipUnless(os.name=='posix' and hasattr(os,'O_NOFOLLOW'),'requires POSIX private files')
 class ComposeFenceStartTests(unittest.TestCase):
     def setUp(self):

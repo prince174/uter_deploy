@@ -113,7 +113,7 @@ def adopt(home, bundle, key, smoke, *, prepare_smoke=None):
             'namespace': cfg['name'], 'context': context, 'port': cfg['port'],
             'guardrail_cpus': cfg.get('guardrail_cpus', 4), 'smoke_command': smoke}
     with uterctl.locked(home):
-        if os.path.lexists(home/'redis-fence-operation.json') or os.path.lexists(home/'compose-fence-finalize-anchor.json'):
+        if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json')):
             raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         smoke_files = []
         if prepare_smoke is not None:
