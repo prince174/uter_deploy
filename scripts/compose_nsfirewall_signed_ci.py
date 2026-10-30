@@ -20,7 +20,7 @@ import sys
 
 import uterctl
 from scripts import (backup_snapshot, backup_store, compose_nsfirewall_adapter as fence,
-                     compose_nsfirewall_protocol as protocol, compose_fence_recovery_plan as plans,
+                     compose_nsfirewall_protocol as protocol, compose_fence_recovery_plan as plans, compose_fence_start,
                      compose_redis_diagnostic as diagnostic, install, install_recovery,
                      redis_fence_journal as journal, compose_nsfirewall_checkpoint as checkpoint,
                      compose_snapshot_only as snapshot_only, snapshot_only_receipts as snapshot_receipts)
@@ -475,21 +475,31 @@ def _verify(home, bundle, publisher, manifest):
     PHASE='SNAPSHOT_CLI_SETUP'
     with tempfile.TemporaryDirectory(prefix='snapshot-cli-ci-',dir=ROOT/'work') as temp:
         executor,executor_public=_ci_signed_executor(bundle,temp)
-        destination=Path(temp)/'backup';snap_key=os.urandom(32);snap_operation=plans.new_operation()
-        snap_plan=dict(plan,operation=snap_operation);keyfile=Path(temp)/'backup.key'
+        destination=Path(temp)/'backup';snap_key=os.urandom(32);keyfile=Path(temp)/'backup.key'
         fd=os.open(keyfile,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'wb') as output:
             os.fchmod(output.fileno(),0o600);output.write(snap_key);output.flush();os.fsync(output.fileno())
         with uterctl.locked(home):
-            checked(cmd+['stop','guardrail','agent'],supplied_env=runenv)
-            digest=plans.create(home,snap_plan,snap_key)
-            entry=journal.create(home,backend='compose',site=cfg['name'],resource=redis_id,
-                                 plan_sha256=digest,operation=snap_operation)
             owned=fence.Adapter(home,bundle,publisher,snap_key)
             try:
-                if owned._redis(snap_plan,'SET',KEY,VALUE)!='OK':raise ValueError
-                protocol.isolate(home,snap_operation,owned)
+                # Synthetic data is inserted before the command stops writers.
+                if owned._redis(plan,'SET',KEY,VALUE)!='OK':raise ValueError
             finally:owned.close()
+        PHASE='SNAPSHOT_CLI_START'
+        process=subprocess.run([sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-start-redis',
+                                '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
+                                '--backup-key',str(keyfile),'--executor-key',str(executor_public)],cwd=executor,
+                               env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                                    'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
+        if process.returncode:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_START_COMMAND')
+        with uterctl.locked(home):
+            entry=journal.read(home)
+            if entry['phase']!='isolated' or entry['site']!=cfg['name'] or entry['resource']!=redis_id:raise ValueError
+            snap_operation=entry['operation']
+            snap_plan=plans.read(home,snap_key,entry['plan_sha256'],operation=snap_operation,site=cfg['name'],resource=redis_id)
+            product_hash=snapshot_only._hash((bundle/'checksums.json').read_bytes())
+            compose_fence_start.read_intent(home,snap_key,entry,product_hash)
         PHASE='SNAPSHOT_CLI_CAPTURE'
         process=subprocess.run([sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-backup-redis',
                                 '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
@@ -514,15 +524,17 @@ def _verify(home, bundle, publisher, manifest):
                 if owned._redis(snap_plan,'DEL',KEY)!='1':raise ValueError
                 plans.read(home,snap_key,entry['plan_sha256'],operation=snap_operation,site=cfg['name'],resource=redis_id)
                 checkpoint.read(home,entry,snap_key);snapshot_receipts.read_decision(home,snap_key)
+                compose_fence_start.read_intent(home,snap_key,entry,product_hash)
                 for name in (journal.NAME,plans.NAME,checkpoint.NAME,snapshot_receipts.DECISION,
-                             snapshot_receipts.RECEIPT,snapshot_receipts.DESCRIPTOR):(home/name).unlink()
+                             snapshot_receipts.RECEIPT,snapshot_receipts.DESCRIPTOR,compose_fence_start.NAME):(home/name).unlink()
             finally:owned.close()
         PHASE='SNAPSHOT_CLI_RESUME'
         with uterctl.locked(home):backup_snapshot.resume_writers(home,cfg,site,manifest)
     return {'signed_016_firewall_fence':'pass','no_capture_release':'pass',
             'snapshot_under_firewall':'pass','release_after_capture_blocked':'pass',
             'unchanged_endpoint':'pass','ci_only_cleanup':'pass',
-            'pre_capture_sigkill_recovery':'pass','snapshot_sigkill_recovery':'pass','signed_snapshot_cli':'pass',
+            'pre_capture_sigkill_recovery':'pass','snapshot_sigkill_recovery':'pass',
+            'signed_fence_start_cli':'pass','signed_snapshot_cli':'pass',
             'production_recovery_available':False}
 
 
