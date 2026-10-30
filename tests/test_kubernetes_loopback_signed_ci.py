@@ -79,5 +79,28 @@ class KubernetesLoopbackTests(unittest.TestCase):
                 experiment.verify('/fixture','/bundle','/key',{})
         self.assertNotIn('secret',str(error.exception))
 
+    def test_ci_kubectl_bounds_watches_and_keeps_request_window(self):
+        env={'UTER_CI_STRICT_RUNNER':'true','UTER_CI_VERIFY_KUBE_LOOPBACK':'true','BACKEND':'kubernetes'}
+        with patch.dict(os.environ,env,clear=True),patch.object(experiment.adopt_backup_ci,'runner_guard'), \
+             patch.object(experiment.install_recovery,'run_readonly',return_value='synthetic\n') as run:
+            self.assertEqual(experiment._ci_kube_command(['get','pods']), 'synthetic')
+            self.assertIn('--request-timeout=20s',run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs['timeout'],30)
+            self.assertEqual(experiment._ci_kube_command(['rollout','status','deployment/x','--timeout=180s'],timeout=210),'synthetic')
+            self.assertIn('--request-timeout=0',run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs['timeout'],210)
+            self.assertEqual(experiment._ci_kube_command(['rollout','status','deployment/x','--timeout=300s'],timeout=330),'synthetic')
+            self.assertEqual(run.call_args.kwargs['timeout'],330)
+        with self.assertRaisesRegex(experiment.KubernetesLoopbackCIError,'KUBE_LOOPBACK_CI_ARGUMENT'):
+            experiment._ci_kube_command(['get','pods'],timeout=999)
+
+    def test_ci_kubectl_runner_errors_are_sanitized(self):
+        env={'UTER_CI_STRICT_RUNNER':'true','UTER_CI_VERIFY_KUBE_LOOPBACK':'true','BACKEND':'kubernetes'}
+        with patch.dict(os.environ,env,clear=True),patch.object(experiment.adopt_backup_ci,'runner_guard'), \
+             patch.object(experiment.install_recovery,'run_readonly',side_effect=ValueError('secret details')):
+            with self.assertRaisesRegex(experiment.KubernetesLoopbackCIError,'^KUBE_LOOPBACK_CI_COMMAND$') as error:
+                experiment._ci_kube_command(['get','pods'])
+            self.assertNotIn('secret',str(error.exception))
+
 
 if __name__=='__main__':unittest.main()

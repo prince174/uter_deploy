@@ -19,7 +19,7 @@ from scripts import (adopt_backup_ci, kubernetes_fence_finalizer as finalizer,
                      kubernetes_redis_identity as identity,
                      kubernetes_redis_identity_ci as snapshot,
                      kubernetes_redis_shutdown as shutdown,
-                     backup_snapshot, backup_store, redis_fence_journal as journal)
+                     backup_snapshot, backup_store, install_recovery, redis_fence_journal as journal)
 
 ROOT=Path(__file__).resolve().parents[1]
 SITE=snapshot.SITE
@@ -50,6 +50,24 @@ print('CLOSED',flush=True)
 
 class KubernetesLoopbackCIError(ValueError):
     pass
+
+
+def _ci_kube_command(args, *, timeout=30):
+    """Bound CI kubectl watches without truncating their requested duration."""
+    if timeout not in (30,150,210,330):
+        raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_ARGUMENT')
+    request_timeout='20s' if timeout==30 else '0'
+    command=['kubectl','--context',CONTEXT,'--namespace',SITE,
+             '--request-timeout='+request_timeout,*args]
+    try:
+        adopt_backup_ci.runner_guard(os.environ, ROOT)
+        if (os.environ.get('UTER_CI_STRICT_RUNNER')!='true'
+                or os.environ.get('UTER_CI_VERIFY_KUBE_LOOPBACK')!='true'
+                or os.environ.get('BACKEND')!='kubernetes'):
+            raise ValueError
+        return install_recovery.run_readonly(command,timeout=timeout).strip()
+    except Exception:
+        raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_COMMAND') from None
 
 
 def guard(home,bundle,key,manifest):
@@ -145,7 +163,8 @@ def _verify(home,bundle,key,manifest):
     guard(home,bundle,key,manifest)
     home=Path(home).resolve(strict=True)
     api=finalizer.Kubectl(context=CONTEXT,namespace=SITE)
-    k=lambda *args: api._call(['--request-timeout=20s',*args]).decode('utf-8').strip()
+    def k(*args,timeout=30):
+        return _ci_kube_command(list(args),timeout=timeout)
     def redis(command):
         if command not in ('exists','write','read','delete','bind','aof'):
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_ARGUMENT')
@@ -163,7 +182,7 @@ def _verify(home,bundle,key,manifest):
             time.sleep(.5)
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_WRITERS')
     def rollout():
-        k('rollout','status','deployment/'+DEPLOYMENT,'--timeout=180s')
+        k('rollout','status','deployment/'+DEPLOYMENT,'--timeout=180s',timeout=210)
     with uterctl.locked(home):
         PHASE='FIXTURE'
         if redis('exists')!='0': raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_FIXTURE_EXISTS')
@@ -183,7 +202,7 @@ def _verify(home,bundle,key,manifest):
         k('run','uter-ci-loopback-probe','--image='+PYTHON_IMAGE,'--restart=Never',
           '--overrides='+json.dumps(probe_spec,separators=(',',':')))
         PHASE='CLIENT_READY'
-        k('wait','--for=condition=Ready','pod/uter-ci-loopback-probe','--timeout=180s')
+        k('wait','--for=condition=Ready','pod/uter-ci-loopback-probe','--timeout=180s',timeout=210)
         PHASE='CLIENT_EXEC'
         CLIENT_PROCESS=subprocess.Popen(['kubectl','--context',CONTEXT,'-n',SITE,'exec','-i',
                          'pod/uter-ci-loopback-probe','--','python','-u','-c',CLIENT_PROGRAM,ip],
@@ -273,7 +292,7 @@ def _verify(home,bundle,key,manifest):
         if redis('read')!=CI_VALUE or redis('delete')!='1':
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_DATA')
         PHASE='RECONNECT_PROBE'
-        k('delete','pod/uter-ci-loopback-probe','--wait=true','--timeout=120s')
+        k('delete','pod/uter-ci-loopback-probe','--wait=true','--timeout=120s',timeout=150)
         PHASE='RECONNECT_JOURNAL'
         saved=journal.read(home)
         if saved['operation']!=operation or saved['phase']!='isolating':
@@ -282,7 +301,7 @@ def _verify(home,bundle,key,manifest):
         PHASE='RECONNECT_WRITERS'
         k('scale','deployment/'+SITE+'-guardrail','deployment/'+SITE+'-agent','--replicas=1')
         for service in ('guardrail','agent'):
-            k('rollout','status','deployment/'+SITE+'-'+service,'--timeout=300s')
+            k('rollout','status','deployment/'+SITE+'-'+service,'--timeout=300s',timeout=330)
     return {'result':'signed_ci_loopback_exercised','production_fence':False,'safe_to_upgrade':False}
 
 
