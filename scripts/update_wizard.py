@@ -24,7 +24,7 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import uterctl
-from scripts import backup_installation as security, fetch_release
+from scripts import backup_installation as security, backup_store, fetch_release
 
 FINGERPRINT = re.compile(r'[0-9a-f]{64}\Z')
 NAME = re.compile(r'[a-z][a-z0-9-]{0,38}[a-z0-9]\Z')
@@ -53,6 +53,9 @@ MESSAGES = {
     'SIGNED_BUNDLE_CHANGED': 'Подписанный комплект изменился после проверки.',
     'BACKUP_KEY_STATE_CHANGED': 'Состояние файла ключа изменилось; обновление остановлено.',
     'SIGNED_UPDATE_FAILED_INSPECT_STATE': 'Обновление не завершилось. Проверьте состояние и журналы; автоматический откат не выполнялся.',
+    'SESSION_MIGRATION_AMBIGUOUS': 'Обновление остановлено: найдены сессии, владельца которых нельзя надёжно определить.',
+    'SESSION_MIGRATION_SCAN_FAILED': 'Обновление остановлено: не удалось безопасно проверить старые сессии.',
+    'SESSION_MIGRATION_FENCE_UNVERIFIED': 'Обновление остановлено: нельзя подтвердить отсутствие внешних записей в хранилище сессий.',
     'UPDATER_TIMEOUT_INSPECT_STATE': 'Прервано ожидание обновления. Проверьте состояние и журналы перед любыми действиями; операции Docker/Kubernetes могут продолжаться.',
     'UPDATER_OUTPUT_LIMIT_INSPECT_STATE': 'Обновление завершилось, но его вывод превысил предел. Проверьте состояние и журналы; не запускайте обновление повторно без проверки.',
     'UPDATER_OUTPUT_UNAVAILABLE_INSPECT_STATE': 'Не удалось безопасно получить результат обновления. Проверьте состояние и журналы.',
@@ -72,6 +75,85 @@ MESSAGES = {
 
 class WizardError(Exception):
     """Fixed categories avoid exposing external outputs or credentials."""
+
+
+class SessionMigrationBlocked(WizardError):
+    """A protected marker describes a block and separately verified backup status."""
+
+    def __init__(self, reason, old_version, new_version, backup, backup_id, backup_verified=False):
+        super().__init__(reason)
+        self.old_version = old_version
+        self.new_version = new_version
+        self.backup = backup
+        self.backup_id = backup_id
+        self.backup_verified = backup_verified
+
+
+def fresh_session_block(plan, *, absent_before):
+    """Accept only a newly-created, protected marker for this signed transition.
+
+    The marker is a local report. Backup verification is performed separately.
+    Never include arbitrary error text, key values, or record contents in output.
+    """
+    expected_gate = {'schema': 1, 'from_epoch': 1, 'to_epoch': 2,
+                     'policy': 'block_unverified_sessions'}
+    if (not absent_before or plan['new'].get('session_identity_gate') != expected_gate
+            or plan['old'].get('data_epoch') != 1 or plan['new'].get('data_epoch') != 2):
+        return None
+    marker = plan['home'] / 'session-migration-block.json'
+    try:
+        report = security.safe_json(marker, private=True)
+        if set(report) != {'schema', 'reason', 'old_version', 'new_version', 'backup_id', 'backup_path'}:
+            return None
+        reason = report['reason']
+        if (type(report['schema']) is not int or report['schema'] != 1
+                or reason not in ('SESSION_MIGRATION_AMBIGUOUS', 'SESSION_MIGRATION_SCAN_FAILED',
+                                  'SESSION_MIGRATION_FENCE_UNVERIFIED')
+                or report['old_version'] != plan['old']['version']
+                or report['new_version'] != plan['new']['version']
+                or not isinstance(report['backup_id'], str)
+                or not re.fullmatch(r'[0-9a-f]{32}', report['backup_id'])
+                or not isinstance(report['backup_path'], str)
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in report['backup_path'])):
+            return None
+        backup = Path(report['backup_path'])
+        root = security.private_directory(plan['backup_root'])
+        if not backup.is_absolute() or backup.parent != root or backup == root:
+            return None
+        backup = security.private_directory(backup)
+        # Historical controller state is often 0644 inside an owner-only home;
+        # it is not a secret, but must still be owner-controlled and immutable
+        # to other users. The marker and backup manifest remain private.
+        state = security.safe_json(plan['home'] / 'state.json')
+        if (state.get('adopted_installer') is not True or state.get('pending') is not None
+                or state.get('current') != plan['old']
+                or security.present(plan['home'] / 'backup-operation.json')):
+            return None
+        # Check only basic identity here. Cryptographic backup verification and
+        # a trial restore are separate steps and are never claimed by the UI.
+        envelope = security.safe_json(backup / 'manifest.json', private=True)
+        manifest = envelope.get('manifest')
+        if (not isinstance(manifest, dict) or manifest.get('id') != report['backup_id']
+                or manifest.get('version') != plan['old']['version']):
+            return None
+        verified = False
+        try:
+            key = security.safe_file(plan['backup_key'], private=True, limit=32)
+            if len(key) != 32:
+                raise ValueError
+            _, site, current = security.installation_metadata(plan['home'])
+            if current != plan['old']:
+                raise ValueError
+            authenticated = backup_store.verify_set(backup, key, home=plan['home'], site=site,
+                                                    version=plan['old']['version'])
+            verified = authenticated['id'] == report['backup_id']
+        except Exception:
+            # Never claim success if key, identity, MAC or any component failed.
+            verified = False
+        return SessionMigrationBlocked(reason, report['old_version'], report['new_version'],
+                                       str(backup), report['backup_id'], verified)
+    except Exception:
+        return None
 
 
 def secure_bundle(path):
@@ -307,7 +389,17 @@ def execute(plan):
         argv.append('--create-backup-key')
     if plan['offline']:
         argv.append('--offline')
-    output = run_updater(argv)
+    marker_absent = not security.present(plan['home'] / 'session-migration-block.json')
+    try:
+        output = run_updater(argv)
+    except WizardError as error:
+        # Timeouts and interruptions are inconclusive: a live updater may still
+        # be changing state, so never interpret any marker for those outcomes.
+        if str(error) == 'SIGNED_UPDATE_FAILED_INSPECT_STATE':
+            blocked = fresh_session_block(plan, absent_before=marker_absent)
+            if blocked is not None:
+                raise blocked from None
+        raise
     try:
         if len(output) > 8 * 1024 * 1024 or output.count('{') > 4096:
             raise ValueError
@@ -343,9 +435,20 @@ def display_plan(plan):
     print('Каталог копий: ' + str(plan['backup_root']))
     print('Файл ключа копии: ' + str(plan['backup_key']) + (' (будет создан)' if plan['create_key'] else ' (существующий)'))
     print('Компоненты будут временно остановлены. Внешние записи в Redis и аудит остановите заранее.')
+    if plan['new'].get('session_identity_gate'):
+        print('Проверка истории сессий выполняется во время обновления, после резервного копирования; проверка плана её не проводит.')
+        print('При неоднозначной истории, ошибке проверки или неподтверждённой остановке внешних записей обновление будет заблокировано.')
     if plan['offline']:
         print('Offline запрещает скачивание образов при обновлении; LLM и другие зависимости могут использовать сеть.')
     print('Копию и её ключ необходимо сохранить отдельно. Восстановление и переключение трафика выполняются отдельно.')
+
+
+def check_only_result(plan):
+    result = {'result': 'checked', 'old_version': plan['old']['version'],
+              'new_version': plan['new']['version']}
+    if plan['new'].get('session_identity_gate'):
+        result.update(session_runtime_check='not_run', external_writer_fence='not_verified')
+    return result
 
 
 def main(argv=None):
@@ -431,8 +534,7 @@ def main(argv=None):
         display_plan(plan)
     if args.check_only:
         if args.json:
-            print(json.dumps({'result': 'checked', 'old_version': plan['old']['version'],
-                              'new_version': plan['new']['version']}))
+            print(json.dumps(check_only_result(plan)))
         else:
             print('Проверка плана завершена; установка не изменена.')
         return 0
@@ -457,7 +559,22 @@ def report_error(error, *, machine=False):
         code = str(error)
     else:
         code = 'INPUT_OR_VERIFICATION_FAILED'
-    if machine:
+    if isinstance(error, SessionMigrationBlocked) and code in (
+            'SESSION_MIGRATION_AMBIGUOUS', 'SESSION_MIGRATION_SCAN_FAILED',
+            'SESSION_MIGRATION_FENCE_UNVERIFIED'):
+        if machine:
+            print(json.dumps({'result': 'blocked', 'code': code, 'old_version': error.old_version,
+                              'new_version': error.new_version, 'backup': error.backup,
+                              'backup_id': error.backup_id, 'backup_independently_verified': error.backup_verified}))
+        else:
+            print(MESSAGES[code], file=sys.stderr)
+            print('В отчёте обновления указан каталог копии: ' + error.backup, file=sys.stderr)
+            if error.backup_verified:
+                print('Целостность и принадлежность зашифрованной копии проверены; восстановление отдельно не проверялось.', file=sys.stderr)
+            else:
+                print('Не удалось независимо проверить целостность и принадлежность копии; проверьте её отдельно.', file=sys.stderr)
+            print('Проверьте состояние сервиса перед дальнейшими действиями.', file=sys.stderr)
+    elif machine:
         print(json.dumps({'result': 'error', 'code': code}))
     else:
         print(MESSAGES[code], file=sys.stderr)
