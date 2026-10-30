@@ -44,7 +44,9 @@ def build(manifest, output, key, *, source_root=ROOT):
                      'experimental_operation_lock.py','managed_operation_lock.py',
                      'maintenance_receipt.py','maintenance_protocol.py','maintenance_evidence.py','maintenance_transport.py',
                      'kubernetes_sealed_config.py','kubernetes_trusted_kubectl.py','kubernetes_fence_pin.py',
-                     'kubernetes_redis_identity.py','compose_maintenance_check.py','compose_maintenance_coordinator.py'):
+                     'kubernetes_redis_identity.py','compose_maintenance_check.py','compose_maintenance_coordinator.py',
+                     'kubernetes_fence_finalizer.py','kubernetes_writer_quiesce.py','kubernetes_writer_finalizer.py',
+                     'kubernetes_maintenance_preflight.py','kubernetes_maintenance_runtime.py'):
             shutil.copy2(source_root/'scripts'/name,scripts/name)
         if m.get('session_identity_gate'):
             shutil.copy2(source_root/'scripts/session_migration_guard.py', scripts/'session_migration_guard.py')

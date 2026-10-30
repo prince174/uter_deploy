@@ -263,6 +263,8 @@ _FENCE_EXECUTOR_MODULES = (
     'maintenance_receipt','maintenance_protocol','maintenance_evidence','maintenance_transport',
     'kubernetes_sealed_config','kubernetes_trusted_kubectl','kubernetes_fence_pin','kubernetes_redis_identity',
     'compose_maintenance_check','compose_maintenance_coordinator',
+    'kubernetes_fence_finalizer','kubernetes_writer_quiesce','kubernetes_writer_finalizer',
+    'kubernetes_maintenance_preflight','kubernetes_maintenance_runtime',
 )
 
 

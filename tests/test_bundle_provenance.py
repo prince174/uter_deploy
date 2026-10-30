@@ -1,4 +1,5 @@
 import hashlib
+import ast
 import json
 from pathlib import Path
 import subprocess
@@ -83,7 +84,9 @@ class BundleProvenanceTests(unittest.TestCase):
                      'experimental_operation_lock.py','managed_operation_lock.py',
                      'maintenance_receipt.py','maintenance_protocol.py','maintenance_evidence.py','maintenance_transport.py',
                      'kubernetes_sealed_config.py','kubernetes_trusted_kubectl.py','kubernetes_fence_pin.py',
-                     'kubernetes_redis_identity.py','compose_maintenance_check.py','compose_maintenance_coordinator.py'):
+                     'kubernetes_redis_identity.py','compose_maintenance_check.py','compose_maintenance_coordinator.py',
+                     'kubernetes_fence_finalizer.py','kubernetes_writer_quiesce.py','kubernetes_writer_finalizer.py',
+                     'kubernetes_maintenance_preflight.py','kubernetes_maintenance_runtime.py'):
             with self.subTest(name=name):
                 path=result/'scripts'/name
                 self.assertEqual(path.read_bytes(),(uterctl.ROOT/'scripts'/name).read_bytes())
@@ -108,6 +111,60 @@ class BundleProvenanceTests(unittest.TestCase):
               'm._load_signed_fence_executor(Path(sys.argv[2])); '
               'from scripts import compose_maintenance_coordinator as c; '
               'exec("try:\\n c._verify_ingress(None,None,None)\\nexcept c.ComposeMaintenanceError:\\n pass\\nelse:\\n raise AssertionError(\'ingress gate opened\')")')
+        run=subprocess.run([sys.executable,'-I','-B','-c',code,str(result),str(self.public)],
+                           stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=15)
+        self.assertEqual(run.returncode,0,run.stderr)
+
+    def test_signed_kubernetes_maintenance_static_script_dependencies_are_present(self):
+        result=self.make_bundle(gated=False)
+        inventory=json.loads((result/'checksums.json').read_text(encoding='utf-8'))
+        pending=['kubernetes_maintenance_preflight','kubernetes_maintenance_runtime']
+        visited=set()
+        while pending:
+            name=pending.pop()
+            if name in visited:continue
+            visited.add(name)
+            relative='scripts/'+name+'.py'
+            self.assertIn(relative,inventory)
+            tree=ast.parse((result/relative).read_text(encoding='utf-8'),filename=relative)
+            for node in ast.walk(tree):
+                if isinstance(node,ast.ImportFrom) and node.module=='scripts':
+                    pending.extend(alias.name for alias in node.names)
+                elif isinstance(node,ast.ImportFrom) and node.module and node.module.startswith('scripts.'):
+                    pending.append(node.module.split('.')[1])
+                elif isinstance(node,ast.Import):
+                    pending.extend(alias.name.split('.')[1] for alias in node.names if alias.name.startswith('scripts.'))
+                # Catch some obvious dynamic imports for review. This is not a
+                # proof against aliases, eval, getattr or arbitrary dynamic code.
+                elif isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='__import__':
+                    self.fail(relative+' uses dynamic __import__')
+                elif (isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
+                      and isinstance(node.func.value,ast.Name) and node.func.value.id=='importlib'):
+                    self.fail(relative+' uses dynamic importlib')
+        self.assertTrue({'kubernetes_writer_finalizer','kubernetes_writer_quiesce',
+                         'kubernetes_fence_finalizer','maintenance_transport'}.issubset(visited))
+        uterctl.verify(result,self.public)
+
+    def test_signed_kubernetes_maintenance_modules_reject_modification(self):
+        result=self.make_bundle(gated=False)
+        for name in ('kubernetes_fence_finalizer','kubernetes_writer_quiesce','kubernetes_writer_finalizer',
+                     'kubernetes_maintenance_preflight','kubernetes_maintenance_runtime'):
+            with self.subTest(name=name):
+                path=result/'scripts'/(name+'.py');original=path.read_bytes()
+                path.write_bytes(original+b'\n# tampered\n')
+                with self.assertRaisesRegex(ValueError,'inventory mismatch'):uterctl.verify(result,self.public)
+                path.write_bytes(original)
+        uterctl.verify(result,self.public)
+
+    def test_signed_kubernetes_maintenance_imports_isolated_with_gate_closed(self):
+        result=self.make_bundle(gated=False)
+        code=('import importlib.util,sys; from pathlib import Path; '
+              'p=Path(sys.argv[1]); s=importlib.util.spec_from_file_location("executor_entrypoint",p/"uterctl.py"); '
+              'm=importlib.util.module_from_spec(s); s.loader.exec_module(m); '
+              'm._load_signed_fence_executor(Path(sys.argv[2])); '
+              'from scripts import kubernetes_maintenance_preflight as pflight, kubernetes_maintenance_runtime as r, '
+              'kubernetes_fence_finalizer, kubernetes_writer_finalizer, kubernetes_writer_quiesce; '
+              'exec("try:\\n r._require_fences(None,None,None)\\nexcept r.RuntimeError:\\n pass\\nelse:\\n raise AssertionError(\'ingress gate opened\')")')
         run=subprocess.run([sys.executable,'-I','-B','-c',code,str(result),str(self.public)],
                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=15)
         self.assertEqual(run.returncode,0,run.stderr)
