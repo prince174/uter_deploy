@@ -49,7 +49,7 @@ class SignedNamespaceCITests(unittest.TestCase):
             self.assertIsNone(ci._start_diagnostic(raw))
 
     def test_all_state_change_categories_pass_both_fixed_allowlists(self):
-        suffixes=('PROCESS','IMAGE','SECURITY','MOUNTS','NETWORK_MODE','PORTS','NETWORK_SET','NETWORK_FIELDS',
+        suffixes=('PROCESS','IMAGE','SECURITY','MOUNTS','MOUNTS_ORDER','MOUNTS_CONTENT','NETWORK_MODE','PORTS','NETWORK_SET','NETWORK_FIELDS',
                   'NETWORK_ID','ENDPOINT_ID','ENDPOINT_ADDRESS','ENDPOINT_GATEWAY','ENDPOINT_MAC','ENDPOINT_IPAM',
                   'ENDPOINT_OPTIONS','ENDPOINT_IPV6','ALIASES_ORDER','ALIASES_CONTENT','DNSNAMES_ORDER',
                   'DNSNAMES_CONTENT','NETWORK_OTHER','OTHER')

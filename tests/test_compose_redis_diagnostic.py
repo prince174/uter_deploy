@@ -117,7 +117,7 @@ class ComposeDiagnosticTests(unittest.TestCase):
                                                       'DNSNames':['redis','uter-test-redis'],
                                                       'EndpointID':'x'*64,'MacAddress':'02:42:00:00:00:01'})
         cases=(('PROCESS',lambda x:x.update(pid=13)),
-               ('MOUNTS',lambda x:x['mounts'].append({'Name':'secret-volume'})),
+               ('MOUNTS_CONTENT',lambda x:x['mounts'].append({'Name':'secret-volume'})),
                ('ENDPOINT_ID',lambda x:x['networks']['uter-test_backend'].update(EndpointID='z'*64)),
                ('ALIASES_ORDER',lambda x:x['networks']['uter-test_backend']['Aliases'].reverse()),
                ('ALIASES_CONTENT',lambda x:x['networks']['uter-test_backend']['Aliases'].append('other')),
@@ -129,6 +129,16 @@ class ComposeDiagnosticTests(unittest.TestCase):
                 with self.assertRaisesRegex(diag.ComposeDiagnosticError,'^COMPOSE_DIAGNOSTIC_STATE_CHANGED_'+name+'$') as error:
                     self.run_diagnostic(resource=base,second=changed)
                 self.assertNotIn('secret',str(error.exception))
+
+    def test_reordering_complete_mount_records_still_fails_closed(self):
+        base=copy.deepcopy(self.resource)
+        base['mounts'].append({'Destination':'/config','Type':'bind','Source':'fixture','RW':False})
+        reordered=copy.deepcopy(base);reordered['mounts'].reverse()
+        with self.assertRaisesRegex(diag.ComposeDiagnosticError,'^COMPOSE_DIAGNOSTIC_STATE_CHANGED_MOUNTS_ORDER$'):
+            self.run_diagnostic(resource=base,second=reordered)
+        changed=copy.deepcopy(base);changed['mounts'][1]['Source']='different'
+        with self.assertRaisesRegex(diag.ComposeDiagnosticError,'^COMPOSE_DIAGNOSTIC_STATE_CHANGED_MOUNTS_CONTENT$'):
+            self.run_diagnostic(resource=base,second=changed)
 
     def test_runtime_queries_are_readonly_and_do_not_inspect_config_or_environment(self):
         with mock.patch.object(diag,'_json',return_value={}) as read:

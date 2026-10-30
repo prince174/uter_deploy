@@ -21,6 +21,8 @@ class ObserveStageCategoryTests(unittest.TestCase):
                 'COMPOSE_DIAGNOSTIC_QUERY_FAILED'),
                (start.diagnostic.ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_STATE_CHANGED_ALIASES_ORDER'),
                 'COMPOSE_DIAGNOSTIC_STATE_CHANGED_ALIASES_ORDER'),
+               (start.diagnostic.ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_STATE_CHANGED_MOUNTS_ORDER'),
+                'COMPOSE_DIAGNOSTIC_STATE_CHANGED_MOUNTS_ORDER'),
                (start.fence.compose.ComposeFenceAdapterError('COMPOSE_FENCE_REDIS_CHANGED'),
                 'COMPOSE_FENCE_REDIS_CHANGED'),
                (start.diagnostic.ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_TOKEN_secret'),'ERROR'),

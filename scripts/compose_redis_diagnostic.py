@@ -70,10 +70,19 @@ def _changed_state_class(before,after):
     if not isinstance(before,dict) or not isinstance(after,dict) or set(before)!=set(after):return 'OTHER'
     groups=(('PROCESS',('id','running','pid','started','restart_count','restart')),
             ('IMAGE',('image','image_id')),('SECURITY',('privileged','pid_mode','cap_add')),
-            ('MOUNTS',('mounts',)),('NETWORK_MODE',('network_mode',)),
+            ('NETWORK_MODE',('network_mode',)),
             ('PORTS',('ports','publish_all','runtime_ports')))
     for name,fields in groups:
         if any(before.get(key)!=after.get(key) for key in fields):return name
+    a,b=before.get('mounts'),after.get('mounts')
+    if a!=b:
+        try:
+            if (isinstance(a,list) and isinstance(b,list)
+                    and Counter(json.dumps(item,sort_keys=True,separators=(',',':')) for item in a)
+                    ==Counter(json.dumps(item,sort_keys=True,separators=(',',':')) for item in b)):
+                return 'MOUNTS_ORDER'
+        except (TypeError,ValueError):pass
+        return 'MOUNTS_CONTENT'
     left,right=before.get('networks'),after.get('networks')
     if left!=right:
         if not isinstance(left,dict) or not isinstance(right,dict) or set(left)!=set(right):return 'NETWORK_SET'
