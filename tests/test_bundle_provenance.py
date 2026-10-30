@@ -130,6 +130,14 @@ class BundleProvenanceTests(unittest.TestCase):
                 path.write_bytes(original)
         uterctl.verify(result,self.public)
 
+    def test_signed_compose_maintenance_live_rejects_modification(self):
+        result=self.make_bundle(gated=False)
+        path=result/'scripts/compose_maintenance_live.py'
+        original=path.read_bytes();uterctl.verify(result,self.public)
+        path.write_bytes(original+b'\n# modified\n')
+        with self.assertRaisesRegex(ValueError,'inventory mismatch'):
+            uterctl.verify(result,self.public)
+
     def test_signed_kubernetes_maintenance_profile_rejects_modification(self):
         result=self.make_bundle(gated=False)
         for relative in ('scripts/kubernetes_maintenance_profile.py','charts/uter/templates/workloads.yaml'):

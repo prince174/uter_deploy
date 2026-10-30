@@ -249,7 +249,7 @@ def deploy(home, bundle, m, site, *, check=False, offline=False):
 
 
 _FENCE_EXECUTOR_MODULES = (
-    'backup_installation', 'backup_crypto', 'backup_store', 'backup_snapshot', 'compose_maintenance_secret', 'compose_maintenance_profile', 'kubernetes_maintenance_profile',
+    'backup_installation', 'backup_crypto', 'backup_store', 'backup_snapshot', 'compose_maintenance_secret', 'compose_maintenance_profile', 'compose_maintenance_live', 'kubernetes_maintenance_profile',
     'archive_safety', 'restore_backup', 'recovery_preflight', 'recovery_volume',
     'recovery_aof', 'recover_compose', 'recover_kubernetes', 'recovery_kube_volumes',
     'extract_signed_bundle', 'managed_smoke', 'adopt_managed', 'update_installation',
@@ -536,7 +536,7 @@ def finish_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_k
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize", "fence-finish-update", "maintenance-check-compose", "maintenance-check-kubernetes"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize", "fence-finish-update", "maintenance-check-compose", "maintenance-profile-check-compose", "maintenance-check-kubernetes"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
@@ -587,6 +587,18 @@ def main(argv=None):
         with fenced_locked(checked_home):
             result = compose_maintenance_check.check(checked_home, args.bundle, args.key, secret)
         print(json.dumps(result, sort_keys=True))
+        return
+    if args.command == 'maintenance-profile-check-compose':
+        if args.key is None or args.bundle is None or args.executor_key is None:
+            raise ValueError('MAINTENANCE_CHECK_SIGNED_BUNDLE_REQUIRED')
+        if any(not path.is_absolute() for path in (args.home, args.bundle, args.key, args.executor_key)):
+            raise ValueError('MAINTENANCE_CHECK_PATH_NOT_ABSOLUTE')
+        _load_signed_fence_executor(args.executor_key)
+        from scripts import compose_maintenance_live
+        checked_home, _, secret = _fence_secret_inputs(args.home, args.backup_key)
+        with fenced_locked(checked_home):
+            result = compose_maintenance_live.check(checked_home,args.bundle,args.key,secret)
+        print(json.dumps(result,sort_keys=True))
         return
     if args.fenced_update:
         if args.command!='apply' or args.key is None or args.bundle is None or args.executor_key is None:
