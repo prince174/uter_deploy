@@ -1,13 +1,11 @@
 """Disposable signed-executor child for real Redis read-only transport CI."""
 import sys
 import re
+import runpy
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-import uterctl
-from scripts import (kubernetes_fence_coordinator, kubernetes_fence_finalizer,
-                     kubernetes_redis_readonly_transport, redis_acl_operation_inspection)
 
 PHASE='INITIAL'
 
@@ -16,6 +14,14 @@ def main():
     if not sys.flags.isolated or len(sys.argv)!=11: raise ValueError
     home,bundle,publisher,config,profile,key,kubectl,operation,admin_key,run_id=sys.argv[1:]
     home=Path(home);bundle=Path(bundle);publisher=Path(publisher)
+    # Construct the same verified package boundary as the real executor before
+    # importing any local scripts; namespace-package discovery is insufficient.
+    PHASE='EXECUTOR'
+    controller=runpy.run_path(str(ROOT/'uterctl.py'),run_name='fixture_controller')
+    controller['_load_signed_fence_executor'](publisher)
+    import uterctl
+    from scripts import (kubernetes_fence_coordinator, kubernetes_fence_finalizer,
+                         kubernetes_redis_readonly_transport, redis_acl_operation_inspection)
     PHASE='EXECUTOR'
     with uterctl.locked(home):
         kubernetes_fence_coordinator._executor_identity(ROOT,publisher)
