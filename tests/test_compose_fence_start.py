@@ -165,12 +165,24 @@ class ComposeFenceStartTests(unittest.TestCase):
               'image_ref':writer['image_ref'],'image_id':writer['image_id']}
         with patch.object(start.diagnostic,'_json',return_value=good):
             start._writers_stopped({'guardrail':writer},'test')
-        for changes in ({'id':'0'*64},{'running':True},{'exit':137},{'oom':True},{'error':'error'},
-                        {'started':'2026-10-30T00:00:01Z'},{'restart_count':1},
-                        {'finished':'0001-01-01T00:00:00Z'},{'image_id':'sha256:'+'0'*64}):
-            with self.subTest(changes=changes),patch.object(start.diagnostic,'_json',return_value=dict(good,**changes)):
-                with self.assertRaisesRegex(start.StartError,'^FENCE_START_WRITER_EXIT_UNVERIFIED$'):
-                    start._writers_stopped({'guardrail':writer},'test')
+        cases=(({'id':'0'*64},'IDENTITY'),({'running':True},'RUNNING'),({'exit':True},'EXIT_TYPE'),
+               ({'exit':137},'EXIT_NONZERO'),({'oom':True},'OOM'),({'error':'secret-canary'},'ENGINE_ERROR'),
+               ({'started':'changed'},'STARTED'),({'restart_count':1},'RESTART_COUNT'),
+               ({'project':'other'},'PROJECT'),({'service':'other'},'SERVICE'),({'image_ref':'other'},'IMAGE_REF'),
+               ({'image_id':'sha256:'+'0'*64},'IMAGE_ID'),({'finished':'0001-01-01T00:00:00Z'},'FINISHED'))
+        for service in ('agent','guardrail'):
+            expected=self.writers[service]
+            base=dict(good,id=expected['id'],started=expected['started'],restart_count=expected['restart_count'],
+                      image_ref=expected['image_ref'],image_id=expected['image_id'],service=service)
+            for changes,category in cases:
+                with self.subTest(service=service,category=category),patch.object(start.diagnostic,'_json',return_value=dict(base,**changes)):
+                    with self.assertRaises(start.StartError) as error:
+                        start._writers_stopped({service:expected},'test')
+                    self.assertEqual(str(error.exception),'FENCE_START_WRITER_STOP_'+service.upper()+'_'+category)
+                    self.assertNotIn('secret-canary',str(error.exception))
+            with patch.object(start.diagnostic,'_json',return_value='secret-canary'):
+                with self.assertRaises(start.StartError) as error:start._writers_stopped({service:expected},'test')
+                self.assertEqual(str(error.exception),'FENCE_START_WRITER_STOP_'+service.upper()+'_RESPONSE')
 
     def test_fixed_diagnostic_classes_never_expose_changed_values(self):
         examples={'container_id':'PROCESS','image_ref':'IMAGE','network_id':'NETWORK_ID',

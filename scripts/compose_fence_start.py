@@ -206,6 +206,29 @@ def _writers(command,env,site,manifest):
     return ids
 
 
+def _writer_stop_problem(observed,expected,service,site):
+    """Classify exact failed predicates without returning runtime field values."""
+    if not isinstance(observed,dict):return 'RESPONSE'
+    if observed.get('id')!=expected['id']:return 'IDENTITY'
+    if observed.get('running') is not False:return 'RUNNING'
+    if type(observed.get('exit')) is not int:return 'EXIT_TYPE'
+    if observed['exit']!=0:return 'EXIT_NONZERO'
+    if observed.get('oom') is not False:return 'OOM'
+    if observed.get('error')!='':return 'ENGINE_ERROR'
+    if observed.get('started')!=expected['started']:return 'STARTED'
+    if observed.get('restart_count')!=expected['restart_count']:return 'RESTART_COUNT'
+    if observed.get('project')!=site:return 'PROJECT'
+    if observed.get('service')!=service:return 'SERVICE'
+    if observed.get('image_ref')!=expected['image_ref']:return 'IMAGE_REF'
+    if observed.get('image_id')!=expected['image_id']:return 'IMAGE_ID'
+    finished=observed.get('finished')
+    if (not isinstance(finished,str)
+            or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z',finished)
+            or finished.startswith('0001-01-01T')):
+        return 'FINISHED'
+    return None
+
+
 def _writers_stopped(writers,site):
     """Reject forced/uncertain termination of the exact observed instances.
 
@@ -220,15 +243,10 @@ def _writers_stopped(writers,site):
          '"image_ref":{{json .Config.Image}},"image_id":{{json .Image}}}')
     for service,expected in writers.items():
         observed=diagnostic._json(diagnostic._docker('inspect','--format',fmt,expected['id']))
-        if (not isinstance(observed,dict) or observed.get('id')!=expected['id'] or observed.get('running') is not False
-                or type(observed.get('exit')) is not int or observed['exit']!=0 or observed.get('oom') is not False
-                or observed.get('error')!='' or observed.get('started')!=expected['started']
-                or observed.get('restart_count')!=expected['restart_count'] or observed.get('project')!=site
-                or observed.get('service')!=service or observed.get('image_ref')!=expected['image_ref']
-                or observed.get('image_id')!=expected['image_id'] or not isinstance(observed.get('finished'),str)
-                or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z',observed['finished'])
-                or observed['finished'].startswith('0001-01-01T')):
-            raise StartError('FENCE_START_WRITER_EXIT_UNVERIFIED')
+        problem=_writer_stop_problem(observed,expected,service,site)
+        if problem is not None:
+            if service not in ('guardrail','agent'):raise StartError('FENCE_START_WRITER_EXIT_UNVERIFIED')
+            raise StartError('FENCE_START_WRITER_STOP_'+service.upper()+'_'+problem)
 
 
 def _observe(home,bundle,publisher,key,adapter):
