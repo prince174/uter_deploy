@@ -14,9 +14,45 @@ def run(argv, **kw):
     return subprocess.run([str(x) for x in argv], check=True, **kw)
 
 
+def ensure_unused_project(project):
+    """Fail before CI start when its generated namespace already has resources."""
+    for kind, args in (('containers',['ps','-aq','--filter','label=com.docker.compose.project='+project]),
+                       ('volumes',['volume','ls','-q','--filter','label=com.docker.compose.project='+project]),
+                       ('networks',['network','ls','-q','--filter','label=com.docker.compose.project='+project])):
+        if subprocess.check_output(['docker','--context','default',*args]).strip(): raise ValueError(kind)
+    for kind, names, args in (
+        ('volumes',{project+'_redis-data',project+'_audit-data'},['volume','ls','--format','{{.Name}}']),
+        ('networks',{project+'_backend',project+'_outbound'},['network','ls','--format','{{.Name}}']),
+        ('containers',{project+'-'+s+'-1' for s in ('redis','agent','guardrail','fixture')},
+         ['ps','-a','--format','{{.Names}}'])):
+        observed=subprocess.check_output(['docker','--context','default',*args]).decode().splitlines()
+        if names.intersection(observed): raise ValueError(kind)
+
+
+def ensure_owned_project(project):
+    """Before destructive CI cleanup, reject unexpected project resources."""
+    for allowed, args in (
+        ({project+'-'+s+'-1' for s in ('redis','agent','guardrail','fixture')},
+         ['ps','-a','--filter','label=com.docker.compose.project='+project,'--format','{{.Names}}']),
+        ({project+'_redis-data',project+'_audit-data'},
+         ['volume','ls','--filter','label=com.docker.compose.project='+project,'--format','{{.Name}}']),
+        ({project+'_backend',project+'_outbound'},
+         ['network','ls','--filter','label=com.docker.compose.project='+project,'--format','{{.Name}}'])):
+        observed=subprocess.check_output(['docker','--context','default',*args]).decode().splitlines()
+        if len(observed)!=len(set(observed)) or not set(observed).issubset(allowed): raise ValueError
+
+
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("Disposable GitHub runner required; do not run on the active workstation")
+    acl_test = os.environ.get('UTER_CI_REDIS_ACL') == 'true'
+    if acl_test:
+        if (os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted' or os.environ.get('RUNNER_OS') != 'Linux'
+                or os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT')):
+            raise SystemExit('Disposable hosted Linux runner required')
+        endpoint = subprocess.check_output(['docker','context','inspect','default','--format',
+                                            '{{.Endpoints.docker.Host}}']).decode().strip()
+        if endpoint != 'unix:///var/run/docker.sock': raise SystemExit('Local disposable Docker required')
     home = ROOT / "work/integration"
     home.mkdir(parents=True, exist_ok=False)
     evidence = ROOT / "work/integration-evidence"
@@ -27,9 +63,11 @@ def main():
     shutil.copytree(source / "profiles", home / "profiles")
     (home / "models").mkdir()
     admin, service, shared, redis_password, jwt, hmac = [secrets.token_hex(24) for _ in range(6)]
+    acl_admin = secrets.token_hex(32) if acl_test else ''
     # All credentials are ephemeral fixtures and never uploaded as artifacts.
-    hashes = subprocess.check_output(["docker", "run", "--rm", "--network", "none", "--entrypoint", "python", "uter-guardrail-protected", "-c",
-        "import bcrypt,json,sys; print(json.dumps([bcrypt.hashpw(x.encode(),bcrypt.gensalt()).decode() for x in sys.argv[1:]]))", admin, service])
+    hashes = subprocess.run(["docker", "run", "-i", "--rm", "--network", "none", "--entrypoint", "python", "uter-guardrail-protected", "-c",
+        "import bcrypt,json,sys; print(json.dumps([bcrypt.hashpw(x.encode(),bcrypt.gensalt()).decode() for x in json.load(sys.stdin)]))"],
+        input=json.dumps([admin,service]).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
     admin_hash, service_hash = json.loads(hashes)
     values = {"JWT_SECRET": jwt, "ADMIN_PASSWORD_HASH": admin_hash, "SERVICE_PASSWORD_HASH": service_hash,
         "AGENT_INTERNAL_SHARED_SECRET": shared, "UPSTREAM_MODE": "litellm_openai", "UPSTREAM_URL": "http://fixture:8080",
@@ -39,7 +77,13 @@ def main():
     (home / "agent.env").write_text(f"AGENT_INTERNAL_SHARED_SECRET={shared}\nGUARDRAIL_SERVICE_PASSWORD={service}\n")
     (home / "redis-password").write_text(redis_password)
     (home / "audit-hmac-key").write_text(hmac)
-    (home / "redis.conf").write_text(f"bind 0.0.0.0\nappendonly yes\ndir /data\nrequirepass {redis_password}\n")
+    redis_config = f"bind 0.0.0.0\nappendonly yes\ndir /data\nrequirepass {redis_password}\n"
+    if acl_test:
+        commands = ('ping get set del eval incr ttl expire lpush ltrim lrange multi exec discard '
+                    'smembers sismember scard sadd srem hgetall hexists hlen hset hdel client|setinfo')
+        redis_config += 'user default on ~* &* -@all ' + ' '.join('+'+x for x in commands.split()) + '\n'
+        redis_config += 'user uter-maint-test on >'+acl_admin+' ~* &* +@all\n'
+    (home / "redis.conf").write_text(redis_config)
     (home / "empty.env").write_text("")
     override = {"services": {
         "fixture": {"image": "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
@@ -65,12 +109,23 @@ def main():
     env = os.environ.copy()
     env.update(RUNTIME_DIR=str(home), GUARDRAIL_IMAGE="uter-guardrail-protected", AGENT_IMAGE="uter-agent-protected",
         REDIS_IMAGE="redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf", GUARDRAIL_PORT="18000")
-    cmd = ["docker", "compose", "--project-name", "uter-compiled-ci", "--env-file", home / "empty.env", "-f", ROOT / "compose/compose.yaml", "-f", home / "override.json"]
+    if acl_test:
+        env['REDIS_IMAGE']='ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc'
+    project = 'uter-acl-'+secrets.token_hex(16) if acl_test else 'uter-compiled-ci'
+    if acl_test: ensure_unused_project(project)
+    cmd = ["docker", "--context", "default", "compose", "--project-name", project, "--env-file", home / "empty.env", "-f", ROOT / "compose/compose.yaml", "-f", home / "override.json"]
     try:
         run(cmd + ["up", "-d", "--no-build", "--wait", "--wait-timeout", "300"], env=env)
         check = (ROOT / "scripts/container_acceptance.py").read_bytes()
         result = run(cmd + ["exec", "-T", "guardrail", "python", "-"], input=check, stdout=subprocess.PIPE, env=env)
         (evidence / "acceptance.json").write_bytes(result.stdout)
+        if acl_test:
+            acl_check = (ROOT/'scripts/redis_acl_product_probe.py').read_bytes()
+            result = run(cmd + ['exec','-T','guardrail','python','-'], input=acl_check, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, env=env)
+            if result.stdout.strip() != b'REDIS_ACL_PRODUCT_PROBE_PASS': raise ValueError('ACL_PRODUCT_PROBE_FAILED')
+            (evidence/'redis-acl-product.txt').write_text('Selected Redis paths passed with a test-only ACL.\n'
+                'This is not production ACL coverage, Redis fencing, backup or recovery.\n',encoding='ascii')
         run(cmd + ["restart", "guardrail"], env=env)
         run(cmd + ["up", "-d", "--no-build", "--wait", "--wait-timeout", "180"], env=env)
         run(cmd + ["exec", "-T", "guardrail", "python", "-"], input=check, stdout=subprocess.PIPE, env=env)
@@ -93,10 +148,12 @@ def main():
                 (evidence/'maintenance-failure.txt').write_text(code+'\n', encoding='ascii')
                 raise
     finally:
-        logs = subprocess.run(cmd + ["logs", "--no-color", "--tail", "150"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.decode(errors="replace")
-        for secret in [admin, service, shared, redis_password, jwt, hmac, admin_hash, service_hash]:
-            logs = logs.replace(secret, "[REDACTED]")
-        (evidence / "service-logs.txt").write_text(logs)
+        if acl_test: ensure_owned_project(project)
+        if not acl_test:
+            logs = subprocess.run(cmd + ["logs", "--no-color", "--tail", "150"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.decode(errors="replace")
+            for secret in [admin, service, shared, redis_password, jwt, hmac, admin_hash, service_hash]:
+                logs = logs.replace(secret, "[REDACTED]")
+            (evidence / "service-logs.txt").write_text(logs)
         subprocess.run(cmd + ["down", "--volumes", "--remove-orphans"], env=env, check=True)
 
 

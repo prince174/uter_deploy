@@ -1,6 +1,7 @@
 """Exercise the Redis ACL experiment on a disposable GitHub-hosted runner."""
 import os
 from pathlib import Path
+import re
 import secrets
 import socket
 import subprocess
@@ -58,6 +59,19 @@ def docker(*args):
                           stderr=subprocess.DEVNULL,timeout=120).stdout.decode().strip()
 
 
+def cleanup_container(name, nonce, container_id):
+    """Remove only a labelled fixture and treat uncertain confirmed cleanup as failure."""
+    try:
+        target=container_id if container_id else name
+        label=docker('inspect','--format','{{index .Config.Labels "uter.acl.ci"}}',target)
+    except subprocess.CalledProcessError:
+        if container_id: raise
+        return
+    if label != nonce: raise ValueError
+    docker('rm','-f','-v',target)
+    if container_id and docker('ps','-aq','--no-trunc','--filter','id='+container_id): raise ValueError
+
+
 def main():
     global PHASE
     if (os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted'
@@ -66,7 +80,7 @@ def main():
         raise ValueError
     if docker('context','inspect','default','--format','{{.Endpoints.docker.Host}}') != 'unix:///var/run/docker.sock':
         raise ValueError
-    nonce=secrets.token_hex(16); name='uter-acl-ci-'+nonce; attempted=False; clients=[]
+    nonce=secrets.token_hex(16); name='uter-acl-ci-'+nonce; attempted=False; container_id=None; clients=[]
     with tempfile.TemporaryDirectory(prefix='uter-acl-ci-') as directory:
         try:
             default_password=secrets.token_hex(32); admin_password=secrets.token_hex(32)
@@ -75,9 +89,10 @@ def main():
             config.chmod(0o644)
             PHASE='CONTAINER_START'
             attempted=True
-            docker('run','-d','--name',name,'--label','uter.acl.ci='+nonce,'--publish','127.0.0.1::6379','--mount',
+            container_id=docker('run','-d','--name',name,'--label','uter.acl.ci='+nonce,'--publish','127.0.0.1::6379','--mount',
                    'type=bind,src='+str(config)+',dst=/etc/uter-redis.conf,readonly',
                    '--entrypoint','redis-server',IMAGE,'/etc/uter-redis.conf')
+            if not re.fullmatch(r'[0-9a-f]{64}', container_id): raise ValueError
             port=int(docker('port',name,'6379/tcp').rsplit(':',1)[1])
             deadline=time.monotonic()+30
             while True:
@@ -166,11 +181,7 @@ def main():
         finally:
             for client in clients: client.close()
             if attempted:
-                try:
-                    label=docker('inspect','--format','{{index .Config.Labels "uter.acl.ci"}}',name)
-                except subprocess.CalledProcessError:
-                    label=None
-                if label == nonce: docker('rm','-f','-v',name)
+                cleanup_container(name, nonce, container_id)
 
 
 if __name__ == '__main__':

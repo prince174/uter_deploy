@@ -1,4 +1,5 @@
 import unittest
+import subprocess
 from unittest.mock import patch
 from scripts import redis_acl_experiment as experiment
 from scripts import redis_acl_experiment_ci
@@ -89,6 +90,16 @@ class RedisACLExperimentTests(unittest.TestCase):
              patch.object(redis_acl_experiment_ci,'docker') as docker:
             with self.assertRaises(ValueError): redis_acl_experiment_ci.main()
             docker.assert_not_called()
+
+    def test_ci_cleanup_rejects_ambiguous_confirmed_container(self):
+        error=subprocess.CalledProcessError(1,['docker'])
+        with patch.object(redis_acl_experiment_ci,'docker',side_effect=error):
+            with self.assertRaises(subprocess.CalledProcessError):
+                redis_acl_experiment_ci.cleanup_container('fixture','nonce','a'*64)
+        with patch.object(redis_acl_experiment_ci,'docker',return_value='different') as docker:
+            with self.assertRaises(ValueError):
+                redis_acl_experiment_ci.cleanup_container('fixture','nonce','a'*64)
+            self.assertEqual(docker.call_count,1)
 
 
 if __name__ == '__main__': unittest.main()
