@@ -276,7 +276,9 @@ def run_scenario():
             from scripts import compose_nsfirewall_signed_ci
             try:
                 compose_nsfirewall_signed_ci.verify(Path(home), source, public, old)
-            except compose_nsfirewall_signed_ci.SignedComposeFenceCheckFailure:
+            except compose_nsfirewall_signed_ci.SignedComposeFenceCheckFailure as error:
+                if str(error) in compose_nsfirewall_signed_ci.DIAGNOSTICS.values():
+                    raise CheckFailure(str(error)) from None
                 phases={'GUARD','PATH_CHECK','CONFIG_READ','SITE_READ','SIGNED_IDENTITY','DOCKER_SCOPE','INSPECTION',
                         'STOP_WRITERS','PRE_CAPTURE_ISOLATE','PRE_CAPTURE_RELEASE','CAPTURE_ISOLATE','CAPTURE',
                         'CAPTURE_RELEASE_REFUSED','CI_ONLY_CLEANUP','CI_RESUME'}
@@ -383,6 +385,7 @@ def main():
             status, output = run_checked([str(python), '-I', '-B', str(stage/'scripts/session_gate_e2e_ci.py'),
                                           '--staged'], env=env, timeout=3300, limit=1024*1024)
             if status:
+                from scripts import compose_nsfirewall_signed_ci
                 allowed = {'EXPECTED_SIGNED_GATE_MISSING','CI_SIGNED_ADOPTION_FAILED',
                            'COMPOSE_NSFENCE_CI_UNVERIFIED','COMPOSE_NSFENCE_CI_GUARD','COMPOSE_NSFENCE_CI_PATH_CHECK',
                            'COMPOSE_NSFENCE_CI_CONFIG_READ','COMPOSE_NSFENCE_CI_SITE_READ','COMPOSE_NSFENCE_CI_SIGNED_IDENTITY',
@@ -432,6 +435,7 @@ def main():
                            'WIZARD_REQUIRED_ARGUMENT_MISSING','WIZARD_PLAN_CHANGED','WIZARD_CURRENT_SIGNED_BUNDLE_REQUIRED',
                            'WIZARD_CURRENT_BUNDLE_STATE_MISMATCH','WIZARD_INSTALLED_BUNDLE_STATE_MISMATCH',
                            'WIZARD_BACKUP_REQUIRES_INSPECTION','WIZARD_BACKUP_KEY_INVALID'}
+                allowed.update(compose_nsfirewall_signed_ci.DIAGNOSTICS.values())
                 found = re.findall(rb'(?m)^Session gate test: ([A-Z_0-9]+)\r?$', output)
                 code = found[-1].decode('ascii') if found else ''
                 raise CheckFailure(code if code in allowed else 'SESSION_GATE_E2E_FAILED')

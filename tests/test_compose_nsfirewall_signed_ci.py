@@ -25,5 +25,14 @@ class SignedNamespaceCITests(unittest.TestCase):
                 ci.verify('/unknown','/unknown','/unknown',{})
             self.assertNotIn('secret',str(error.exception))
 
+    def test_only_exact_known_exception_category_is_exposed(self):
+        name='NS_FENCE_CAPABILITIES_UNSUPPORTED'
+        for message,expected in ((name,ci.DIAGNOSTICS[name]),(name+' secret','COMPOSE_SIGNED_CI_GUARD_FAILED')):
+            with self.subTest(message=message),mock.patch.object(ci,'PHASE','GUARD'), \
+                 mock.patch.object(ci,'_verify',side_effect=ci.fence.NamespaceFenceError(message)):
+                with self.assertRaises(ci.SignedComposeFenceCheckFailure) as error:
+                    ci.verify('/unknown','/unknown','/unknown',{})
+                self.assertEqual(str(error.exception),expected)
+
 
 if __name__=='__main__':unittest.main()

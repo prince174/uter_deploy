@@ -24,6 +24,14 @@ ROOT=Path(__file__).resolve().parents[1]
 KEY='uter:ci-fence-check'
 VALUE='ci-synthetic-fence-write'
 PHASE='GUARD'
+DIAGNOSTICS={name:'COMPOSE_NSFENCE_CAUSE_'+name for name in (
+    'NS_FENCE_DAEMON_UNVERIFIED','NS_FENCE_HOST_NAMESPACE_REJECTED',
+    'NS_FENCE_NAMESPACE_CHANGED','NS_FENCE_PROCESS_CHANGED','NS_FENCE_NAMESPACE_PEER',
+    'NS_FENCE_PROC_UNVERIFIED','NS_FENCE_CAPABILITIES_UNSUPPORTED',
+    'NS_FENCE_FIREWALL_UNCERTAIN','NS_FENCE_RULE_UNVERIFIED','NS_FENCE_FIREWALL_CHANGED',
+    'NS_FENCE_BIND_UNSUPPORTED','NS_FENCE_PORT_UNSUPPORTED','NS_FENCE_TLS_UNSUPPORTED',
+    'COMPOSE_FENCE_EXECUTABLE_UNVERIFIED','COMPOSE_FENCE_DOCKER_UNCERTAIN',
+    'COMPOSE_FENCE_REDIS_CHANGED','COMPOSE_FENCE_IDENTITY_INVALID','COMPOSE_FENCE_CLIENTS_REMAIN')}
 
 
 class SignedComposeFenceCheckFailure(ValueError): pass
@@ -227,4 +235,8 @@ def _verify(home, bundle, publisher, manifest):
 def verify(home,bundle,publisher,manifest):
     try:return _verify(home,bundle,publisher,manifest)
     except SignedComposeFenceCheckFailure:raise
-    except Exception:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_'+PHASE+'_FAILED') from None
+    except Exception as error:
+        if type(error) in (fence.NamespaceFenceError,fence.compose.ComposeFenceAdapterError):
+            category=DIAGNOSTICS.get(str(error))
+            if category:raise SignedComposeFenceCheckFailure(category) from None
+        raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_'+PHASE+'_FAILED') from None
