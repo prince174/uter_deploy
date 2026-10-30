@@ -101,10 +101,37 @@ def _ci_delete_uid(kind,name,uid):
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLEANUP_UNCERTAIN') from None
     try:
         response=json.loads(raw)
-        if not isinstance(response,dict) or response.get('kind')!='Status' or response.get('status')!='Success':
+        status_ok=(isinstance(response,dict) and response.get('kind')=='Status'
+                   and response.get('status')=='Success')
+        metadata=response.get('metadata',{}) if isinstance(response,dict) else {}
+        pod_ok=(kind=='pod' and response.get('kind')=='Pod' and isinstance(metadata,dict)
+                and metadata.get('name')==name and metadata.get('namespace')==SITE
+                and metadata.get('uid')==uid and isinstance(metadata.get('deletionTimestamp'),str)
+                and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z',
+                                 metadata['deletionTimestamp']))
+        if not status_ok and not pod_ok:
             raise ValueError
     except Exception:
         PHASE='DELETE_POLICY_RESPONSE' if kind=='policy' else 'DELETE_POD_RESPONSE'
+        raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLEANUP_UNCERTAIN') from None
+    # A successful DELETE can leave an object terminating. Check until the
+    # observed UID is gone; a replacement UID is never deleted by this helper.
+    PHASE='DELETE_POLICY_VERIFY' if kind=='policy' else 'DELETE_POD_VERIFY'
+    deadline=time.monotonic()+30
+    try:
+        while True:
+            raw=_ci_kube_command(['get', 'networkpolicy' if kind=='policy' else 'pod', name,
+                                  '--ignore-not-found=true','-o','json'])
+            if not raw: break
+            current=json.loads(raw)
+            meta=current.get('metadata') if isinstance(current,dict) else None
+            if (not isinstance(meta,dict) or meta.get('name')!=name or meta.get('namespace')!=SITE
+                    or not isinstance(meta.get('uid'),str) or not identity.UUID.fullmatch(meta['uid'])):
+                raise ValueError
+            if meta['uid']!=uid: break
+            if time.monotonic()>=deadline: raise ValueError
+            time.sleep(0.5)
+    except Exception:
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLEANUP_UNCERTAIN') from None
 
 

@@ -126,6 +126,7 @@ class KubernetesLoopbackTests(unittest.TestCase):
             root=Path(folder);(root/'work').mkdir()
             observed=[]
             def fake(args,timeout=30):
+                if args[0]=='get': return ''
                 options=json.loads(Path(args[-1]).read_text())
                 observed.append((args,options))
                 return '{"kind":"Status","status":"Success"}'
@@ -140,6 +141,32 @@ class KubernetesLoopbackTests(unittest.TestCase):
                 self.assertEqual(options,{'apiVersion':'v1','kind':'DeleteOptions','preconditions':{'uid':self.uid}})
                 self.assertEqual(args[0],'delete')
                 self.assertTrue(args[1].startswith('--raw=/'))
+
+    def test_pod_deletion_response_requires_uid_and_disappearance(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'work').mkdir();name='uter-ci-loopback-probe'
+            meta={'name':name,'namespace':experiment.SITE,'uid':self.uid,
+                  'deletionTimestamp':'2026-10-30T12:00:00Z'}
+            accepted=json.dumps({'kind':'Pod','metadata':meta})
+            still_present=json.dumps({'kind':'Pod','metadata':meta})
+            with patch.object(experiment,'ROOT',root), \
+                 patch.object(experiment,'_ci_kube_command',side_effect=[accepted,still_present,'']), \
+                 patch.object(experiment.time,'sleep'):
+                experiment._ci_delete_uid('pod',name,self.uid)
+            for altered in ({**meta,'uid':'00000000-0000-0000-0000-000000000000'},
+                            {**meta,'name':'other'}, {**meta,'namespace':'other'},
+                            {**meta,'deletionTimestamp':None}):
+                with self.subTest(meta=altered),patch.object(experiment,'ROOT',root), \
+                     patch.object(experiment,'_ci_kube_command',return_value=json.dumps({'kind':'Pod','metadata':altered})):
+                    with self.assertRaisesRegex(experiment.KubernetesLoopbackCIError,'CLEANUP_UNCERTAIN'):
+                        experiment._ci_delete_uid('pod',name,self.uid)
+                    self.assertEqual(experiment.PHASE,'DELETE_POD_RESPONSE')
+            with patch.object(experiment,'ROOT',root), \
+                 patch.object(experiment,'_ci_kube_command',side_effect=[accepted,still_present]), \
+                 patch.object(experiment.time,'monotonic',side_effect=[0,31]):
+                with self.assertRaisesRegex(experiment.KubernetesLoopbackCIError,'CLEANUP_UNCERTAIN'):
+                    experiment._ci_delete_uid('pod',name,self.uid)
+                self.assertEqual(experiment.PHASE,'DELETE_POD_VERIFY')
 
     def test_cleanup_failure_categories_are_fixed_and_do_not_expose_response(self):
         with tempfile.TemporaryDirectory() as folder:
