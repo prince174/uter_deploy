@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import time
@@ -181,7 +182,7 @@ containerdConfigPatches:
         run(['docker', '--context', 'default', 'exec', '-i', CLUSTER+'-control-plane', 'sh', '-c',
              'cat > /etc/containerd/certs.d/localhost:5055/hosts.toml'], data=hosts)
         PHASE = 'FIXTURE'
-        kube = ['/usr/local/bin/uter-ci-kubectl', '--kubeconfig', str(kubeconfig), '--context', CONTEXT]
+        kube = ['/usr/bin/uter-ci-kubectl', '--kubeconfig', str(kubeconfig), '--context', CONTEXT]
         run(kube+['create', 'namespace', 'uter-fixtures'])
         run(kube+['-n', 'uter-fixtures', 'create', 'configmap', 'llm-code',
                   '--from-file=fixture.py='+str(ROOT/'tests/fixtures/upstream.py')])
@@ -247,8 +248,18 @@ containerdConfigPatches:
         PHASE = 'TRUSTED_EXEC'
         config_fd, config_hash = _sealed(kubeconfig.read_bytes()); fds.append(config_fd)
         PHASE = 'TRUSTED_BINARY_READ'
-        binary_path = Path('/usr/local/bin/uter-ci-kubectl')
+        binary_path = Path('/usr/bin/uter-ci-kubectl')
         binary_hash = hashlib.sha256(binary_path.read_bytes()).hexdigest()
+        for item in (binary_path, *binary_path.parents):
+            metadata = item.lstat()
+            PHASE = 'TRUSTED_BINARY_PATH_OWNER'
+            if metadata.st_uid != 0: raise ValueError
+            PHASE = 'TRUSTED_BINARY_PATH_WRITABLE'
+            if metadata.st_mode & 0o022: raise ValueError
+            PHASE = 'TRUSTED_BINARY_PATH_SYMLINK'
+            if stat.S_ISLNK(metadata.st_mode): raise ValueError
+        PHASE = 'TRUSTED_BINARY_SIZE'
+        if not 0 < binary_path.stat().st_size <= 128*1024*1024: raise ValueError
         PHASE = 'TRUSTED_BINARY_OPEN'
         binary_fd = kubernetes_trusted_kubectl.open_binary(binary_path, binary_hash); fds.append(binary_fd)
         PHASE = 'TRUSTED_JOURNAL_CREATE'
@@ -270,8 +281,21 @@ containerdConfigPatches:
                                                 record_intent=recorder.intent, record_receipt=recorder.receipt)
         if set(receipts) != {identities['agent'][0], identities['guardrail'][0]} or not stable():
             raise ProbeError('MAINTENANCE_KUBE_RECEIPTS_UNVERIFIED')
+        PHASE = 'RESTART_IDENTITY_TEST'
+        # Fault injection only in this disposable kind cluster: replacement of a
+        # receipted writer must invalidate the entire inventory before any next
+        # action. This is not a Redis fence or a live recovery test.
+        run(kube+['-n', SITE, 'delete', 'pod', pinned['agent']['name'], '--wait=false'])
+        invalidated = False
+        try:
+            inventory()
+        except Exception:
+            invalidated = True
+        if not invalidated:
+            raise ProbeError('MAINTENANCE_KUBE_RESTART_NOT_DETECTED')
         evidence = ROOT/'work/maintenance-kubernetes-evidence'; evidence.mkdir(mode=0o700)
         (evidence/'maintenance.txt').write_text('Agent and Guardrail receipts verified on exact kind Pods.\n'
+            'Deleting a receipted Agent Pod invalidated the inventory.\n'
             'Redis fence, backup, update and recovery were not tested by this probe.\n', encoding='utf-8')
     finally:
         for fd in fds: os.close(fd)
