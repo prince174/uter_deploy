@@ -1,0 +1,26 @@
+# Experimental opt-in overlay; not used by the installer or an update path.
+services:
+  agent:
+    environment:
+      UTER_MAINTENANCE_ENABLED: 'true'
+      UTER_MAINTENANCE_KEY_FILE: /run/uter-maintenance/key
+      WEB_CONCURRENCY: '1'
+    volumes:
+      - type: bind
+        source: ${RUNTIME_DIR:?}/maintenance-key
+        target: /run/uter-maintenance/key
+        read_only: true
+        bind:
+          create_host_path: false
+  guardrail:
+    environment:
+      UTER_MAINTENANCE_ENABLED: 'true'
+      UTER_MAINTENANCE_KEY_FILE: /run/uter-maintenance/key
+      WEB_CONCURRENCY: '1'
+    volumes:
+      - type: bind
+        source: ${RUNTIME_DIR:?}/maintenance-key
+        target: /run/uter-maintenance/key
+        read_only: true
+        bind:
+          create_host_path: false
