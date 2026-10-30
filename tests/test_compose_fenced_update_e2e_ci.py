@@ -31,6 +31,30 @@ class SyntheticUpdateCITests(unittest.TestCase):
         (target/'manifest.json').write_text('{}')
         with self.assertRaises(Exception):ci.uterctl.verify(target,pub)
 
+    def test_artificial_writer_pair_is_explicit_and_keeps_redis(self):
+        original=self.fixture.bundle(fixtures.manifest('0.1.6'))
+        directory=self.root/'ephemeral';directory.mkdir()
+        images={side:{name:'localhost:5055/uter-ci-'+name+'@sha256:'+digit*64
+                      for name,digit in (('guardrail',number),('agent',number))}
+                for side,number in (('old','a'),('target','b'))}
+        for side in images:images[side]['redis']=fixtures.manifest('0.1.6')['images']['redis']
+        ids={side:{name:'sha256:'+number*64 for name in ('guardrail','agent','redis')}
+             for side,number in (('old','a'),('target','b'))}
+        ids['target']['redis']=ids['old']['redis']
+        bad=copy.deepcopy(images);bad['target']['guardrail']='registry.example/other@sha256:'+'e'*64
+        with self.assertRaisesRegex(ci.Failure,'SYNTHETIC_PAIR_INVALID'):
+            ci.synthetic_writer_pair(original,directory,bad,ids)
+        bad_ids=copy.deepcopy(ids);bad_ids['target']['agent']=ids['old']['agent']
+        with self.assertRaisesRegex(ci.Failure,'SYNTHETIC_PAIR_INVALID'):
+            ci.synthetic_writer_pair(original,directory,images,bad_ids)
+        old,target,pub,before,after=ci.synthetic_writer_pair(original,directory,images,ids)
+        self.assertEqual(before['version'],'0.1.6-ci.1');self.assertEqual(before['source_commit'],'0'*40)
+        self.assertEqual(after['upgrade_from'],[before['version']])
+        self.assertEqual(before['images']['redis'],after['images']['redis'])
+        self.assertNotEqual(before['images']['guardrail'],after['images']['guardrail'])
+        with self.assertRaises(Exception):ci.uterctl.verify(old,self.pub)
+        with self.assertRaises(Exception):ci.uterctl.verify(target,self.pub)
+
     def test_redis_identity_keeps_mount_fields_and_normalizes_order(self):
         original={'id':'redis','pid':1,'started':'start',
                   'mounts':[{'Destination':'/data','Name':'volume'}, {'Destination':'/secret','Name':'secret'}],
@@ -66,6 +90,13 @@ class SyntheticUpdateCITests(unittest.TestCase):
         with self.assertRaisesRegex(ci.Failure,'STAGED_FIXTURES_MISSING'):ci.staged_fixtures(self.root)
         (folder/'ci_fault_before_state_replace.c').write_text('fixture')
         self.assertEqual(ci.staged_fixtures(self.root),(folder/'ci_upstream_fixture.py',folder/'ci_fault_before_state_replace.c'))
+
+    def test_synthetic_image_stage_does_not_expose_error_text(self):
+        from scripts import compose_synthetic_writer_images_ci as images
+        def fail():raise ValueError('secret-canary')
+        with self.assertRaises(images.SyntheticImageError) as error:images._stage('BUILD',fail)
+        self.assertEqual(str(error.exception),'PAIR_BUILD')
+        self.assertIn(str(error.exception),ci.IMAGE_PHASES)
 
     def test_apply_error_reports_only_exact_allowlisted_code(self):
         self.assertEqual(ci.apply_error(b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_INCOMPLETE\n',self.root),

@@ -30,6 +30,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 ROOT=Path(__file__).resolve().parents[1]
 PHASE='GUARD'
 PHASES=frozenset(('GUARD','ASSETS','PAIR','PREPARE','INSTALL','ADOPT','SEED','APPLY','FINISH','VERIFY','CRASH'))
+IMAGE_PHASES=frozenset('PAIR_'+name for name in ('REGISTRY_START','REGISTRY_READY','BASE_PULL','BUILD','LABELS',
+                                                'PUSH_LOCAL','PULL_DIGEST','REDIS_PULL'))
 INSTALL_CODES=frozenset({'INSTALL_IMAGES_MISSING','INSTALL_INSPECTION_UNCERTAIN','INSTALL_DOCKER_OTHER'} |
     {'INSTALL_'+service+'_'+kind for service in ('REDIS','AGENT','GUARDRAIL')
      for kind in ('MISSING','STOPPED','OOM','UNHEALTHY','STARTING')})
@@ -136,6 +138,35 @@ def synthetic_pair(source,directory):
     return old,target,public,before,after
 
 
+def synthetic_writer_pair(source,directory,images,ids):
+    """CI-only manifests for intentionally fake writers and the real Redis image."""
+    original=uterctl.read(source/'manifest.json')
+    if (set(images)!={'old','target'} or set(ids)!={'old','target'}
+            or any(set(images[x])!={'guardrail','agent','redis'} or set(ids[x])!=set(images[x]) for x in images)
+            or images['old']['redis']!=original['images']['redis'] or images['old']['redis']!=images['target']['redis']
+            or ids['old']['redis']!=ids['target']['redis']
+            or any(not re.fullmatch(r'localhost:5055/uter-ci-'+name+r'@sha256:[0-9a-f]{64}',images[side][name])
+                   for side in ('old','target') for name in ('guardrail','agent'))
+            or any(images['old'][name]==images['target'][name] or ids['old'][name]==ids['target'][name]
+                   for name in ('guardrail','agent'))):
+        raise Failure('SYNTHETIC_PAIR_INVALID')
+    key=Ed25519PrivateKey.generate();public=directory/'synthetic-publisher.pem'
+    public.write_bytes(key.public_key().public_bytes(serialization.Encoding.PEM,
+                                                    serialization.PublicFormat.SubjectPublicKeyInfo))
+    old=directory/'synthetic-old';target=directory/'synthetic-target'
+    shutil.copytree(source,old);shutil.copytree(source,target)
+    manifests={}
+    for generation,folder,version in (('old',old,'0.1.6-ci.1'),('target',target,'0.1.8-ci.1')):
+        manifest=dict(original,version=version,images=images[generation],image_config_ids=ids[generation],
+                      source_commit='0'*40,upgrade_from=[] if generation=='old' else ['0.1.6-ci.1'])
+        for field in ('source_state','deployment_commit','installation_archive_sha256'):manifest.pop(field,None)
+        (folder/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n')
+        sign(folder,key);manifests[generation]=uterctl.verify(folder,public)
+    if (manifests['old']['images']!=images['old'] or manifests['target']['images']!=images['target']
+            or manifests['old']['data_epoch']!=manifests['target']['data_epoch']):raise Failure('SYNTHETIC_PAIR_INVALID')
+    return old,target,public,manifests['old'],manifests['target']
+
+
 def redis_identity(identifier):
     # Never request Config.Env or the full inspect document: those can contain secrets.
     fmt=('{"id":{{json .Id}},"pid":{{json .State.Pid}},"started":{{json .State.StartedAt}},'
@@ -186,7 +217,10 @@ def install_failure_category(home,cfg):
 
 def exercise(mode):
     global PHASE
+    fake_writers=mode.startswith('fake-')
+    if fake_writers:mode=mode[len('fake-'):]
     if mode not in ('normal','kill-target','kill-prepared','fail-state','shutdown'):raise Failure('MODE_INVALID')
+    if fake_writers and mode not in ('normal','kill-target','fail-state'):raise Failure('MODE_INVALID')
     PHASE='ASSETS'
     source=ROOT/'work/pair/old/bundle';public=ROOT/'work/pair/old/publisher-public.pem'
     workspace=Path(os.environ['SOURCE_GIT_WORKSPACE'])
@@ -198,14 +232,24 @@ def exercise(mode):
     if original['version']!=os.environ['UTER_CI_OLD_VERSION']:raise Failure('RELEASE_INVALID')
     work=ROOT/'work';private=work/'synthetic-fixture';private.mkdir(mode=0o700)
     upstream_fixture,fault_fixture=staged_fixtures(ROOT)
-    PHASE='PAIR';old,target,product_key,before,after=synthetic_pair(source,private)
+    registry=private/'registry';registry.mkdir(mode=0o700)
+    os.environ.update({'DOCKER_CONTEXT':'default','DOCKER_CONFIG':str(registry),'GUARDRAIL_PORT':'18000','GUARDRAIL_CPUS':'2'})
+    PHASE='PAIR';inputs=work/'input/published-old'
+    if fake_writers:
+        from scripts import compose_synthetic_writer_images_ci
+        try:images,ids=compose_synthetic_writer_images_ci.build(private,original['images'],run)
+        except compose_synthetic_writer_images_ci.SyntheticImageError as error:
+            if str(error) in IMAGE_PHASES:PHASE=str(error)
+            raise
+        old,target,product_key,before,after=synthetic_writer_pair(source,private,images,ids)
+        inputs=private/'synthetic-inputs';shutil.copytree(work/'input/published-old',inputs)
+        (inputs/'images.json').write_text(json.dumps(before['images'],sort_keys=True)+'\n')
+    else:old,target,product_key,before,after=synthetic_pair(source,private)
     executor,executor_key=compose_nsfirewall_signed_ci._ci_signed_executor(source,private)
     if executor_key.read_bytes()==product_key.read_bytes():raise Failure('KEYS_INVALID')
     home=private/'installation';backup_parent=private/'backups';backup_parent.mkdir(mode=0o700)
     backup=backup_parent/'snapshot';key=private/'backup.key';key.write_bytes(os.urandom(32));os.chmod(key,0o600)
     llm_key=private/'llm.key';llm_key.write_text('');os.chmod(llm_key,0o600)
-    registry=private/'registry';registry.mkdir(mode=0o700)
-    os.environ.update({'DOCKER_CONTEXT':'default','DOCKER_CONFIG':str(registry),'GUARDRAIL_PORT':'18000','GUARDRAIL_CPUS':'2'})
     name='uter-fenced-synthetic-ci';installer=old/'scripts/install.py'
     gateway=json.loads(run(['docker','network','inspect','bridge']))[0]['IPAM']['Config'][0]['Gateway']
     fixture=subprocess.Popen([sys.executable,str(upstream_fixture)],
@@ -220,7 +264,7 @@ def exercise(mode):
             time.sleep(1)
         else:raise Failure('UPSTREAM_NOT_READY')
         args=[sys.executable,installer,'prepare','--home',home,'--backend','compose','--name',name,
-              '--inputs',work/'input/published-old','--llm-url',f'http://{gateway}:8080',
+              '--inputs',inputs,'--llm-url',f'http://{gateway}:8080',
               '--llm-model','test-model','--llm-key-file',llm_key,'--allow-http-llm','--guardrail-cpus','2']
         PHASE='PREPARE';run(args);run([sys.executable,installer,'check','--home',home])
         PHASE='INSTALL'
@@ -322,7 +366,8 @@ def exercise(mode):
             finally:
                 if process.poll() is None:process.kill();process.wait(timeout=30)
                 errors.close()
-        print('SYNTHETIC_SAME_IMAGE_'+mode.upper().replace('-','_')+'_PASS',flush=True)
+        label='SYNTHETIC_WRITERS_' if fake_writers else 'SYNTHETIC_SAME_IMAGE_'
+        print(label+mode.upper().replace('-','_')+'_PASS',flush=True)
     finally:
         fixture.terminate()
         try:fixture.wait(timeout=5)
@@ -350,17 +395,19 @@ def main():
                              env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=3300)
         if child.returncode:
             match=re.fullmatch(rb'SYNTHETIC_FENCED_UPDATE_CI_([A-Z_]+)_FAILED\r?\n',child.stderr)
-            phase=match.group(1).decode('ascii') if match and match.group(1).decode('ascii') in PHASES|INSTALL_CODES|APPLY_PHASES else 'GUARD'
+            phase=match.group(1).decode('ascii') if match and match.group(1).decode('ascii') in PHASES|IMAGE_PHASES|INSTALL_CODES|APPLY_PHASES else 'GUARD'
             raise Failure(phase)
         if os.environ.get('UTER_CI_SYNTHETIC_MODE')=='shutdown':
             result=re.fullmatch(rb'SHUTDOWN_PROBE_(ZERO|TERM_LIKE|OTHER)\r?\n',child.stdout)
             if not result:raise Failure('VERIFY')
             print('Shutdown probe exit class: '+result.group(1).decode('ascii')+'; quiescent fixture only.')
+        elif os.environ.get('UTER_CI_SYNTHETIC_MODE','').startswith('fake-'):
+            print('Synthetic writer CI passed; artificial exit handling does not prove real application drain or migration.')
         else:print('Synthetic same-image CI passed; no product-image upgrade or migration was tested.')
 
 
 if __name__=='__main__':
     try:main()
     except Exception as error:
-        phase=str(error) if str(error) in PHASES|INSTALL_CODES|APPLY_PHASES else PHASE
+        phase=str(error) if str(error) in PHASES|IMAGE_PHASES|INSTALL_CODES|APPLY_PHASES else PHASE
         print('SYNTHETIC_FENCED_UPDATE_CI_'+phase+'_FAILED',file=sys.stderr);sys.exit(1)
