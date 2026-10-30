@@ -246,15 +246,19 @@ containerdConfigPatches:
             return dict(identities)
         PHASE = 'TRUSTED_EXEC'
         config_fd, config_hash = _sealed(kubeconfig.read_bytes()); fds.append(config_fd)
+        PHASE = 'TRUSTED_BINARY_READ'
         binary_path = Path('/usr/local/bin/uter-ci-kubectl')
         binary_hash = hashlib.sha256(binary_path.read_bytes()).hexdigest()
+        PHASE = 'TRUSTED_BINARY_OPEN'
         binary_fd = kubernetes_trusted_kubectl.open_binary(binary_path, binary_hash); fds.append(binary_fd)
+        PHASE = 'TRUSTED_JOURNAL_CREATE'
         session = SimpleNamespace(site=SITE, _executor=object(), _record={'schema':2,'kubectl_sha256':binary_hash},
             config_sha256=config_hash, _inner=SimpleNamespace(config_fd=config_fd,
                 api=SimpleNamespace(binary_fd=binary_fd, context=CONTEXT)), _scope=lambda: inventory())
         proof = work/'proof'; proof.mkdir(mode=0o700); operation = secrets.token_hex(16); plan = secrets.token_hex(32)
         redis_fence_journal.create(proof, backend='kubernetes', site=SITE, resource=pinned['redis']['uid'],
                                    plan_sha256=plan, operation=operation)
+        PHASE = 'TRUSTED_RECORDER_CREATE'
         recorder = maintenance_evidence.Recorder(proof, secrets.token_bytes(32), operation=operation,
             backend='kubernetes', plan_sha256=plan, lock_guard=lambda: True)
         def request(service, instance, method, timeout):
