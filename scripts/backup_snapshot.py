@@ -20,6 +20,27 @@ RDB_STREAM_TIMEOUT = 300
 RDB_EXIT_TIMEOUT = 120
 
 
+class BoundedSnapshotSink:
+    """Limit bytes actually sent to the checker, even with forged metadata."""
+    def __init__(self, stream, limit):
+        self.stream = stream
+        self.limit = limit
+        self.written = 0
+
+    def write(self, data):
+        if len(data) > self.limit - self.written:
+            raise ValueError('Redis snapshot exceeds the 100 MiB validation limit')
+        view = memoryview(data)
+        total = 0
+        while total < len(view):
+            count = self.stream.write(view[total:])
+            if type(count) is not int or count <= 0 or count > len(view) - total:
+                raise OSError('Redis snapshot checker rejected the stream')
+            total += count
+            self.written += count
+        return total
+
+
 class PrefixStream:
     def __init__(self, stream, prefix): self.stream=stream; self.prefix=prefix
     def read(self, size):
@@ -86,7 +107,8 @@ def verify_redis_snapshot(writer, command, *, env=None):
     timer.start()
     try:
         backup_crypto.decrypt_verify(writer.path/'redis.enc',writer.key,
-            backup_store.aad(writer.manifest['id'],'redis'),metadata,process.stdin)
+            backup_store.aad(writer.manifest['id'],'redis'),metadata,
+            BoundedSnapshotSink(process.stdin, RDB_MAX_BYTES))
         process.stdin.close()
         # The timer callback may call poll() and reap the child. Join it before
         # wait() can reap the same child and permit its PID to be reused.

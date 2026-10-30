@@ -138,6 +138,47 @@ class StreamingSnapshotTests(unittest.TestCase):
                 backup_snapshot.verify_redis_snapshot(self.writer, self.command('pass'))
             popen.assert_not_called()
 
+    def test_forged_small_metadata_cannot_send_oversized_snapshot(self):
+        self.writer.manifest['files']['redis']['plaintext_bytes'] = 1
+        checker = self.command('import sys; sys.stdin.buffer.read()')
+        with patch.object(backup_snapshot, 'RDB_MAX_BYTES', 128):
+            with self.assertRaisesRegex(ValueError, '100 MiB'):
+                backup_snapshot.verify_redis_snapshot(self.writer, checker)
+
+    def test_metadata_mismatch_within_limit_still_fails_authentication_check(self):
+        self.writer.manifest['files']['redis']['plaintext_bytes'] -= 1
+        checker = self.command('import sys; sys.stdin.buffer.read()')
+        with self.assertRaisesRegex(ValueError, 'content or metadata mismatch'):
+            backup_snapshot.verify_redis_snapshot(self.writer, checker)
+
+    def test_bounded_sink_handles_partial_writes_without_overflow(self):
+        class PartialSink:
+            def __init__(self): self.data = bytearray()
+            def write(self, value):
+                value = bytes(value[:2])
+                self.data.extend(value)
+                return len(value)
+        target = PartialSink()
+        sink = backup_snapshot.BoundedSnapshotSink(target, 6)
+        self.assertEqual(sink.write(b'abcde'), 5)
+        self.assertEqual(sink.written, 5)
+        with self.assertRaisesRegex(ValueError, '100 MiB'):
+            sink.write(b'fg')
+        self.assertEqual(target.data, b'abcde')
+        self.assertEqual(sink.write(b'f'), 1)
+        self.assertEqual(target.data, b'abcdef')
+        self.assertEqual(sink.written, 6)
+
+    def test_bounded_sink_rejects_incomplete_and_invalid_writes(self):
+        for count in (0, None, -1, 3, True):
+            with self.subTest(count=count):
+                target = unittest.mock.Mock()
+                target.write.return_value = count
+                sink = backup_snapshot.BoundedSnapshotSink(target, 2)
+                with self.assertRaises(OSError):
+                    sink.write(b'ab')
+                self.assertEqual(sink.written, 0)
+
 
 if __name__ == '__main__':
     unittest.main()
