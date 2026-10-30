@@ -12,7 +12,8 @@ from scripts import kubernetes_loopback_snapshot as snapshot
 
 class SnapshotExecutorTests(unittest.TestCase):
     def setUp(self):
-        self.session=SimpleNamespace(_executor=('signed',),_record={'schema':2,'kubectl_sha256':'d'*64},_inner=SimpleNamespace(config_fd=13),
+        self.session=SimpleNamespace(_executor=('signed',),_record={'schema':2,'kubectl_sha256':'d'*64},
+            _inner=SimpleNamespace(config_fd=13,api=SimpleNamespace(binary_fd=19,binary_sha256='d'*64)),
             config_sha256='a'*64,site='uter-test',api=SimpleNamespace(context='test'))
         self.pod='uter-test-redis-a1b2c3-d4e5f';self.uid='11111111-1111-1111-1111-111111111111'
         self.observed={'uid':self.uid,'container_id':'containerd://'+'b'*64,'pod_spec_sha256':'c'*64,'replicaset_uid':self.uid}
@@ -27,12 +28,12 @@ class SnapshotExecutorTests(unittest.TestCase):
             def put(inner,label,stream):self.label=label;self.raw=stream.read(1024)
         self.writer=Writer()
 
-    def capture(self):return snapshot.capture_component(self.session,'a'*32,self.pod,self.uid,self.writer,kubectl_path='/usr/bin/true')
+    def capture(self):return snapshot.capture_component(self.session,'a'*32,self.pod,self.uid,self.writer)
 
     def test_exact_pod_sealed_fd_and_encrypted_writer_are_used(self):
         with patch.object(snapshot,'_observe',return_value=self.observed), \
              patch.object(snapshot.sealed,'verify_sealed') as seal, \
-             patch.object(snapshot,'_trusted_binary',return_value=19),patch.object(snapshot.os,'close'), \
+             patch.object(snapshot.kubectl_binary,'verify'), \
              patch.object(snapshot.subprocess,'Popen',self.process):
             result=self.capture()
         self.assertEqual(result,{'redis_component_captured':True,'complete_backup':False,'safe_to_update':False})
@@ -45,8 +46,8 @@ class SnapshotExecutorTests(unittest.TestCase):
     def test_changed_identity_or_unsigned_executor_is_never_accepted(self):
         changed=dict(self.observed,container_id='changed')
         with patch.object(snapshot,'_observe',side_effect=[self.observed,changed]), \
-             patch.object(snapshot.sealed,'verify_sealed'),patch.object(snapshot,'_trusted_binary',return_value=19), \
-             patch.object(snapshot.os,'close'),patch.object(snapshot.subprocess,'Popen',self.process):
+             patch.object(snapshot.sealed,'verify_sealed'),patch.object(snapshot.kubectl_binary,'verify'), \
+             patch.object(snapshot.subprocess,'Popen',self.process):
             with self.assertRaises(snapshot.SnapshotError):self.capture()
         self.session._executor=None
         with self.assertRaises(snapshot.SnapshotError):self.capture()
@@ -62,8 +63,8 @@ class SnapshotExecutorTests(unittest.TestCase):
                              (False,'KUBE_LOOPBACK_SNAPSHOT_CLEANUP_UNVERIFIED')):
             after=dict(self.observed,container_id='changed') if changed else self.observed
             with self.subTest(changed=changed),patch.object(snapshot,'_observe',side_effect=[self.observed,after]), \
-                 patch.object(snapshot.sealed,'verify_sealed'),patch.object(snapshot,'_trusted_binary',return_value=19), \
-                 patch.object(snapshot.os,'close'),patch.object(snapshot.subprocess,'Popen',Process):
+                 patch.object(snapshot.sealed,'verify_sealed'),patch.object(snapshot.kubectl_binary,'verify'), \
+                 patch.object(snapshot.subprocess,'Popen',Process):
                 with self.assertRaisesRegex(snapshot.SnapshotError,code):self.capture()
 
     @unittest.skipUnless(os.name=='posix' and os.path.isfile('/usr/bin/true'),'trusted Linux executable required')
@@ -71,7 +72,7 @@ class SnapshotExecutorTests(unittest.TestCase):
         binary=Path('/usr/bin/true').resolve()
         digest=hashlib.sha256(binary.read_bytes()).hexdigest()
         with patch.dict(os.environ,{'PATH':'/attacker','HTTPS_PROXY':'http://attacker','KUBECTL_PLUGIN':'evil'}):
-            fd=snapshot._trusted_binary(binary,digest)
+            fd=snapshot.kubectl_binary.open_binary(binary,digest)
             os.close(fd)
-            with self.assertRaises(ValueError):snapshot._trusted_binary(binary,'0'*64)
-            with self.assertRaises(ValueError):snapshot._trusted_binary('true',digest)
+            with self.assertRaises(ValueError):snapshot.kubectl_binary.open_binary(binary,'0'*64)
+            with self.assertRaises(ValueError):snapshot.kubectl_binary.open_binary('true',digest)

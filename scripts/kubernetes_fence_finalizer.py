@@ -111,13 +111,19 @@ def plan_from_pod(context, namespace, name, pod):
 
 class Kubectl:
     """Explicit context/namespace, selected Pod and namespace Redis Deployment."""
-    def __init__(self, *, context, namespace, env=None, config_fd=None, config_sha256=None):
+    def __init__(self, *, context, namespace, env=None, config_fd=None, config_sha256=None,
+                 binary_fd=None, binary_sha256=None):
         if (config_fd is None)!=(config_sha256 is None):raise FinalizerError('KUBE_FINALIZER_ARGUMENT_INVALID')
         if config_fd is not None and (type(config_fd) is not int or config_fd<0
                 or not isinstance(config_sha256,str) or not re.fullmatch(r'[0-9a-f]{64}',config_sha256)):
             raise FinalizerError('KUBE_FINALIZER_ARGUMENT_INVALID')
+        if ((binary_fd is None)!=(binary_sha256 is None) or (binary_fd is not None and
+                (type(binary_fd) is not int or binary_fd<0 or not isinstance(binary_sha256,str)
+                 or not re.fullmatch(r'[0-9a-f]{64}',binary_sha256) or env is not None))):
+            raise FinalizerError('KUBE_FINALIZER_ARGUMENT_INVALID')
         self.context=context;self.namespace=namespace;self.env=env
         self.config_fd=config_fd;self.config_sha256=config_sha256
+        self.binary_fd=binary_fd;self.binary_sha256=binary_sha256
 
     def _call(self, args):
         process=None
@@ -126,16 +132,23 @@ class Kubectl:
                 raise FinalizerError('KUBE_FINALIZER_API_UNCERTAIN')
             command=['kubectl']
             inherited=()
+            selected_env=self.env
+            if self.binary_fd is not None:
+                from scripts import kubernetes_trusted_kubectl
+                kubernetes_trusted_kubectl.verify(self.binary_fd,self.binary_sha256)
+                command=['/proc/self/fd/'+str(self.binary_fd)]
+                inherited=(self.binary_fd,)
+                selected_env=dict(kubernetes_trusted_kubectl.ENV)
             if self.config_fd is not None:
                 from scripts import kubernetes_sealed_config
                 try:kubernetes_sealed_config.verify_sealed(self.config_fd,self.config_sha256)
                 except kubernetes_sealed_config.SealedConfigError:
                     raise FinalizerError('KUBE_FINALIZER_API_UNCERTAIN') from None
                 command.append('--kubeconfig=/proc/self/fd/'+str(self.config_fd))
-                inherited=(self.config_fd,)
+                inherited+=(self.config_fd,)
             command+=['--context='+self.context,'--namespace='+self.namespace,*args]
             process=subprocess.Popen(command,
-                                     env=self.env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+                                     env=selected_env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL,bufsize=0,start_new_session=True,pass_fds=inherited)
             deadline=time.monotonic()+API_TIMEOUT;output=bytearray()
             while True:
@@ -157,8 +170,10 @@ class Kubectl:
             except ProcessLookupError: pass
             if process.wait(timeout=REAP_TIMEOUT):
                 raise FinalizerError('KUBE_FINALIZER_API_UNCERTAIN')
+            if self.binary_fd is not None:
+                kubernetes_trusted_kubectl.verify(self.binary_fd,self.binary_sha256)
             return bytes(output)
-        except (OSError,subprocess.SubprocessError,ChildProcessError):
+        except (OSError,subprocess.SubprocessError,ChildProcessError,ValueError):
             raise FinalizerError('KUBE_FINALIZER_API_UNCERTAIN') from None
         finally:
             if process is not None:

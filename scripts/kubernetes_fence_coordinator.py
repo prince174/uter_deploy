@@ -19,7 +19,7 @@ import uterctl
 from scripts import (backup_installation, backup_snapshot, kubernetes_fence_pin as pin,
                      kubernetes_fence_profile_store as store,
                      kubernetes_pinned_preflight as preflight, kubernetes_sealed_config as sealed,
-                     redis_fence_journal as journal)
+                     kubernetes_trusted_kubectl as kubectl_binary, redis_fence_journal as journal)
 
 
 class CoordinatorError(ValueError):pass
@@ -181,6 +181,9 @@ class BoundSession:
             if self._executor is not None:
                 root,key,identity=self._executor
                 if _executor_identity(root,key)!=identity:raise ValueError
+                api=self._inner.api
+                if api.binary_sha256!=self._record['kubectl_sha256']:raise ValueError
+                kubectl_binary.verify(api.binary_fd,api.binary_sha256)
         except Exception:raise CoordinatorError('KUBE_OPERATOR_PROFILE_CHANGED') from None
 
     def _scope(self):
@@ -286,7 +289,8 @@ class BoundSession:
 
 
 @contextmanager
-def checked_session(home,bundle,publisher_key,kubeconfig_path,profile_path,backup_key_path,*,executor_bundle=None,executor_key=None):
+def checked_session(home,bundle,publisher_key,kubeconfig_path,profile_path,backup_key_path,*,executor_bundle=None,
+                    executor_key=None,kubectl_path=None):
     """Establish a profile-bound, sealed API connection under an existing lock.
 
     Configuration, pin and backup key must be separate trusted private files;
@@ -312,6 +316,7 @@ def checked_session(home,bundle,publisher_key,kubeconfig_path,profile_path,backu
         if (executor_bundle is None)!=(executor_key is None):raise ValueError
         executor=None
         if executor_bundle is not None:
+            if record['schema']!=2 or kubectl_path is None:raise ValueError
             executor_root=Path(executor_bundle).resolve(strict=True)
             executor_key_path=backup_installation.checked_existing_path(executor_key)
             if executor_key_path in (config,profile,key_path) or executor_key_path.is_relative_to(home):raise ValueError
@@ -319,7 +324,14 @@ def checked_session(home,bundle,publisher_key,kubeconfig_path,profile_path,backu
     except Exception:raise CoordinatorError('KUBE_OPERATOR_PROFILE_UNVERIFIED') from None
     with ExitStack() as stack:
         try:
-            inner=stack.enter_context(preflight.checked_session(home,bundle,publisher_key,raw,record['api']))
+            if executor is None:
+                if kubectl_path is not None:raise ValueError
+                inner=stack.enter_context(preflight.checked_session(home,bundle,publisher_key,raw,record['api']))
+            else:
+                binary_fd=kubectl_binary.open_binary(kubectl_path,record['kubectl_sha256'])
+                stack.callback(os.close,binary_fd)
+                inner=stack.enter_context(preflight.checked_session(home,bundle,publisher_key,raw,record['api'],
+                    binary_fd=binary_fd,binary_sha256=record['kubectl_sha256']))
             if (inner.site!=record['site'] or inner.manifest.get('version')!=record['release_version']
                     or inner.inventory_digest!=record['inventory_sha256'] or inner.key_digest!=record['publisher_sha256']):
                 raise ValueError

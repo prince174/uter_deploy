@@ -67,7 +67,7 @@ class Session:
 
 
 @contextmanager
-def checked_session(home,bundle,publisher_key,raw_config,profile):
+def checked_session(home,bundle,publisher_key,raw_config,profile,*,binary_fd=None,binary_sha256=None):
     """Verify signed installed version + independent pins before yielding API.
 
     The caller retains the operation lock and this context throughout all
@@ -89,7 +89,8 @@ def checked_session(home,bundle,publisher_key,raw_config,profile):
             raise ValueError
     except Exception:raise PreflightError('KUBE_PREFLIGHT_INSTALLATION_UNVERIFIED') from None
     with sealed.sealed(raw_config,profile) as (fd,digest):
-        api=finalizer.Kubectl(context=profile['context'],namespace=name,config_fd=fd,config_sha256=digest)
+        api=finalizer.Kubectl(context=profile['context'],namespace=name,config_fd=fd,config_sha256=digest,
+                             binary_fd=binary_fd,binary_sha256=binary_sha256)
         session=Session(home,api,manifest,profile,name,fd,digest,bundle,publisher_key,key_digest,inventory_digest)
         session.reverify()
         yield session

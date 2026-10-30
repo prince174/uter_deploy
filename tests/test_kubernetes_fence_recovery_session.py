@@ -17,6 +17,8 @@ class RecoverySessionTests(fixtures.OperatorSessionTests):
     def setUp(self):
         super().setUp()
         self.record.update(schema=2,audit_pvc_uid='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',kubectl_sha256='f'*64)
+        self.inner.api.binary_fd=19;self.inner.api.binary_sha256='f'*64
+        kubectl_patch=patch.object(recovery.coordinator.kubectl_binary,'verify');kubectl_patch.start();self.addCleanup(kubectl_patch.stop)
         self.profile.unlink();fixtures.store.create(self.profile,b'k'*32,self.record)
         self.objects['audit']={'kind':'PersistentVolumeClaim','metadata':{'name':'uter-test-guardrail',
             'namespace':'uter-test','uid':self.record['audit_pvc_uid']},'status':{'phase':'Bound'}}
@@ -41,7 +43,8 @@ class RecoverySessionTests(fixtures.OperatorSessionTests):
     def test_recovery_session_rechecks_pin_after_nonpristine_state(self):
         class API:
             context='test';namespace='uter-test'
-            def __init__(inner,*args,**kw):pass
+            def __init__(inner,*args,**kw):
+                inner.binary_fd=kw['binary_fd'];inner.binary_sha256=kw['binary_sha256']
             def _call(inner,args):
                 kind=args[2];name=args[3]
                 result=self.objects['audit'] if kind=='pvc' and name=='uter-test-guardrail' else (
@@ -58,18 +61,20 @@ class RecoverySessionTests(fixtures.OperatorSessionTests):
                 with patch.object(recovery.uterctl,'read',side_effect=[state,cfg]), \
                      patch.object(recovery.uterctl,'site_config',return_value=site), \
                      patch.object(recovery.finalizer,'Kubectl',API), \
+                     patch.object(recovery.kubectl_binary,'open_binary',side_effect=lambda *args:os.open('/dev/null',os.O_RDONLY)), \
                      patch.object(recovery.preflight.Session,'reverify',side_effect=AssertionError('must not require pristine state')):
                     with recovery.checked_recovery_session(self.home,self.bundle,self.pub,self.config,self.profile,self.key,
-                                executor_bundle=self.bundle,executor_key=self.pub) as resumed:
+                                executor_bundle=self.bundle,executor_key=self.pub,kubectl_path='/test') as resumed:
                         self.assertEqual(resumed.site,'uter-test')
                         self.assertEqual(journal.read(self.home)['phase'],'isolating')
                 (self.home/recovery.NAME).write_text('{}')
                 with patch.object(recovery.uterctl,'read',side_effect=[state,cfg]), \
                      patch.object(recovery.uterctl,'site_config',return_value=site), \
-                     patch.object(recovery.finalizer,'Kubectl',API):
+                     patch.object(recovery.finalizer,'Kubectl',API), \
+                     patch.object(recovery.kubectl_binary,'open_binary',side_effect=lambda *args:os.open('/dev/null',os.O_RDONLY)):
                     with self.assertRaises(recovery.RecoverySessionError):
                         with recovery.checked_recovery_session(self.home,self.bundle,self.pub,self.config,self.profile,self.key,
-                                    executor_bundle=self.bundle,executor_key=self.pub):pass
+                                    executor_bundle=self.bundle,executor_key=self.pub,kubectl_path='/test'):pass
 
     def test_missing_recovery_binding_refuses(self):
         with self.open() as session:

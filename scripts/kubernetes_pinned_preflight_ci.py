@@ -13,6 +13,7 @@ import tempfile
 import time
 
 from scripts import (adopt_backup_ci, install_recovery, kubernetes_pinned_preflight as preflight,
+                     kubernetes_trusted_kubectl as trusted_kubectl,
                      kubernetes_fence_pin as pin,
                      kubernetes_fence_coordinator as coordinator,
                      kubernetes_fence_profile_store as profile_store,
@@ -72,6 +73,22 @@ def verify(home,bundle,key,manifest):
         if not refused:raise ValueError
         with preflight.checked_session(home,bundle,key,raw,profile) as session:
             if session.manifest!=manifest or session.reverify()['safe_to_update'] is not False:raise ValueError
+        # Disposable CI-only binary pin, not independently trusted evidence.
+        binary_path=Path('/usr/local/bin/uter-ci-kubectl')
+        binary_digest=hashlib.sha256(binary_path.read_bytes()).hexdigest()
+        fd=trusted_kubectl.open_binary(binary_path,binary_digest)
+        try:
+            old={name:os.environ.get(name) for name in ('PATH','HTTPS_PROXY','HTTP_PROXY','KUBECTL_EXTERNAL_DIFF')}
+            try:
+                os.environ.update(PATH='/nonexistent',HTTPS_PROXY='http://127.0.0.1:1',
+                                  HTTP_PROXY='http://127.0.0.1:1',KUBECTL_EXTERNAL_DIFF='/nonexistent')
+                with preflight.checked_session(home,bundle,key,raw,profile,binary_fd=fd,binary_sha256=binary_digest) as pinned:
+                    if pinned.reverify()['safe_to_update'] is not False:raise ValueError
+            finally:
+                for name,value in old.items():
+                    if value is None:os.environ.pop(name,None)
+                    else:os.environ[name]=value
+        finally:os.close(fd)
         # Exercise operator-profile checks with an independent file and exact
         # kubeconfig bytes on the single disposable kind runner only. These
         # synthetic pins are observed on this same test cluster and do not

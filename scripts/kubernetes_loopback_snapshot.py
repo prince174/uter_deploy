@@ -5,45 +5,16 @@ complete backup set. Capture uses only the sealed Kubernetes config FD and an
 exact Pod name/UID; any changed identity invalidates the captured component.
 """
 import copy
-import hashlib
-import os
-from pathlib import Path
 import re
-import stat
 import subprocess
 import threading
 
 from scripts import (backup_snapshot, kubernetes_fence_finalizer as finalizer,
                      kubernetes_loopback_intent as loopback, kubernetes_redis_identity as identity,
-                     kubernetes_sealed_config as sealed)
+                     kubernetes_sealed_config as sealed, kubernetes_trusted_kubectl as kubectl_binary)
 
 
 class SnapshotError(ValueError):pass
-
-
-def _trusted_binary(path,expected):
-    """Open a root-owned binary through protected, non-symlink parents."""
-    value=Path(path)
-    if not value.is_absolute() or '..' in value.parts or not re.fullmatch(r'[0-9a-f]{64}',expected):raise ValueError
-    for item in (value,*value.parents):
-        info=item.lstat()
-        if info.st_uid!=0 or info.st_mode&0o022 or stat.S_ISLNK(info.st_mode):raise ValueError
-        if item!=value and not stat.S_ISDIR(info.st_mode):raise ValueError
-    fd=os.open(value,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW)
-    try:
-        info=os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022
-                or info.st_nlink!=1 or not info.st_mode&0o111 or not 0<info.st_size<=128*1024*1024):raise ValueError
-        digest=hashlib.sha256()
-        while True:
-            data=os.read(fd,1024*1024)
-            if not data:break
-            digest.update(data)
-        if digest.hexdigest()!=expected:raise ValueError
-        os.lseek(fd,0,os.SEEK_SET)
-        return fd
-    except BaseException:
-        os.close(fd);raise
 
 
 class _LimitedStream:
@@ -85,27 +56,30 @@ def _observe(session,operation,pod_name,pod_uid):
             'replicaset_uid':rs['metadata']['uid']}
 
 
-def capture_component(session,operation,pod_name,pod_uid,writer,*,kubectl_path):
+def capture_component(session,operation,pod_name,pod_uid,writer):
     """Stream one RDB through encrypted writer; never finalize a backup set."""
-    process=None;timer=None;accepted=False;binary_fd=None
+    process=None;timer=None;accepted=False
     try:
         if session._executor is None or session._record['schema']!=2:raise ValueError
         before=_observe(session,operation,pod_name,pod_uid)
         fd=session._inner.config_fd
         sealed.verify_sealed(fd,session.config_sha256)
-        binary_fd=_trusted_binary(kubectl_path,session._record['kubectl_sha256'])
+        binary_fd=session._inner.api.binary_fd
+        if session._inner.api.binary_sha256!=session._record['kubectl_sha256']:raise ValueError
+        kubectl_binary.verify(binary_fd,session._record['kubectl_sha256'])
         command=['/proc/self/fd/'+str(binary_fd),'--kubeconfig=/proc/self/fd/'+str(fd),'--context='+session.api.context,
                  '--namespace='+session.site,'--request-timeout=20s','exec','pod/'+pod_name,'-c','redis','--',
                  'sh','-ec','export REDISCLI_AUTH="$REDIS_PASSWORD"; exec redis-cli --rdb -']
         process=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                                  pass_fds=(fd,binary_fd),start_new_session=True,
-                                 env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','LANG':'C','LC_ALL':'C'})
+                                 env=dict(kubectl_binary.ENV))
         timer=threading.Timer(300,lambda:process.kill() if process.poll() is None else None);timer.start()
         first=process.stdout.read(5)
         if first!=b'REDIS':raise ValueError
         writer.put('redis',_LimitedStream(backup_snapshot.PrefixStream(process.stdout,first)))
         timer.cancel();timer.join();timer=None
         if process.wait(timeout=120)!=0:raise ValueError
+        kubectl_binary.verify(binary_fd,session._record['kubectl_sha256'])
         if _observe(session,operation,pod_name,pod_uid)!=before:raise ValueError
         accepted=True
         return {'redis_component_captured':True,'complete_backup':False,'safe_to_update':False}
@@ -120,9 +94,6 @@ def capture_component(session,operation,pod_name,pod_uid,writer,*,kubectl_path):
                 process.wait(timeout=10)
                 if process.stdout is not None:process.stdout.close()
         except (OSError,subprocess.SubprocessError):cleanup_error=True
-        if binary_fd is not None:
-            try:os.close(binary_fd)
-            except OSError:cleanup_error=True
         if not accepted or cleanup_error:
             manifest=getattr(writer,'manifest',None)
             if isinstance(manifest,dict) and isinstance(manifest.get('files'),dict):manifest['files'].pop('redis',None)

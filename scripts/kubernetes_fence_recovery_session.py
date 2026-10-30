@@ -7,6 +7,7 @@ durability and cannot authorize an update. No mutation is performed here.
 from contextlib import ExitStack,contextmanager
 import hashlib
 import hmac
+import os
 from pathlib import Path
 
 import uterctl
@@ -14,7 +15,7 @@ from scripts import (backup_installation, backup_snapshot, kubernetes_fence_coor
                      kubernetes_fence_finalizer as finalizer, kubernetes_fence_pin as pin,
                      kubernetes_fence_profile_store as store, kubernetes_pinned_preflight as preflight,
                      kubernetes_sealed_config as sealed, kubernetes_writer_quiesce as storage,
-                     redis_fence_journal as journal)
+                     kubernetes_trusted_kubectl as kubectl_binary, redis_fence_journal as journal)
 
 NAME='kubernetes-fence-recovery-auth.json'
 
@@ -49,7 +50,7 @@ def seal_before_mutation(session,operation,key):
 
 @contextmanager
 def checked_recovery_session(home,bundle,publisher_key,kubeconfig_path,profile_path,backup_key_path,
-                             *,executor_bundle,executor_key):
+                             *,executor_bundle,executor_key,kubectl_path):
     """Reauthenticate changed workloads without treating them as pristine."""
     with ExitStack() as stack:
         try:
@@ -82,7 +83,10 @@ def checked_recovery_session(home,bundle,publisher_key,kubeconfig_path,profile_p
                     or inventory_digest!=record['inventory_sha256'] or publisher_digest!=record['publisher_sha256']):
                 raise ValueError
             fd,config_digest=stack.enter_context(sealed.sealed(raw,record['api']))
-            api=finalizer.Kubectl(context=record['api']['context'],namespace=name,config_fd=fd,config_sha256=config_digest)
+            binary_fd=kubectl_binary.open_binary(kubectl_path,record['kubectl_sha256'])
+            stack.callback(os.close,binary_fd)
+            api=finalizer.Kubectl(context=record['api']['context'],namespace=name,config_fd=fd,config_sha256=config_digest,
+                                  binary_fd=binary_fd,binary_sha256=record['kubectl_sha256'])
             inner=preflight.Session(home,api,manifest,record['api'],name,fd,config_digest,signed_bundle,publisher,
                                     publisher_digest,inventory_digest)
             session=coordinator.BoundSession(inner,profile,key_path,record,digest,hashlib.sha256(key).hexdigest(),executor)
