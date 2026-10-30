@@ -126,7 +126,55 @@ def main():
                     raise RuntimeError('synthetic pre-fence write changed')
                 if adapter.verify_old_restoration_safe(record) is not False:
                     raise RuntimeError('unsupported restoration was accepted')
-                # Never reconnect this isolated fixture; cleanup removes only owned resources.
+                # Inject a failed snapshot after isolation. The journal must
+                # retain uncertainty and no production restore is authorized.
+                def broken_capture(): raise RuntimeError('synthetic snapshot error')
+                try: protocol.capture(home,record['operation'],adapter,broken_capture)
+                except protocol.ComposeFenceProtocolError as error:
+                    if str(error) != 'COMPOSE_FENCE_CAPTURE_INCOMPLETE': raise
+                else: raise RuntimeError('synthetic capture failure was accepted')
+                if journal.read(home)['phase'] != 'capturing' or adapter.verify_old_restoration_safe(record) is not False:
+                    raise RuntimeError('synthetic failed capture unexpectedly allowed recovery')
+                # Synthetic-only experiment: occupy Redis' old dynamic IP with
+                # another labelled container before manually reattaching. This
+                # does NOT call adapter recovery or authorize production use.
+                other=start('--network',netname,common.PYTHON,'python','-c','import time;time.sleep(600)')
+                other_ip=helpers.docker('inspect','--format','{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}',other)
+                if other_ip != endpoint['IPAddress']:
+                    raise RuntimeError('synthetic competitor did not occupy original address')
+                try:
+                    helpers.docker('network','connect','--ip',endpoint['IPAddress'],net,redis)
+                except RuntimeError:
+                    pass
+                else:
+                    raise RuntimeError('address conflict was incorrectly accepted')
+                if diag._redis_inspect(redis)['networks']:
+                    raise RuntimeError('failed synthetic connection unexpectedly changed Redis network')
+                # Reconnect without --ip in this synthetic test only and verify
+                # that Docker allocated a DIFFERENT address while it is occupied.
+                network_args=['network','connect']
+                for alias in plan['endpoint_aliases']: network_args += ['--alias',alias]
+                helpers.docker(*network_args,net,redis)
+                changed=diag._redis_inspect(redis)['networks'][netname]
+                if changed['IPAddress'] == endpoint['IPAddress']:
+                    raise RuntimeError('conflicting synthetic address was reused')
+                if helpers.docker('exec',redis,'sh','-ec',
+                    'export REDISCLI_AUTH="$(cat /run/secrets/redis_password)"; redis-cli --raw GET synthetic:old')!='1':
+                    raise RuntimeError('synthetic data changed after conflicting reconnect')
+                # Remove the competitor, then try to restore the original
+                # endpoint. The outcome is reported as a fixture observation,
+                # not a guarantee for any other Docker daemon or network.
+                helpers.docker('network','disconnect',net,redis)
+                helpers.cleanup('container',other,owner);containers.remove(other)
+                helpers.docker(*network_args,net,redis)
+                restored=diag._redis_inspect(redis)['networks'][netname]
+                if (restored['IPAddress'] != endpoint['IPAddress'] or
+                        set(restored.get('Aliases') or []) != set(endpoint.get('Aliases') or []) or
+                        (restored.get('MacAddress') or '').lower() != plan['endpoint_mac']):
+                    raise RuntimeError('original synthetic endpoint was not reproduced')
+                if helpers.docker('exec',redis,'sh','-ec',
+                    'export REDISCLI_AUTH="$(cat /run/secrets/redis_password)"; redis-cli --raw GET synthetic:old')!='1':
+                    raise RuntimeError('synthetic data changed after endpoint restoration')
     finally:
         if client is not None:
             try: os.killpg(client.pid,signal.SIGKILL)
@@ -147,7 +195,7 @@ def main():
             except Exception: errors.append('volume')
         if uncertain: errors.append('unknown resource')
         if errors: raise RuntimeError('synthetic cleanup unconfirmed: '+', '.join(errors))
-    print('Synthetic adapter detached Redis and blocked a shared namespace; this is not a signed installation or restore test.')
+    print('Synthetic isolation, failed capture and conflicting dynamic address checks passed; no production restore was performed.')
 
 
 if __name__ == '__main__':

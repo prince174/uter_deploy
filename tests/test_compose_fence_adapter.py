@@ -73,6 +73,28 @@ class ComposeFenceAdapterTests(unittest.TestCase):
                  mock.patch.object(self.adapter,'_peers'), mock.patch.object(self.adapter,'_redis',side_effect=replies):
                 with self.assertRaises(fence.ComposeFenceAdapterError): self.adapter.close_external_clients(self.record)
 
+    def test_redis_requires_no_unix_socket_master_without_replicas_and_healthy_aof(self):
+        good = ['unixsocket', 'role:master\nconnected_slaves:0', 'aof_enabled:1\naof_last_write_status:ok']
+        with mock.patch.object(self.adapter,'_redis',side_effect=good): self.adapter._redis_config(self.plan)
+        for replies in (['unixsocket\n/run/redis.sock'], ['unixsocket','role:slave\nconnected_slaves:0'],
+                        ['unixsocket','role:master\nconnected_slaves:1'],
+                        ['unixsocket','role:master\nconnected_slaves:0','aof_enabled:0'],
+                        ['unixsocket','role:master\nconnected_slaves:0','aof_enabled:1\naof_last_write_status:err']):
+            with self.subTest(replies=replies), mock.patch.object(self.adapter,'_redis',side_effect=replies):
+                with self.assertRaises(fence.ComposeFenceAdapterError): self.adapter._redis_config(self.plan)
+
+    def test_network_and_volume_must_match_recorded_local_topology(self):
+        network={'id':self.plan['network_id'],'name':self.plan['network_name'],'driver':'bridge',
+                 'scope':'local','internal':True,'ipv6':False,'options':{},'project':self.plan['site'],
+                 'network':'backend','ipam':{'Driver':'default','Options':None,'Config':[
+                     {'Subnet':self.plan['network_subnet'],'Gateway':self.plan['network_gateway']}]}}
+        volume={'name':self.plan['volume_name'],'driver':'local','options':{},'project':self.plan['site'],'volume':'redis-data'}
+        with mock.patch.object(self.adapter,'_json',side_effect=[network,volume]): self.adapter._network_and_volume(self.plan)
+        for change in ({'internal':False}, {'ipv6':True}, {'driver':'overlay'}, {'id':'f'*64},
+                       {'ipam':{'Driver':'default','Config':[{'Subnet':'172.31.0.0/16','Gateway':'172.31.0.1'}]}}):
+            with self.subTest(change=change), mock.patch.object(self.adapter,'_json',side_effect=[dict(network,**change),volume]):
+                with self.assertRaises(fence.ComposeFenceAdapterError): self.adapter._network_and_volume(self.plan)
+
     def test_isolation_check_requires_signed_identity_and_rechecks_state(self):
         with mock.patch.object(self.adapter,'_plan',return_value=self.plan), mock.patch.object(self.adapter,'_signed') as signed, \
              mock.patch.object(self.adapter,'_state') as state, mock.patch.object(self.adapter,'_network_and_volume'), \
