@@ -119,19 +119,32 @@ def _ci_delete_uid(kind,name,uid):
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLEANUP_UNCERTAIN') from None
     # A successful DELETE can leave an object terminating. Check until the
     # observed UID is gone; a replacement UID is never deleted by this helper.
-    PHASE='DELETE_POLICY_VERIFY' if kind=='policy' else 'DELETE_POD_VERIFY'
-    deadline=time.monotonic()+30
+    prefix='DELETE_POLICY_VERIFY' if kind=='policy' else 'DELETE_POD_VERIFY'
+    PHASE=prefix+'_GET'
+    # A Pod normally has a 30-second termination grace period; the previous
+    # 30-second bound could expire before Kubernetes finished graceful deletion.
+    # Retain UID preconditions and require the old UID to disappear.
+    deadline=time.monotonic()+(90 if kind=='pod' else 30)
     try:
         while True:
+            PHASE=prefix+'_GET'
             raw=_ci_kube_command(['get', 'networkpolicy' if kind=='policy' else 'pod', name,
                                   '--ignore-not-found=true','-o','json'])
             if not raw: break
+            PHASE=prefix+'_FORMAT'
             current=json.loads(raw)
+            # Do not yet treat any List as absence: distinguish this finite
+            # shape for disposable-CI observation before changing semantics.
+            if (isinstance(current,dict) and current.get('apiVersion')=='v1'
+                    and current.get('kind')=='List' and current.get('items')==[]):
+                PHASE=prefix+'_EMPTY_LIST'
+                raise ValueError
             meta=current.get('metadata') if isinstance(current,dict) else None
             if (not isinstance(meta,dict) or meta.get('name')!=name or meta.get('namespace')!=SITE
                     or not isinstance(meta.get('uid'),str) or not identity.UUID.fullmatch(meta['uid'])):
                 raise ValueError
             if meta['uid']!=uid: break
+            PHASE=prefix+'_TIMEOUT'
             if time.monotonic()>=deadline: raise ValueError
             time.sleep(0.5)
     except Exception:

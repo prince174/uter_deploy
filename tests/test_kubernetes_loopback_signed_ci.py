@@ -216,10 +216,35 @@ class KubernetesLoopbackTests(unittest.TestCase):
                     self.assertEqual(experiment.PHASE,'DELETE_POD_RESPONSE')
             with patch.object(experiment,'ROOT',root), \
                  patch.object(experiment,'_ci_kube_command',side_effect=[accepted,still_present]), \
-                 patch.object(experiment.time,'monotonic',side_effect=[0,31]):
+                 patch.object(experiment.time,'monotonic',side_effect=[0,91]):
                 with self.assertRaisesRegex(experiment.KubernetesLoopbackCIError,'CLEANUP_UNCERTAIN'):
                     experiment._ci_delete_uid('pod',name,self.uid)
-                self.assertEqual(experiment.PHASE,'DELETE_POD_VERIFY')
+                self.assertEqual(experiment.PHASE,'DELETE_POD_VERIFY_TIMEOUT')
+
+    def test_ci_delete_empty_list_is_only_diagnosed_not_accepted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'work').mkdir()
+            success='{"kind":"Status","status":"Success"}'
+            empty='{"apiVersion":"v1","kind":"List","items":[]}'
+            with patch.object(experiment,'ROOT',root), \
+                 patch.object(experiment,'_ci_kube_command',side_effect=[success,empty]):
+                with self.assertRaises(experiment.KubernetesLoopbackCIError):
+                    experiment._ci_delete_uid('pod','uter-ci-loopback-probe',self.uid)
+            self.assertEqual(experiment.PHASE,'DELETE_POD_VERIFY_EMPTY_LIST')
+
+    def test_ci_delete_verify_emits_only_fixed_get_or_format_categories(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'work').mkdir()
+            success='{"kind":"Status","status":"Success"}'
+            for result,category in ((ValueError('sensitive detail'),'DELETE_POD_VERIFY_GET'),
+                                    ('not json','DELETE_POD_VERIFY_FORMAT'),
+                                    ('{"metadata":{"name":"other"}}','DELETE_POD_VERIFY_FORMAT')):
+                with self.subTest(category=category),patch.object(experiment,'ROOT',root), \
+                     patch.object(experiment,'_ci_kube_command',side_effect=[success,result]):
+                    with self.assertRaises(experiment.KubernetesLoopbackCIError) as error:
+                        experiment._ci_delete_uid('pod','uter-ci-loopback-probe',self.uid)
+                    self.assertEqual(experiment.PHASE,category)
+                    self.assertEqual(str(error.exception),'KUBE_LOOPBACK_CI_CLEANUP_UNCERTAIN')
 
     def test_cleanup_failure_categories_are_fixed_and_do_not_expose_response(self):
         with tempfile.TemporaryDirectory() as folder:
