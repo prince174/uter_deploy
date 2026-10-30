@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import hashlib
 import hmac
 import io
@@ -6,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock,patch
 
@@ -34,6 +36,37 @@ class ObserveStageCategoryTests(unittest.TestCase):
                     with start._observe_stage('SIGNED_LIVE'):raise error
                 self.assertEqual(str(result.exception),'FENCE_START_OBSERVE_SIGNED_LIVE_'+category)
                 self.assertNotIn('secret',str(result.exception))
+
+    def test_observe_rechecks_all_mount_fields_after_order_normalization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle=Path(directory);(bundle/'checksums.json').write_text('{}')
+            redis='a'*64; net='b'*64
+            endpoint={'EndpointID':'c'*64,'IPAddress':'172.30.0.5','Aliases':['redis'],
+                      'MacAddress':'02:42:ac:1e:00:05'}
+            live={'mounts':[{'Destination':'/data','Type':'volume','Name':'test_redis-data'},
+                            {'Destination':'/config','Type':'bind','Source':'fixture'}],
+                  'networks':{'test_backend':endpoint},'started':'start','restart_count':0,'image_id':'image'}
+            reordered=copy.deepcopy(live);reordered['mounts'].reverse()
+            changed=copy.deepcopy(reordered);changed['mounts'][0]['Source']='changed'
+            invalid=copy.deepcopy(reordered);invalid['mounts'].append({'Destination':'/data/nested'})
+            manifest={'version':'0.1.6','images':{'redis':'image'}};cfg={'name':'test'}
+            def observe(second):
+                with patch.object(start.diagnostic,'inspect_installation'), \
+                     patch.object(start.uterctl,'verify',return_value=manifest), \
+                     patch.object(start.uterctl,'read',return_value=cfg), \
+                     patch.object(start.install,'commands',return_value=(['docker','-f','old'],{})), \
+                     patch.object(start,'_writers',return_value={}), \
+                     patch.object(start.diagnostic,'_read',return_value=redis[:12]), \
+                     patch.object(start.diagnostic,'_json',side_effect=[redis,{'Config':[{'Subnet':'s','Gateway':'g'}]}]), \
+                     patch.object(start.diagnostic,'_redis_inspect',side_effect=[live,second]), \
+                     patch.object(start.diagnostic,'_require_redis',return_value=(net,'volume')), \
+                     patch.object(start.plans,'validate'):
+                    adapter=SimpleNamespace(**{name:Mock() for name in ('_lock','_config','_state','_network_and_volume','_peers')})
+                    return start._observe(bundle,bundle,bundle,b'k'*32,adapter)
+            self.assertEqual(observe(reordered)[0]['container_id'],redis)
+            with self.assertRaisesRegex(start.StartError,'^FENCE_START_OBSERVE_REDIS_VOLUME$'):observe(changed)
+            with self.assertRaisesRegex(start.StartError,'^FENCE_START_OBSERVE_REINSPECT_COMPOSE_DIAGNOSTIC_REDIS_INVALID$'):
+                observe(invalid)
 
 
 @unittest.skipUnless(os.name=='posix' and hasattr(os,'O_NOFOLLOW'),'requires POSIX private files')

@@ -246,7 +246,7 @@ def _observe(home,bundle,publisher,key,adapter):
         redis=diagnostic._json(diagnostic._docker('inspect','--format','{{json .Id}}',short))
         if not isinstance(redis,str) or not re.fullmatch(r'[0-9a-f]{64}',redis):
             raise StartError('FENCE_START_REDIS_UNVERIFIED')
-        live=diagnostic._redis_inspect(redis)
+        live=diagnostic._canonical_inspection(diagnostic._redis_inspect(redis))
         netid,_=diagnostic._require_redis(live,cfg['name'],redis,manifest['images']['redis'])
         endpoint=live['networks'][cfg['name']+'_backend']
     with _observe_stage('PLAN_VALIDATE'):
@@ -273,7 +273,7 @@ def _observe(home,bundle,publisher,key,adapter):
     with _observe_stage('PEERS'):
         adapter._peers(plan)
     with _observe_stage('REINSPECT'):
-        again=diagnostic._redis_inspect(redis)
+        again=diagnostic._canonical_inspection(diagnostic._redis_inspect(redis))
         if again!=live:raise StartError(_redis_change(live,again))
         other_writers=_writers(command,env,cfg['name'],manifest)
         if other_writers!=writers:raise StartError(_writers_change(writers,other_writers,'FENCE_START_OBSERVE_WRITERS'))

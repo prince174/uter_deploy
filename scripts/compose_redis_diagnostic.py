@@ -9,6 +9,7 @@ import argparse
 from collections import Counter
 import json
 import os
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -59,6 +60,36 @@ def _redis_inspect(container):
            '"cap_add":{{json .HostConfig.CapAdd}},"mounts":{{json .Mounts}},'
            '"networks":{{json .NetworkSettings.Networks}}}')
     return _json(_docker('inspect','--format',fmt,container))
+
+
+def _canonical_inspection(state):
+    """Normalize Docker's unordered mount list, preserving every record field.
+
+    Only absolute, canonical, disjoint destinations are supported. Duplicates,
+    root mounts and nested destinations fail closed, so list order cannot change
+    which mount overlays another. All other inspection fields remain unchanged.
+    """
+    if not isinstance(state,dict) or not isinstance(state.get('mounts'),list):
+        raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_REDIS_INVALID')
+    mounts=state['mounts'];destinations=[]
+    for mount in mounts:
+        if not isinstance(mount,dict):
+            raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_REDIS_INVALID')
+        path=mount.get('Destination')
+        if (not isinstance(path,str) or not path.startswith('/') or path=='/'
+                or '\x00' in path or posixpath.normpath(path)!=path or path.startswith('//')):
+            raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_REDIS_INVALID')
+        destinations.append(path)
+    seen=set()
+    for path in destinations:
+        if path in seen:raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_REDIS_INVALID')
+        seen.add(path)
+    for path in destinations:
+        parent=posixpath.dirname(path)
+        while parent!='/':
+            if parent in seen:raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_REDIS_INVALID')
+            parent=posixpath.dirname(parent)
+    return dict(state,mounts=sorted(mounts,key=lambda item:item['Destination']))
 
 
 def _changed_state_class(before,after):
@@ -183,7 +214,7 @@ def inspect_installation(home, bundle, publisher_key):
         if not re.fullmatch(r'[0-9a-f]{12,64}',short): raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_REDIS_INVALID')
         full=_json(_docker('inspect','--format','{{json .Id}}',short))
         if not isinstance(full,str) or not _ID.fullmatch(full): raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_REDIS_INVALID')
-        first=_redis_inspect(full)
+        first=_canonical_inspection(_redis_inspect(full))
         net,volume=_require_redis(first,name,full,signed['images']['redis'])
         local_image=_json(_docker('image','inspect','--format','{{json .Id}}',signed['images']['redis']))
         if first.get('image_id')!=local_image:
@@ -203,7 +234,7 @@ def inspect_installation(home, bundle, publisher_key):
             '"project":{{json (index .Labels "com.docker.compose.project")}},"volume":{{json (index .Labels "com.docker.compose.volume")}}}',volume))
         _require_volume(vol,name,volume)
         # Reinspection catches some races; it does not stop further changes.
-        second=_redis_inspect(full)
+        second=_canonical_inspection(_redis_inspect(full))
         if first!=second: raise ComposeDiagnosticError('COMPOSE_DIAGNOSTIC_STATE_CHANGED_'+_changed_state_class(first,second))
         return {'result':'supported_shape_observed','backend':'compose','isolation_established':False,
                 'writers_stopped':False,'safe_to_upgrade':False}
