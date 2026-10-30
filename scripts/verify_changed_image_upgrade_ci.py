@@ -180,6 +180,6 @@ if __name__ == '__main__':
     try:
         main()
     except (Exception, KeyboardInterrupt) as exc:
-        code = str(exc) if isinstance(exc, (CheckFailure, sessions.SessionCheckFailure)) and re.fullmatch(r'[A-Z_]+', str(exc)) else 'CHANGED_IMAGE_UPGRADE_FAILED'
+        code = str(exc) if isinstance(exc, (CheckFailure, sessions.SessionCheckFailure)) and re.fullmatch(r'[A-Z_0-9]+', str(exc)) else 'CHANGED_IMAGE_UPGRADE_FAILED'
         print('Changed image upgrade check failed: '+code, file=sys.stderr)
         raise SystemExit(1)

@@ -6,6 +6,7 @@ No automatic migration or merging of old user-provided aliases is attempted.
 """
 import json
 import re
+import socket
 import subprocess
 import urllib.error
 import urllib.request
@@ -29,7 +30,9 @@ KEYS = (
 )
 _REDIS_PROBE = '''import hashlib,json,redis
 from redis_config import load_redis_connection_settings
-r=redis.Redis(**load_redis_connection_settings().client_kwargs())
+settings=load_redis_connection_settings().client_kwargs()
+settings['decode_responses']=False
+r=redis.Redis(**settings)
 keys=KEYS
 out={}
 for key in keys:
@@ -46,19 +49,44 @@ print(json.dumps({name:create_access_token(name,'user') for name in SUBJECTS}))
 '''
 
 
-def container_command(cmd, env, program):
+def container_command(cmd, env, program, phase):
+    if phase not in ('JWT', 'REDIS'):
+        raise SessionCheckFailure('SESSION_PROBE_PHASE_INVALID')
+    # The command runs inside the guardrail image. It sends only a fixed class
+    # category on failure; exception text may contain passwords or URLs.
+    wrapper = ("import json,sys\ntry:\n exec(compile("+repr(program)+",'<ci-session>','exec'))\n"
+               "except Exception as e:\n"
+               " name=type(e).__name__\n"
+               " allowed={'ImportError','ModuleNotFoundError','TypeError','ValueError','KeyError',"
+               "'RuntimeError','ConnectionError','TimeoutError','AuthenticationError'}\n"
+               " print(json.dumps({'ci_probe_error':name if name in allowed else 'Other'}))\n"
+               " sys.exit(7)\n")
     try:
-        result = subprocess.run([str(x) for x in cmd], input=program.encode(), env=env,
-                                capture_output=True, timeout=60, check=True)
+        result = subprocess.run([str(x) for x in cmd], input=wrapper.encode(), env=env,
+                                capture_output=True, timeout=60, check=False)
         if len(result.stdout) > 65536:
             raise ValueError
+        if result.returncode:
+            try:
+                error = json.loads(result.stdout.splitlines()[-1])
+                name = error['ci_probe_error']
+                allowed = {'ImportError','ModuleNotFoundError','TypeError','ValueError','KeyError',
+                           'RuntimeError','ConnectionError','TimeoutError','AuthenticationError'}
+                if name not in allowed: name = 'Other'
+            except (ValueError, IndexError, TypeError, KeyError):
+                name = 'Other'
+            raise SessionCheckFailure('SESSION_'+phase+'_EXEC_'+name.upper())
         return json.loads(result.stdout)
+    except SessionCheckFailure:
+        raise
+    except subprocess.TimeoutExpired:
+        raise SessionCheckFailure('SESSION_'+phase+'_TIMEOUT') from None
     except (OSError, ValueError, subprocess.SubprocessError):
-        raise SessionCheckFailure('SESSION_CONTAINER_PROBE_FAILED') from None
+        raise SessionCheckFailure('SESSION_'+phase+'_EXEC_FAILED') from None
 
 
 def tokens(cmd, env):
-    value = container_command(cmd, env, 'SUBJECTS='+repr(SUBJECTS)+'\n'+_TOKENS)
+    value = container_command(cmd, env, 'SUBJECTS='+repr(SUBJECTS)+'\n'+_TOKENS, 'JWT')
     if not isinstance(value, dict) or set(value) != set(SUBJECTS) or not all(
             isinstance(item, str) and re.fullmatch(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', item)
             for item in value.values()):
@@ -67,7 +95,7 @@ def tokens(cmd, env):
 
 
 def snapshot(cmd, env):
-    result = container_command(cmd, env, 'KEYS='+repr(KEYS)+'\nOWN='+repr(MARKERS[0])+'\nOTHER='+repr(MARKERS[1])+'\n'+_REDIS_PROBE)
+    result = container_command(cmd, env, 'KEYS='+repr(KEYS)+'\nOWN='+repr(MARKERS[0])+'\nOTHER='+repr(MARKERS[1])+'\n'+_REDIS_PROBE, 'REDIS')
     if not isinstance(result, dict) or set(result) != set(KEYS):
         raise SessionCheckFailure('SESSION_SNAPSHOT_INVALID')
     for data in result.values():
@@ -85,6 +113,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def post(path, token, payload, ingress=None):
+    if path not in ('/chat', '/v1/chat/completions'):
+        raise SessionCheckFailure('SESSION_HTTP_PATH_INVALID')
+    stage = 'CHAT' if path == '/chat' else 'OPENAI'
     headers = {'Authorization':'Bearer '+token, 'Content-Type':'application/json'}
     if ingress is not None:
         headers['X-Uter-Ingress-Secret'] = ingress
@@ -97,10 +128,17 @@ def post(path, token, payload, ingress=None):
         if len(raw) > 1024*1024 or not isinstance(json.loads(raw),dict):
             raise ValueError
     except urllib.error.HTTPError as error:
+        status = error.code
         error.close()
-        raise SessionCheckFailure('SESSION_CHAT_FAILED') from None
-    except (OSError, ValueError, urllib.error.URLError):
-        raise SessionCheckFailure('SESSION_CHAT_FAILED') from None
+        code = str(status) if status in (400,401,403,404,408,409,422,429,500,502,503,504) else 'OTHER'
+        raise SessionCheckFailure('SESSION_'+stage+'_HTTP_'+code) from None
+    except (socket.timeout, TimeoutError):
+        raise SessionCheckFailure('SESSION_'+stage+'_TIMEOUT') from None
+    except urllib.error.URLError as error:
+        reason = 'TIMEOUT' if isinstance(error.reason, (socket.timeout, TimeoutError)) else 'NETWORK'
+        raise SessionCheckFailure('SESSION_'+stage+'_'+reason) from None
+    except (OSError, ValueError):
+        raise SessionCheckFailure('SESSION_'+stage+'_RESPONSE_INVALID') from None
 
 
 def send_turns(cmd, env, ingress):

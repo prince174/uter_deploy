@@ -1,4 +1,5 @@
 import unittest
+import subprocess
 from unittest import mock
 from scripts import session_identity_upgrade_ci as session
 
@@ -71,6 +72,29 @@ class SessionIdentityUpgradeTests(unittest.TestCase):
         with mock.patch.object(session, 'snapshot', return_value=corrupted):
             with self.assertRaisesRegex(session.SessionCheckFailure, '^SESSION_RESTORE_NOT_PRESERVED$'):
                 session.verify_restored([], None, expected)
+
+    def test_probe_phase_and_whitelisted_exception_are_reported_without_stderr(self):
+        failed = subprocess.CompletedProcess([], 7, b'{"ci_probe_error":"TypeError"}\n', b'secret-canary')
+        with mock.patch.object(session.subprocess, 'run', return_value=failed):
+            with self.assertRaisesRegex(session.SessionCheckFailure, '^SESSION_REDIS_EXEC_TYPEERROR$') as caught:
+                session.container_command([], None, 'pass', 'REDIS')
+        self.assertNotIn('secret-canary', str(caught.exception))
+        failed.stdout = b'{"ci_probe_error":"secret-canary"}'
+        with mock.patch.object(session.subprocess, 'run', return_value=failed):
+            with self.assertRaisesRegex(session.SessionCheckFailure, '^SESSION_JWT_EXEC_OTHER$'):
+                session.container_command([], None, 'pass', 'JWT')
+
+    def test_redis_probe_reads_bytes_even_when_application_uses_decoded_responses(self):
+        self.assertIn("settings['decode_responses']=False", session._REDIS_PROBE)
+
+    def test_http_errors_are_stage_specific_and_never_expose_response(self):
+        from urllib.error import HTTPError
+        error = HTTPError('http://example.invalid', 503, 'secret-canary', None, None)
+        with mock.patch.object(session.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.side_effect = error
+            with self.assertRaisesRegex(session.SessionCheckFailure, '^SESSION_OPENAI_HTTP_503$') as caught:
+                session.post('/v1/chat/completions', 'jwt-secret', {}, 'ingress-secret')
+        self.assertNotIn('secret', str(caught.exception))
 
 
 if __name__ == '__main__':
