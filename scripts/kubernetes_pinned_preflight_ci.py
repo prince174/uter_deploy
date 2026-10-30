@@ -9,21 +9,26 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import time
 
 from scripts import (adopt_backup_ci, install_recovery, kubernetes_pinned_preflight as preflight,
                      kubernetes_fence_pin as pin,
+                     kubernetes_writer_finalizer as writer_finalizer,
+                     kubernetes_writer_quiesce as quiesce,
                      kubernetes_redis_identity_ci as snapshot)
 
 ROOT=Path(__file__).resolve().parents[1]
 
 
-class PinnedCITestError(ValueError): pass
+class PinnedCITestError(ValueError):
+    def __init__(self,code,stage=None):super().__init__(code);self.stage=stage
 
 
 def _query(args):return snapshot._query(args)
 
 
-def verify(home,bundle,key,manifest):
+def _material(home,bundle,key):
+    """Internal disposable-CI inputs; the generated pin is not independent."""
     try:
         adopt_backup_ci.runner_guard(os.environ,ROOT)
         if (os.environ.get('UTER_CI_STRICT_RUNNER')!='true'
@@ -48,6 +53,13 @@ def verify(home,bundle,key,manifest):
                  'ca_sha256':hashlib.sha256(ca).hexdigest(),'kube_system_uid':system['metadata']['uid'],
                  'namespace_uid':namespace['metadata']['uid'],'redis_pvc_uid':pvc['metadata']['uid'],
                  'redis_deployment_uid':deployment['metadata']['uid']}
+        return raw,profile
+    except Exception:raise PinnedCITestError('KUBE_PINNED_CI_UNVERIFIED') from None
+
+
+def verify(home,bundle,key,manifest):
+    try:
+        raw,profile=_material(home,bundle,key)
         # A different pinned CA is rejected before any API object is created.
         wrong=dict(profile,ca_sha256='0'*64)
         refused=False
@@ -59,3 +71,69 @@ def verify(home,bundle,key,manifest):
             if session.manifest!=manifest or session.reverify()['safe_to_update'] is not False:raise ValueError
     except Exception:raise PinnedCITestError('KUBE_PINNED_CI_UNVERIFIED') from None
     return {'result':'sealed_pinned_queries_exercised','cluster_authenticated':False,'safe_to_update':False}
+
+
+def quiesce_writers(home,bundle,key,manifest,operation):
+    """Run the exact two writer CAS mutations on this disposable fixture."""
+    try:
+        raw,profile=_material(home,bundle,key)
+        qkey=os.urandom(32)
+        with preflight.checked_session(home,bundle,key,raw,profile) as session:
+            if session.manifest!=manifest:raise ValueError
+            # CI synthesized these UIDs from its newly created fixture. A real
+            # operation requires separate administrator-provisioned writer pins.
+            uids={service:session._query(['get','deployment',session.site+'-'+service])['metadata']['uid']
+                  for service in quiesce.SERVICES}
+            quiesce.prepare(home,session,operation,uids,qkey)
+            for service in quiesce.SERVICES:
+                writer_finalizer.prepare(home,session,operation,service,qkey)
+                writer_finalizer.hold(home,session,operation,service,qkey)
+            real_call=session.api._call;counts={'attempted':0,'succeeded':0}
+            def timeout_after_guardrail_patch(args):
+                if len(args)>2 and args[1]=='patch' and args[2]=='deployment/'+session.site+'-guardrail':
+                    counts['attempted']+=1;result=real_call(args);counts['succeeded']+=1
+                    raise TimeoutError('synthetic after-success fault')
+                return real_call(args)
+            session.api._call=timeout_after_guardrail_patch
+            try:
+                try:quiesce.stop(home,session,operation,'guardrail',qkey)
+                except quiesce.QuiesceError:pass
+                else:raise ValueError
+                if counts!={'attempted':1,'succeeded':1}:raise ValueError
+                if quiesce.classify(home,session,operation,'guardrail',qkey)['state']!='stopped_spec_observed':raise ValueError
+                try:quiesce.stop(home,session,operation,'guardrail',qkey)
+                except quiesce.QuiesceError:pass
+                else:raise ValueError
+                if counts!={'attempted':1,'succeeded':1}:raise ValueError
+            finally:session.api._call=real_call
+            quiesce.stop(home,session,operation,'agent',qkey)
+            for service in quiesce.SERVICES:
+                deadline=time.monotonic()+180;stage='UNVERIFIED'
+                while time.monotonic()<deadline:
+                    try:
+                        observed=writer_finalizer.observe(home,session,operation,service,qkey)
+                        if observed.get('result')=='writer_termination_observed':break
+                    except writer_finalizer.WriterFinalizerError as error:
+                        stage=error.stage;time.sleep(.5)
+                else:
+                    allowed={'POD_FETCH','IDENTITY','CONTAINER','TERMINATED_STATE','EXIT_CODE','SIGNAL','REASON'}
+                    raise PinnedCITestError('KUBE_WRITER_CI_UNVERIFIED',
+                                            'WRITER_TERMINATION_'+(stage if stage in allowed else 'UNVERIFIED'))
+                if observed.get('audit_durability_verified') is not False or observed.get('safe_to_backup') is not False:
+                    raise ValueError
+                released=writer_finalizer.release(home,session,operation,service,qkey)
+                if released!={'result':'writer_finalizer_release_requested','termination_verified':True,
+                              'audit_durability_verified':False,'safe_to_backup':False}:raise ValueError
+            deadline=time.monotonic()+180
+            while time.monotonic()<deadline:
+                try:
+                    result=quiesce.observe_stopped(home,session,operation,qkey)
+                    if result.get('writers_stopped_observed') is True:break
+                except quiesce.QuiesceError:time.sleep(.5)
+            else:raise ValueError
+            if result!={'writers_stopped_observed':True,'continuous_exclusion':False,
+                        'old_writer_termination_observed':True,'unforced_deletion_verified':False,'audit_durability_verified':False,
+                        'redis_isolated':False,'safe_to_backup':False,'safe_to_update':False}:raise ValueError
+        return qkey
+    except PinnedCITestError:raise
+    except Exception:raise PinnedCITestError('KUBE_WRITER_CI_UNVERIFIED') from None

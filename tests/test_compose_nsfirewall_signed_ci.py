@@ -46,6 +46,13 @@ class SignedNamespaceCITests(unittest.TestCase):
                     b'secret\n'+valid,valid+b'secret\n',b'\xff'):
             self.assertIsNone(ci._start_diagnostic(raw))
 
+    def test_recovery_diagnostic_only_exposes_fixed_category(self):
+        raw=b'uterctl: NamespaceProtocolError: NS_RECOVERY_INCOMPLETE\n'
+        self.assertEqual(ci._recovery_diagnostic(raw),ci.CRASH_DIAGNOSTICS['NS_RECOVERY_INCOMPLETE'])
+        for value in (raw+b'secret\n',b'uterctl: ValueError: FENCE_UNRECOGNIZED\n',
+                      b'uterctl: ValueError: FENCE_RECOVERY_PATH_UNSAFE secret\n',b'\xff'):
+            self.assertIsNone(ci._recovery_diagnostic(value))
+
     @unittest.skipUnless(os.name=='posix','POSIX lock check')
     def test_ci_stale_lock_requires_exact_fixture_and_killed_child_pid(self):
         env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','UTER_CI_STRICT_RUNNER':'true'}

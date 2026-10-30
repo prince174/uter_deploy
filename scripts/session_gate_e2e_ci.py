@@ -268,6 +268,9 @@ def run_scenario():
                         'CLIENT_MISSING_ENV','CLIENT_CONNECT','CLIENT_AUTH','CLIENT_PING',
                         'RECONNECT_PATCH','RECONNECT_ROLLOUT','RECONNECT_DATA',
                         'CRASH_PATCH','CRASH_STALE_LOCK','CRASH_CLASSIFY','BASELINE_IDENTITY','RECONNECT_IDENTITY','PINNED_PREFLIGHT',
+                        'WRITER_TERMINATION_POD_FETCH','WRITER_TERMINATION_IDENTITY','WRITER_TERMINATION_CONTAINER',
+                        'WRITER_TERMINATION_TERMINATED_STATE','WRITER_TERMINATION_EXIT_CODE','WRITER_TERMINATION_SIGNAL',
+                        'WRITER_TERMINATION_REASON','WRITER_TERMINATION_UNVERIFIED',
                         'RECONNECT_PROBE','RECONNECT_JOURNAL','RECONNECT_WRITERS','RECONNECT_POLICY_NEGATIVE',
                         'RECONNECT_POLICY_DELETE','RECONNECT_POD_DELETE','DELETE_POLICY_COMMAND','DELETE_POLICY_RESPONSE',
                         'DELETE_POD_COMMAND','DELETE_POD_RESPONSE','DELETE_POLICY_VERIFY','DELETE_POD_VERIFY',
@@ -284,7 +287,8 @@ def run_scenario():
                 compose_nsfirewall_signed_ci.verify(Path(home), source, public, old)
             except compose_nsfirewall_signed_ci.SignedComposeFenceCheckFailure as error:
                 if (str(error) in compose_nsfirewall_signed_ci.DIAGNOSTICS.values()
-                        or str(error) in compose_nsfirewall_signed_ci.START_DIAGNOSTICS.values()):
+                        or str(error) in compose_nsfirewall_signed_ci.START_DIAGNOSTICS.values()
+                        or str(error) in compose_nsfirewall_signed_ci.CRASH_DIAGNOSTICS.values()):
                     raise CheckFailure(str(error)) from None
                 phases={'GUARD','PATH_CHECK','CONFIG_READ','SITE_READ','SIGNED_IDENTITY','DOCKER_SCOPE','INSPECTION',
                         'STOP_WRITERS','PRE_CAPTURE_ISOLATE','PRE_CAPTURE_RELEASE','CAPTURE_ISOLATE','CAPTURE',
@@ -292,7 +296,8 @@ def run_scenario():
                         'CRASH_SETUP','CRASH_WAIT','CRASH_STALE_LOCK','CRASH_RECOVERY','CRASH_RESUME',
                         'SNAPSHOT_CRASH_SETUP','SNAPSHOT_CRASH_WAIT','SNAPSHOT_CRASH_LOCK',
                         'SNAPSHOT_CRASH_RECOVERY','SNAPSHOT_CRASH_RESUME',
-                        'SNAPSHOT_CLI_SETUP','SNAPSHOT_CLI_START','SNAPSHOT_CLI_CAPTURE','SNAPSHOT_CLI_RECOVERY','SNAPSHOT_CLI_RESUME'}
+                        'SNAPSHOT_CLI_SETUP','SNAPSHOT_CLI_START','SNAPSHOT_CLI_CAPTURE','SNAPSHOT_CLI_RECOVERY',
+                        'SNAPSHOT_CLI_RESUME','SNAPSHOT_CLI_WRITERS','SNAPSHOT_CLI_FINALIZE','SNAPSHOT_CLI_POSTCHECK'}
                 phase=compose_nsfirewall_signed_ci.PHASE
                 raise CheckFailure('COMPOSE_NSFENCE_CI_'+phase if phase in phases else 'COMPOSE_NSFENCE_CI_UNVERIFIED') from None
         if os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true':
@@ -411,6 +416,8 @@ def main():
                            'COMPOSE_NSFENCE_CI_SNAPSHOT_CRASH_RESUME',
                            'COMPOSE_NSFENCE_CI_SNAPSHOT_CLI_SETUP','COMPOSE_NSFENCE_CI_SNAPSHOT_CLI_START','COMPOSE_NSFENCE_CI_SNAPSHOT_CLI_CAPTURE',
                            'COMPOSE_NSFENCE_CI_SNAPSHOT_CLI_RECOVERY','COMPOSE_NSFENCE_CI_SNAPSHOT_CLI_RESUME',
+                           'COMPOSE_NSFENCE_CI_SNAPSHOT_CLI_WRITERS','COMPOSE_NSFENCE_CI_SNAPSHOT_CLI_FINALIZE',
+                           'COMPOSE_NSFENCE_CI_SNAPSHOT_CLI_POSTCHECK',
                            'KUBE_LOOPBACK_CI_UNVERIFIED','KUBE_LOOPBACK_CI_GUARD',
                            'KUBE_LOOPBACK_CI_FIXTURE','KUBE_LOOPBACK_CI_STOP_WRITERS','KUBE_LOOPBACK_CI_HOLD',
                            'KUBE_LOOPBACK_CI_PATCH','KUBE_LOOPBACK_CI_TERMINATION','KUBE_LOOPBACK_CI_POD',
@@ -421,6 +428,10 @@ def main():
                            'KUBE_LOOPBACK_CI_RECONNECT_PATCH','KUBE_LOOPBACK_CI_RECONNECT_ROLLOUT',
                            'KUBE_LOOPBACK_CI_CRASH_PATCH','KUBE_LOOPBACK_CI_CRASH_STALE_LOCK','KUBE_LOOPBACK_CI_CRASH_CLASSIFY',
                            'KUBE_LOOPBACK_CI_BASELINE_IDENTITY','KUBE_LOOPBACK_CI_RECONNECT_IDENTITY','KUBE_LOOPBACK_CI_PINNED_PREFLIGHT',
+                           'KUBE_LOOPBACK_CI_WRITER_TERMINATION_POD_FETCH','KUBE_LOOPBACK_CI_WRITER_TERMINATION_IDENTITY',
+                           'KUBE_LOOPBACK_CI_WRITER_TERMINATION_CONTAINER','KUBE_LOOPBACK_CI_WRITER_TERMINATION_TERMINATED_STATE',
+                           'KUBE_LOOPBACK_CI_WRITER_TERMINATION_EXIT_CODE','KUBE_LOOPBACK_CI_WRITER_TERMINATION_SIGNAL',
+                           'KUBE_LOOPBACK_CI_WRITER_TERMINATION_REASON','KUBE_LOOPBACK_CI_WRITER_TERMINATION_UNVERIFIED',
                            'KUBE_LOOPBACK_CI_RECONNECT_DATA','KUBE_LOOPBACK_CI_RECONNECT_PROBE',
                            'KUBE_LOOPBACK_CI_RECONNECT_JOURNAL','KUBE_LOOPBACK_CI_RECONNECT_WRITERS',
                            'KUBE_LOOPBACK_CI_RECONNECT_POLICY_NEGATIVE','KUBE_LOOPBACK_CI_RECONNECT_POLICY_DELETE',
@@ -467,6 +478,7 @@ def main():
                            'WIZARD_BACKUP_REQUIRES_INSPECTION','WIZARD_BACKUP_KEY_INVALID'}
                 allowed.update(compose_nsfirewall_signed_ci.DIAGNOSTICS.values())
                 allowed.update(compose_nsfirewall_signed_ci.START_DIAGNOSTICS.values())
+                allowed.update(compose_nsfirewall_signed_ci.CRASH_DIAGNOSTICS.values())
                 found = re.findall(rb'(?m)^Session gate test: ([A-Z_0-9]+)\r?$', output)
                 code = found[-1].decode('ascii') if found else ''
                 raise CheckFailure(code if code in allowed else 'SESSION_GATE_E2E_FAILED')

@@ -23,7 +23,8 @@ from scripts import (backup_snapshot, backup_store, compose_nsfirewall_adapter a
                      compose_nsfirewall_protocol as protocol, compose_fence_recovery_plan as plans, compose_fence_start,
                      compose_redis_diagnostic as diagnostic, install, install_recovery,
                      redis_fence_journal as journal, compose_nsfirewall_checkpoint as checkpoint,
-                     compose_snapshot_only as snapshot_only, snapshot_only_receipts as snapshot_receipts)
+                     compose_snapshot_only as snapshot_only, snapshot_only_receipts as snapshot_receipts,
+                     compose_fence_origin as origin, compose_fence_resume as resume)
 
 ROOT=Path(__file__).resolve().parents[1]
 KEY='uter:ci-fence-check'
@@ -65,6 +66,14 @@ for _prefix,_suffixes in (
     for _suffix in _suffixes:
         _name=_prefix+'_'+_suffix
         START_DIAGNOSTICS[_name]='COMPOSE_START_CI_'+_name
+CRASH_DIAGNOSTICS={name:'COMPOSE_CRASH_CI_'+name for name in (
+    'COMMAND','COMMAND_TIMEOUT','LOCK','JOURNAL','SIGNED','READ','ENDPOINT','DELETE',
+    'PLAN','CHECKPOINT','ORIGIN','CLEANUP',
+    'NS_RECOVERY_INCOMPLETE','NS_RECOVERY_STATE_UNSUPPORTED','FENCE_RECOVERY_BACKUP_KEY_INVALID',
+    'FENCE_RECOVERY_PATH_UNSAFE','FENCE_RECOVERY_KEY_LOCATION_INVALID','FENCE_RECOVERY_STATE_UNSUPPORTED',
+    'FENCE_RECOVERY_INSTALLATION_UNSUPPORTED','FENCE_RECOVERY_SIGNED_VERSION_MISMATCH',
+    'FENCE_RECOVERY_RESULT_UNVERIFIED','FENCE_EXECUTOR_COMPONENT_MISSING','FENCE_EXECUTOR_IMPORT_UNSAFE',
+    'FENCE_EXECUTOR_IMPORT_STATE_UNSAFE','FENCE_EXECUTOR_ISOLATED_PYTHON_REQUIRED')}
 
 
 class SignedComposeFenceCheckFailure(ValueError): pass
@@ -75,6 +84,13 @@ def _start_diagnostic(raw):
     match=re.fullmatch(rb'uterctl: (?:StartError|ValueError): ([A-Z0-9_]+)\r?\n',raw)
     if not match:return None
     return START_DIAGNOSTICS.get(match.group(1).decode('ascii'))
+
+
+def _recovery_diagnostic(raw):
+    """Recognize fixed CLI errors only; discard arbitrary stderr bytes."""
+    match=re.fullmatch(rb'uterctl: (?:ValueError|NamespaceProtocolError): ([A-Z0-9_]+)\r?\n',raw)
+    if not match:return None
+    return CRASH_DIAGNOSTICS.get(match.group(1).decode('ascii'))
 
 
 def _ci_signed_executor(source,root):
@@ -281,6 +297,13 @@ def _verify(home, bundle, publisher, manifest):
                 checkpoint.read(home,current,key)
                 if current['phase']!=expected_phase or current['operation']!=operation:
                     raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CLEANUP')
+                if expected_phase=='redis_released':
+                    released=origin.read(home,key,current)
+                    if released['origin']!='pre_capture' or released['receipt_sha256']!='0'*64:
+                        raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CLEANUP')
+                    (home/origin.NAME).unlink()
+                elif os.path.lexists(home/origin.NAME):
+                    raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CLEANUP')
                 (home/journal.NAME).unlink();(home/plans.NAME).unlink();(home/checkpoint.NAME).unlink()
 
             # Round 1: prove that the supported no-capture release leaves the
@@ -391,38 +414,68 @@ def _verify(home, bundle, publisher, manifest):
         os.fchmod(output.fileno(),0o600);output.write(crash_key);output.flush();os.fsync(output.fileno())
     pre_executor_dir=tempfile.mkdtemp(prefix='fence-executor-',dir=ROOT/'work')
     pre_executor,pre_executor_public=_ci_signed_executor(bundle,pre_executor_dir)
+    diagnostic_r,diagnostic_w=os.pipe()
     recovery_pid=os.fork()
     if recovery_pid==0:
-        recovery=None
+        os.close(diagnostic_r);recovery=None;failure=CRASH_DIAGNOSTICS['COMMAND']
         try:
             # Call the real controller entry point. It must obtain the normal
             # operation lock itself and must never resume application writers.
-            process=subprocess.run([sys.executable,'-I','-B',str(pre_executor/'uterctl.py'),'fence-recover-redis',
-                                    '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
-                                    '--backup-key',keyfile,'--executor-key',str(pre_executor_public)],
-                                   cwd=pre_executor,env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-                                                        'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=240)
-            if process.returncode:raise ValueError
+            with tempfile.TemporaryFile() as error_file:
+                try:
+                    process=subprocess.run([sys.executable,'-I','-B',str(pre_executor/'uterctl.py'),'fence-recover-redis',
+                                            '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
+                                            '--backup-key',keyfile,'--executor-key',str(pre_executor_public)],
+                                           cwd=pre_executor,env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                                                                'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
+                                           stdout=subprocess.DEVNULL,stderr=error_file,timeout=240)
+                except subprocess.TimeoutExpired:
+                    failure=CRASH_DIAGNOSTICS['COMMAND_TIMEOUT'];raise
+                if process.returncode:
+                    error_file.seek(0);failure=_recovery_diagnostic(error_file.read(4097)) or failure
+                    raise ValueError
+            failure=CRASH_DIAGNOSTICS['LOCK']
             with uterctl.locked(home):
                 recovery=fence.Adapter(home,bundle,publisher,crash_key)
+                failure=CRASH_DIAGNOSTICS['JOURNAL']
                 record=journal.read(home)
                 if record['phase']!='redis_released':raise ValueError
                 # _signed verifies both application writers remain stopped.
+                failure=CRASH_DIAGNOSTICS['SIGNED']
                 recovery._signed(crash_plan)
+                failure=CRASH_DIAGNOSTICS['READ']
                 if recovery._redis(crash_plan,'GET',KEY)!=VALUE:raise ValueError
+                failure=CRASH_DIAGNOSTICS['ENDPOINT']
                 if docker_json('inspect','--format','{{json .NetworkSettings.Networks}}',redis_id)!=endpoint_before:raise ValueError
+                failure=CRASH_DIAGNOSTICS['DELETE']
                 if recovery._redis(crash_plan,'DEL',KEY)!='1':raise ValueError
+                failure=CRASH_DIAGNOSTICS['PLAN']
                 plans.read(home,crash_key,record['plan_sha256'],operation=crash_operation,site=cfg['name'],resource=redis_id)
+                failure=CRASH_DIAGNOSTICS['CHECKPOINT']
                 checkpoint.read(home,record,crash_key)
-                (home/journal.NAME).unlink();(home/plans.NAME).unlink();(home/checkpoint.NAME).unlink()
+                failure=CRASH_DIAGNOSTICS['ORIGIN']
+                released=origin.read(home,crash_key,record)
+                if released['origin']!='pre_capture' or released['receipt_sha256']!='0'*64:raise ValueError
+                failure=CRASH_DIAGNOSTICS['CLEANUP']
+                for name in (origin.NAME,journal.NAME,plans.NAME,checkpoint.NAME):(home/name).unlink()
                 recovery.close();recovery=None
+            os.close(diagnostic_w)
             os._exit(0)
         except BaseException:
             if recovery is not None:recovery.close()
+            try:os.write(diagnostic_w,failure.encode('ascii'))
+            except OSError:pass
+            os.close(diagnostic_w)
             os._exit(13)
-    try:_ci_wait_recovery_child(recovery_pid)
+    os.close(diagnostic_w)
+    try:
+        try:_ci_wait_recovery_child(recovery_pid)
+        except SignedComposeFenceCheckFailure:
+            diagnostic=os.read(diagnostic_r,256).decode('ascii',errors='ignore')
+            if diagnostic in CRASH_DIAGNOSTICS.values():raise SignedComposeFenceCheckFailure(diagnostic) from None
+            raise
     finally:
+        os.close(diagnostic_r)
         Path(keyfile).unlink(missing_ok=True)
         shutil.rmtree(pre_executor_dir)
     PHASE='CRASH_RESUME'
@@ -501,8 +554,11 @@ def _verify(home, bundle, publisher, manifest):
                     plans.read(home,snap_key,entry['plan_sha256'],operation=snap_operation,site=cfg['name'],resource=redis_id)
                     checkpoint.read(home,entry,snap_key)
                     snapshot_receipts.read_decision(home,snap_key)
+                    _,receipt_hash=snapshot_receipts.read_receipt(home,snap_key)
+                    released=origin.read(home,snap_key,entry)
+                    if released['origin']!='snapshot' or released['receipt_sha256']!=receipt_hash:raise ValueError
                     for name in (journal.NAME,plans.NAME,checkpoint.NAME,snapshot_receipts.DECISION,
-                                 snapshot_receipts.RECEIPT,snapshot_receipts.DESCRIPTOR):(home/name).unlink()
+                                 snapshot_receipts.RECEIPT,snapshot_receipts.DESCRIPTOR,origin.NAME):(home/name).unlink()
                     owned.close();owned=None
                 os._exit(0)
             except BaseException:
@@ -571,20 +627,62 @@ def _verify(home, bundle, publisher, manifest):
                 owned._signed(snap_plan)
                 if owned._redis(snap_plan,'GET',KEY)!=VALUE:raise ValueError
                 if docker_json('inspect','--format','{{json .NetworkSettings.Networks}}',redis_id)!=endpoint_before:raise ValueError
-                if owned._redis(snap_plan,'DEL',KEY)!='1':raise ValueError
                 plans.read(home,snap_key,entry['plan_sha256'],operation=snap_operation,site=cfg['name'],resource=redis_id)
                 checkpoint.read(home,entry,snap_key);snapshot_receipts.read_decision(home,snap_key)
                 compose_fence_start.read_intent(home,snap_key,entry,product_hash)
-                for name in (journal.NAME,plans.NAME,checkpoint.NAME,snapshot_receipts.DECISION,
-                             snapshot_receipts.RECEIPT,snapshot_receipts.DESCRIPTOR,compose_fence_start.NAME):(home/name).unlink()
+                _,receipt_hash=snapshot_receipts.read_receipt(home,snap_key)
+                released=origin.read(home,snap_key,entry)
+                if released['origin']!='snapshot' or released['receipt_sha256']!=receipt_hash:raise ValueError
             finally:owned.close()
-        PHASE='SNAPSHOT_CLI_RESUME'
-        with uterctl.locked(home):backup_snapshot.resume_writers(home,cfg,site,manifest)
+        PHASE='SNAPSHOT_CLI_WRITERS'
+        process=subprocess.run([sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-resume-writers',
+                                '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
+                                '--backup-key',str(keyfile),'--backup-dir',str(destination),
+                                '--executor-key',str(executor_public)],cwd=executor,
+                               env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                                    'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
+        if process.returncode:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_WRITERS_COMMAND')
+        with uterctl.locked(home):
+            entry=journal.read(home)
+            if entry['operation']!=snap_operation or entry['phase']!='writers_resumed':raise ValueError
+            resume.read_intent(home,snap_key,entry)
+            compose_fence_start.read_intent(home,snap_key,entry,product_hash)
+            backup_snapshot.adopt_installation.verify_live(home,cfg,manifest)
+            owned=fence.Adapter(home,bundle,publisher,snap_key)
+            try:
+                if owned._redis(snap_plan,'GET',KEY)!=VALUE:raise ValueError
+                if docker_json('inspect','--format','{{json .NetworkSettings.Networks}}',redis_id)!=endpoint_before:raise ValueError
+            finally:owned.close()
+        PHASE='SNAPSHOT_CLI_FINALIZE'
+        finalize_command=[sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-finalize',
+                          '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
+                          '--backup-key',str(keyfile),'--backup-dir',str(destination),
+                          '--executor-key',str(executor_public)]
+        clean_env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C','HOME':'/root'}
+        process=subprocess.run(finalize_command,cwd=executor,env=clean_env,stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
+        if process.returncode:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_FINALIZE_COMMAND')
+        PHASE='SNAPSHOT_CLI_POSTCHECK'
+        cleared=(journal.NAME,journal.FINALIZE_ANCHOR,plans.NAME,checkpoint.NAME,origin.NAME,resume.NAME,
+                 compose_fence_start.NAME,snapshot_receipts.DESCRIPTOR,snapshot_receipts.RECEIPT,snapshot_receipts.DECISION)
+        if any(os.path.lexists(home/name) for name in cleared):raise ValueError
+        backup_store.verify_set(destination,snap_key,home=home,site=site,version=manifest['version'])
+        again=subprocess.run(finalize_command,cwd=executor,env=clean_env,stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
+        if again.returncode==0 or any(os.path.lexists(home/name) for name in cleared):raise ValueError
+        with uterctl.locked(home):
+            backup_snapshot.adopt_installation.verify_live(home,cfg,manifest)
+            owned=fence.Adapter(home,bundle,publisher,snap_key)
+            try:
+                if owned._redis(snap_plan,'GET',KEY)!=VALUE:raise ValueError
+                if owned._redis(snap_plan,'DEL',KEY)!='1':raise ValueError
+            finally:owned.close()
     return {'signed_016_firewall_fence':'pass','no_capture_release':'pass',
             'snapshot_under_firewall':'pass','release_after_capture_blocked':'pass',
             'unchanged_endpoint':'pass','ci_only_cleanup':'pass',
             'pre_capture_sigkill_recovery':'pass','snapshot_sigkill_recovery':'pass',
-            'signed_fence_start_cli':'pass','signed_snapshot_cli':'pass',
+            'signed_fence_start_cli':'pass','signed_snapshot_cli':'pass','signed_writer_resume_finalize':'pass',
             'production_recovery_available':False}
 
 

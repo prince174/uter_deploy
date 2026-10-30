@@ -24,10 +24,11 @@ class PreflightError(ValueError): pass
 
 class Session:
     """A checked connection; reverify before each dependent operation."""
-    def __init__(self,home,api,manifest,profile,site,config_fd,config_sha256,bundle,publisher_key,key_digest):
+    def __init__(self,home,api,manifest,profile,site,config_fd,config_sha256,bundle,publisher_key,key_digest,inventory_digest):
         self.home=Path(home);self.api=api;self.manifest=copy.deepcopy(manifest);self.profile=copy.deepcopy(profile);self.site=site
         self.config_fd=config_fd;self.config_sha256=config_sha256
         self.bundle=Path(bundle);self.publisher_key=Path(publisher_key);self.key_digest=key_digest
+        self.inventory_digest=inventory_digest
 
     def _query(self,args):
         try:
@@ -39,6 +40,7 @@ class Session:
     def reverify(self):
         try:
             if (hashlib.sha256(backup_installation.safe_file(self.publisher_key,limit=65536)).hexdigest()!=self.key_digest
+                    or hashlib.sha256(backup_installation.safe_file(self.bundle/'checksums.json',limit=1024*1024)).hexdigest()!=self.inventory_digest
                     or uterctl.verify(self.bundle,self.publisher_key)!=self.manifest):raise ValueError
             kube_system=self._query(['get','namespace','kube-system'])
             namespace=self._query(['get','namespace',self.site])
@@ -76,6 +78,7 @@ def checked_session(home,bundle,publisher_key,raw_config,profile):
     try:
         backup_snapshot._require_legacy_operation_lock(home)
         key_digest=hashlib.sha256(backup_installation.safe_file(publisher_key,limit=65536)).hexdigest()
+        inventory_digest=hashlib.sha256(backup_installation.safe_file(Path(bundle)/'checksums.json',limit=1024*1024)).hexdigest()
         manifest=uterctl.verify(bundle,publisher_key)
         state=uterctl.read(home/'state.json');cfg=uterctl.read(home/'install.json');site=uterctl.site_config(home)
         name=site['name']
@@ -87,6 +90,6 @@ def checked_session(home,bundle,publisher_key,raw_config,profile):
     except Exception:raise PreflightError('KUBE_PREFLIGHT_INSTALLATION_UNVERIFIED') from None
     with sealed.sealed(raw_config,profile) as (fd,digest):
         api=finalizer.Kubectl(context=profile['context'],namespace=name,config_fd=fd,config_sha256=digest)
-        session=Session(home,api,manifest,profile,name,fd,digest,bundle,publisher_key,key_digest)
+        session=Session(home,api,manifest,profile,name,fd,digest,bundle,publisher_key,key_digest,inventory_digest)
         session.reverify()
         yield session

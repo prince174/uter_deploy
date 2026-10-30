@@ -425,14 +425,25 @@ def _verify(home,bundle,key,manifest):
         PHASE='FIXTURE'
         if redis('exists')!='0': raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_FIXTURE_EXISTS')
         if redis('write')!='OK': raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_WRITE')
-        PHASE='STOP_WRITERS'
-        k('scale','deployment/'+SITE+'-guardrail','deployment/'+SITE+'-agent','--replicas=0')
-        wait_no_writers()
         original=pods('redis')
         if len(original)!=1: raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_POD')
         pod=original[0];name=pod['metadata']['name'];uid=pod['metadata']['uid']
         ip=pod['status']['podIP']
         if not re.fullmatch(r'[0-9.]{7,15}',ip): raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_POD')
+        plan=finalizer.plan_from_pod(CONTEXT,SITE,name,pod)
+        finalizer.persist_plan(home,plan)
+        record=journal.create(home,backend='kubernetes',site=SITE,resource=uid,
+                              plan_sha256=finalizer.plan_hash(plan))
+        operation=record['operation']
+        PHASE='STOP_WRITERS'
+        try:quiesce_key=kubernetes_pinned_preflight_ci.quiesce_writers(home,bundle,key,manifest,operation)
+        except kubernetes_pinned_preflight_ci.PinnedCITestError as error:
+            allowed={'WRITER_TERMINATION_POD_FETCH','WRITER_TERMINATION_IDENTITY','WRITER_TERMINATION_CONTAINER',
+                     'WRITER_TERMINATION_TERMINATED_STATE','WRITER_TERMINATION_EXIT_CODE','WRITER_TERMINATION_SIGNAL',
+                     'WRITER_TERMINATION_REASON','WRITER_TERMINATION_UNVERIFIED'}
+            if error.stage in allowed:PHASE=error.stage
+            raise
+        wait_no_writers()
         PHASE='CLIENT_CREATE'
         operation_label=secrets.token_hex(16)
         policy=_ci_probe_policy(operation_label)
@@ -480,11 +491,6 @@ def _verify(home,bundle,key,manifest):
             CLIENT_PROCESS=None
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_CLIENT')
         PHASE='HOLD'
-        plan=finalizer.plan_from_pod(CONTEXT,SITE,name,pod)
-        finalizer.persist_plan(home,plan)
-        record=journal.create(home,backend='kubernetes',site=SITE,resource=uid,
-                              plan_sha256=finalizer.plan_hash(plan))
-        operation=record['operation']
         finalizer.hold(home,plan,operation,api)
         PHASE='PATCH'
         request_loopback(home,bundle,key,plan,operation,api,manifest)
@@ -604,6 +610,36 @@ def _verify(home,bundle,key,manifest):
         recovered,_=loopback_recovery._record(home,plan,operation,api)
         if recovered['operation']!=operation:
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+        from scripts import kubernetes_writer_quiesce
+        writer_plan=kubernetes_writer_quiesce._read(home,kubernetes_writer_quiesce.NAME,quiesce_key)
+        if writer_plan.get('operation')!=operation:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+        writer_files=[]
+        for service in kubernetes_writer_quiesce.SERVICES:
+            marker='kubernetes-writer-'+service+'-attempt.json'
+            expected={'schema':1,'operation':operation,'service':service,
+                      'plan_sha256':kubernetes_writer_quiesce._hash(writer_plan)}
+            if kubernetes_writer_quiesce._read(home,marker,quiesce_key)!=expected:
+                raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+            podfile='kubernetes-writer-pod-'+service+'.json'
+            pod_plan=kubernetes_writer_quiesce._read(home,podfile,quiesce_key)
+            if (pod_plan.get('operation')!=operation or pod_plan.get('service')!=service
+                    or pod_plan.get('writer_plan_sha256')!=kubernetes_writer_quiesce._hash(writer_plan)):
+                raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+            digest=kubernetes_writer_quiesce._hash(pod_plan)
+            held='kubernetes-writer-hold-'+service+'-attempt.json'
+            released='kubernetes-writer-release-'+service+'-attempt.json'
+            observed='kubernetes-writer-observed-'+service+'.json'
+            for name in (held,released):
+                if kubernetes_writer_quiesce._read(home,name,quiesce_key)!= {'operation':operation,'pod_plan_sha256':digest}:
+                    raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+            observation=kubernetes_writer_quiesce._read(home,observed,quiesce_key)
+            if (set(observation)!={'operation','pod_plan_sha256','resource_version'} or observation['operation']!=operation
+                    or observation['pod_plan_sha256']!=digest or not isinstance(observation['resource_version'],str)
+                    or not re.fullmatch(r'[0-9]{1,32}',observation['resource_version'])):
+                raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_JOURNAL')
+            writer_files.extend((marker,podfile,held,released,observed))
+        for name in writer_files:(home/name).unlink()
+        (home/kubernetes_writer_quiesce.NAME).unlink()
         (home/loopback_recovery.ATTEMPT_NAME).unlink()
         (home/loopback_recovery.NAME).unlink()
         (home/loopback_intent.ATTEMPT_NAME).unlink()

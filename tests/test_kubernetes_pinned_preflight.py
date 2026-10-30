@@ -31,6 +31,7 @@ class PinnedPreflightTests(unittest.TestCase):
             redis_pvc_uid=r.pvc_uid,redis_deployment_uid=r.deploy_uid)
         self.manifest=r.manifest;self.site=r.site
         (self.home/'key').write_text('synthetic-public-key');(self.home/'key').chmod(0o600)
+        (self.home/'bundle').mkdir();(self.home/'bundle'/'checksums.json').write_text('{}')
         self.objects={'kube-system':{'kind':'Namespace','metadata':{'name':'kube-system','uid':r.cluster}},
                       r.site:{'kind':'Namespace','metadata':{'name':r.site,'uid':self.profile['namespace_uid']}},
                       r.site+'-redis':r.deployment,'pvc':r.pvc,'pods':{'items':[r.pod]},'replicaset':r.rs}
@@ -84,5 +85,9 @@ class PinnedPreflightTests(unittest.TestCase):
                 self.assertEqual(len(session.api.calls),baseline)
                 (self.home/'key').write_text('synthetic-public-key')
                 verify.return_value={'images':{'redis':'different'}}
+                with self.assertRaises(preflight.PreflightError):session.reverify()
+                self.assertEqual(len(session.api.calls),baseline)
+                verify.return_value=self.manifest
+                (self.home/'bundle'/'checksums.json').write_text('{"changed":true}')
                 with self.assertRaises(preflight.PreflightError):session.reverify()
                 self.assertEqual(len(session.api.calls),baseline)
