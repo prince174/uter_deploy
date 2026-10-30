@@ -379,6 +379,33 @@ def capture_compose_fenced_backup(home,bundle,publisher_key,executor_key,backup_
     print('Fenced backup '+backup_id+' created; Redis remains isolated and writers remain stopped.')
 
 
+def recover_compose_redis_after_snapshot(home,bundle,publisher_key,executor_key,backup_key_path,destination):
+    """Recover only Redis after a verified snapshot-only release decision."""
+    from scripts import backup_installation, compose_nsfirewall_adapter, compose_snapshot_only, redis_fence_journal
+    home,key_path,secret=_fence_secret_inputs(home,backup_key_path)
+    if destination is None or not Path(destination).is_absolute() or '..' in Path(destination).parts:
+        raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
+    try: destination=backup_installation.private_directory(destination)
+    except backup_installation.BackupError:raise ValueError('FENCE_BACKUP_DESTINATION_INVALID') from None
+    if (destination==home or destination.is_relative_to(home) or key_path==destination
+            or key_path.is_relative_to(destination)):
+        raise ValueError('FENCE_BACKUP_DESTINATION_INVALID')
+    with locked(home):
+        if os.path.lexists(home/'backup-operation.json'):
+            raise ValueError('FENCE_BACKUP_PRIOR_BACKUP_REQUIRES_INSPECTION')
+        record=_fence_current_record(home,bundle,publisher_key,('captured','snapshot_releasing'))
+        adapter=compose_nsfirewall_adapter.Adapter(home,bundle,publisher_key,secret)
+        try:
+            backup_id=compose_snapshot_only.recover(adapter,ROOT,executor_key,destination)
+        finally:
+            adapter.close()
+        final=redis_fence_journal.read(home)
+        if (final['operation']!=record['operation'] or final['phase']!='redis_released'
+                or not isinstance(backup_id,str) or not re.fullmatch(r'[0-9a-f]{32}',backup_id)):
+            raise ValueError('FENCE_RECOVERY_RESULT_UNVERIFIED')
+    print('Redis released after verified snapshot '+backup_id+'; writers remain stopped and the fence journal is retained.')
+
+
 def start_compose_fence(home,bundle,publisher_key,backup_key_path):
     """Start the signed local Compose fence; ambiguous failures stay stopped."""
     from scripts import compose_fence_start
@@ -392,7 +419,7 @@ def start_compose_fence(home,bundle,publisher_key,backup_key_path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
@@ -403,7 +430,7 @@ def main(argv=None):
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args(argv)
     home = args.home.resolve()
-    if args.command in ("fence-recover-redis", "fence-backup-redis", "fence-start-redis"):
+    if args.command in ("fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis"):
         if args.key is None or args.bundle is None or args.executor_key is None:
             raise ValueError('FENCE_RECOVERY_SIGNED_BUNDLE_REQUIRED')
         if any(not path.is_absolute() for path in (args.home,args.bundle,args.key,args.executor_key)):
@@ -413,6 +440,8 @@ def main(argv=None):
             recover_compose_redis_before_snapshot(args.home, args.bundle, args.key, args.backup_key)
         elif args.command == "fence-backup-redis":
             capture_compose_fenced_backup(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir)
+        elif args.command == "fence-recover-snapshot-redis":
+            recover_compose_redis_after_snapshot(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir)
         else:
             start_compose_fence(args.home,args.bundle,args.key,args.backup_key)
         return

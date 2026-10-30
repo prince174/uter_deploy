@@ -76,3 +76,57 @@ class FenceBackupCLITests(unittest.TestCase):
              patch.object(compose_nsfirewall_adapter.Adapter,'close'),patch.object(compose_snapshot_only,'capture') as capture:
             with self.assertRaisesRegex(ValueError,'^FENCE_BACKUP_ISOLATION_UNVERIFIED$'):self.invoke()
         capture.assert_not_called();self.assertEqual(journal.read(self.fx.home)['phase'],'isolated')
+
+    def test_recover_snapshot_uses_signed_scoped_backend_and_retains_marker(self):
+        for old,new in (('isolated','capturing'),('capturing','captured')):
+            journal.advance(self.fx.home,operation=self.record['operation'],expected=old,next_phase=new)
+        self.destination.mkdir(mode=0o700)
+        def recover(adapter,executor,key,destination):
+            self.assertEqual((self.fx.home/'operation.lock').read_text(),str(os.getpid()))
+            self.assertEqual(destination,self.destination)
+            journal.advance(self.fx.home,operation=self.record['operation'],expected='captured',next_phase='snapshot_releasing')
+            journal.advance(self.fx.home,operation=self.record['operation'],expected='snapshot_releasing',next_phase='redis_released')
+            return 'b'*32
+        out=io.StringIO()
+        with patch.object(compose_snapshot_only,'recover',side_effect=recover) as recover_call, \
+             patch.object(compose_nsfirewall_adapter.Adapter,'close') as close, \
+             patch.object(uterctl,'deploy') as deploy,contextlib.redirect_stdout(out):
+            uterctl.main(['fence-recover-snapshot-redis','--home',str(self.fx.home),'--bundle',str(self.bundle),
+                          '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key),
+                          '--backup-dir',str(self.destination)])
+        recover_call.assert_called_once();close.assert_called_once();deploy.assert_not_called()
+        self.assertEqual(journal.read(self.fx.home)['phase'],'redis_released')
+        self.assertFalse((self.fx.home/'operation.lock').exists())
+        self.assertIn('writers remain stopped',out.getvalue())
+
+    def test_snapshot_recovery_failure_preserves_journal_and_never_restarts(self):
+        for old,new in (('isolated','capturing'),('capturing','captured')):
+            journal.advance(self.fx.home,operation=self.record['operation'],expected=old,next_phase=new)
+        self.destination.mkdir(mode=0o700)
+        def fail(adapter,executor,key,destination):
+            journal.advance(self.fx.home,operation=self.record['operation'],expected='captured',next_phase='snapshot_releasing')
+            raise RuntimeError('unknown result')
+        with patch.object(compose_snapshot_only,'recover',side_effect=fail), \
+             patch.object(compose_nsfirewall_adapter.Adapter,'close') as close,patch.object(uterctl,'deploy') as deploy:
+            with self.assertRaisesRegex(RuntimeError,'unknown result'):
+                uterctl.main(['fence-recover-snapshot-redis','--home',str(self.fx.home),'--bundle',str(self.bundle),
+                              '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key),
+                              '--backup-dir',str(self.destination)])
+        close.assert_called_once();deploy.assert_not_called()
+        self.assertEqual(journal.read(self.fx.home)['phase'],'snapshot_releasing')
+
+    def test_snapshot_recovery_rejects_nonprivate_or_unfinished_backup(self):
+        self.destination.mkdir(mode=0o700)
+        with patch.object(compose_snapshot_only,'recover') as recover:
+            with self.assertRaisesRegex(ValueError,'^FENCE_RECOVERY_STATE_UNSUPPORTED$'):
+                uterctl.main(['fence-recover-snapshot-redis','--home',str(self.fx.home),'--bundle',str(self.bundle),
+                              '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key),
+                              '--backup-dir',str(self.destination)])
+            recover.assert_not_called()
+        self.destination.chmod(0o755)
+        with patch.object(compose_snapshot_only,'recover') as recover:
+            with self.assertRaisesRegex(ValueError,'^FENCE_BACKUP_DESTINATION_INVALID$'):
+                uterctl.main(['fence-recover-snapshot-redis','--home',str(self.fx.home),'--bundle',str(self.bundle),
+                              '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key),
+                              '--backup-dir',str(self.destination)])
+            recover.assert_not_called()
