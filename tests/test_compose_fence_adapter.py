@@ -20,11 +20,18 @@ class ComposeFenceAdapterTests(unittest.TestCase):
                      'endpoint_ipv4':'172.30.0.5', 'endpoint_mac':'02:42:ac:1e:00:05',
                      'endpoint_aliases':['redis','uter-test-redis-1'], 'network_subnet':'172.30.0.0/16',
                      'network_gateway':'172.30.0.1'}
+        runtime=self.home/'runtime';runtime.mkdir()
+        for name in ('redis.conf','redis-password'):
+            (runtime/name).write_text('synthetic');(runtime/name).chmod(0o600)
         self.state = {'id':'a'*64, 'running':True, 'pid':23, 'started':self.plan['started_at'], 'restart_count':0,
                       'image':self.plan['image_ref'], 'image_id':self.plan['image_config_id'], 'restart':'no',
                       'network_mode':'uter-test_backend', 'ports':None, 'publish_all':False, 'runtime_ports':{},
-                      'privileged':False, 'pid_mode':'', 'cap_add':None,
-                      'mounts':[{'Type':'volume','Name':self.plan['volume_name'],'Destination':'/data','RW':True}],
+                      'privileged':False, 'pid_mode':'', 'cap_add':None, 'readonly':True,'user':'999:1000',
+                      'tmpfs':{'/tmp':'size=128m,mode=1777'},'command':['redis-server','/usr/local/etc/redis/redis.conf'],
+                      'entrypoint':['docker-entrypoint.sh'],
+                      'mounts':[{'Type':'volume','Name':self.plan['volume_name'],'Destination':'/data','RW':True},
+                                {'Type':'bind','Source':str(runtime/'redis.conf'),'Destination':'/usr/local/etc/redis/redis.conf','RW':False},
+                                {'Type':'bind','Source':str(runtime/'redis-password'),'Destination':'/run/secrets/redis_password','RW':False}],
                       'networks':{}}
         self.record = {'operation':'1'*32,'site':'uter-test','resource':'a'*64,'plan_sha256':'b'*64}
 
@@ -39,14 +46,37 @@ class ComposeFenceAdapterTests(unittest.TestCase):
         path.unlink();path.symlink_to(self.home/'untrusted')
         with self.assertRaisesRegex(fence.ComposeFenceAdapterError, 'LOCK_INVALID'): self.adapter._lock()
 
+    def test_only_exact_signed_config_is_allowed_and_errors_never_expose_secrets(self):
+        install=self.home/'signed';(install/'compose').mkdir(parents=True);(install/'examples').mkdir()
+        (install/'compose/compose.yaml').write_text('services:\n  redis:\n    command: [redis-server, /usr/local/etc/redis/redis.conf]\n')
+        template=b'bind 0.0.0.0\nappendonly yes\nrequirepass REPLACE\n'
+        (install/'examples/redis.conf.example').write_bytes(template)
+        password=b'a'*64
+        (self.home/'runtime/redis-password').write_bytes(password)
+        config=self.home/'runtime/redis.conf';config.write_bytes(template.replace(b'REPLACE',password))
+        self.adapter._config(install)
+        for changed in (template.replace(b'REPLACE',password)+b'loadmodule /tmp/unsafe.so\n',
+                        template.replace(b'REPLACE',password)+b'unixsocket /data/socket\n'):
+            config.write_bytes(changed)
+            with self.assertRaisesRegex(fence.ComposeFenceAdapterError,'^COMPOSE_FENCE_CONFIG_UNSUPPORTED$') as error:
+                self.adapter._config(install)
+            self.assertNotIn(password.decode(),str(error.exception))
+        config.write_bytes(template.replace(b'REPLACE',password))
+        (install/'compose/compose.yaml').write_text('services:\n  redis:\n    command: [sh, -c, unsafe]\n')
+        with self.assertRaises(fence.ComposeFenceAdapterError):self.adapter._config(install)
+
     def test_detached_state_requires_same_process_image_volume_and_no_network(self):
-        with mock.patch.object(fence.diagnostic, '_redis_inspect', return_value=self.state):
+        with mock.patch.object(self.adapter,'_json',return_value=['docker-entrypoint.sh']), \
+             mock.patch.object(self.adapter, '_inspect_redis', return_value=self.state):
             self.assertEqual(self.adapter._state(self.plan,detached=True,restart='no'),self.state)
         for change in ({'restart':'unless-stopped'}, {'started':'different'}, {'restart_count':1},
                        {'networks':{'rogue':{}}}, {'ports':{'6379/tcp':[{}]}}, {'publish_all':True},
                        {'image_id':'sha256:'+'f'*64}, {'privileged':True}, {'network_mode':'host'},
-                       {'runtime_ports':{'6379/tcp':[{'HostPort':'6379'}]}}):
-            with self.subTest(change=change), mock.patch.object(fence.diagnostic, '_redis_inspect', return_value=dict(self.state,**change)):
+                       {'runtime_ports':{'6379/tcp':[{'HostPort':'6379'}]}}, {'readonly':False},
+                       {'user':'0:0'}, {'command':['/bin/sh']}, {'tmpfs':{'/tmp':'rw','/bin':'rw'}},
+                       {'mounts':self.state['mounts']+[{'Type':'bind','Destination':'/usr/local/bin/redis-cli','RW':True}]}):
+            with self.subTest(change=change), mock.patch.object(self.adapter,'_json',return_value=['docker-entrypoint.sh']), \
+                 mock.patch.object(self.adapter, '_inspect_redis', return_value=dict(self.state,**change)):
                 with self.assertRaises(fence.ComposeFenceAdapterError): self.adapter._state(self.plan,detached=True,restart='no')
 
     def test_peer_network_namespace_and_volume_are_rejected(self):
@@ -74,12 +104,13 @@ class ComposeFenceAdapterTests(unittest.TestCase):
                 with self.assertRaises(fence.ComposeFenceAdapterError): self.adapter.close_external_clients(self.record)
 
     def test_redis_requires_no_unix_socket_master_without_replicas_and_healthy_aof(self):
-        good = ['unixsocket', 'role:master\nconnected_slaves:0', 'aof_enabled:1\naof_last_write_status:ok']
+        good = ['unixsocket', 'role:master\nconnected_slaves:0', 'aof_enabled:1\naof_last_write_status:ok', '']
         with mock.patch.object(self.adapter,'_redis',side_effect=good): self.adapter._redis_config(self.plan)
         for replies in (['unixsocket\n/run/redis.sock'], ['unixsocket','role:slave\nconnected_slaves:0'],
                         ['unixsocket','role:master\nconnected_slaves:1'],
                         ['unixsocket','role:master\nconnected_slaves:0','aof_enabled:0'],
-                        ['unixsocket','role:master\nconnected_slaves:0','aof_enabled:1\naof_last_write_status:err']):
+                        ['unixsocket','role:master\nconnected_slaves:0','aof_enabled:1\naof_last_write_status:err'],
+                        ['unixsocket','role:master\nconnected_slaves:0','aof_enabled:1\naof_last_write_status:ok','name=malicious']):
             with self.subTest(replies=replies), mock.patch.object(self.adapter,'_redis',side_effect=replies):
                 with self.assertRaises(fence.ComposeFenceAdapterError): self.adapter._redis_config(self.plan)
 

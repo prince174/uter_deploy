@@ -44,7 +44,11 @@ def main():
             PHASE='fixture-create'
             root=Path(tmp); root.chmod(0o755)
             home=root/'home'; home.mkdir(mode=0o700)
-            password=root/'password';password.write_text(PASSWORD);password.chmod(0o644)
+            runtime=home/'runtime';runtime.mkdir(mode=0o700)
+            password=runtime/'redis-password';password.write_text(PASSWORD);password.chmod(0o644)
+            config=runtime/'redis.conf'
+            config.write_text('bind 0.0.0.0\nport 6379\nappendonly yes\nappendfsync always\ndir /data\nrequirepass '+PASSWORD+'\n')
+            config.chmod(0o644)
             uncertain=True
             net=helpers.docker('network','create','--internal','--label',f'{LABEL}={owner}',
                                '--label',f'com.docker.compose.project={site}',
@@ -74,10 +78,11 @@ def main():
             else: raise RuntimeError('synthetic volume not ready')
             helpers.cleanup('container',initial,owner);containers.remove(initial)
             redis=start('--network',netname,'--network-alias','redis','--restart','unless-stopped',
+                        '--user','999:1000','--read-only','--tmpfs','/tmp:size=128m,mode=1777',
                         '--mount',f'type=volume,source={volname},target=/data',
                         '--mount',f'type=bind,source={password},target=/run/secrets/redis_password,readonly',
-                        IMAGE,'redis-server','--bind','0.0.0.0','--requirepass',PASSWORD,
-                        '--appendonly','yes','--appendfsync','always','--save','')
+                        '--mount',f'type=bind,source={config},target=/usr/local/etc/redis/redis.conf,readonly',
+                        IMAGE,'redis-server','/usr/local/etc/redis/redis.conf')
             for _ in range(100):
                 try:
                     if helpers.docker('exec',redis,'redis-cli','-a',PASSWORD,'PING')=='PONG': break
@@ -179,10 +184,23 @@ def main():
                 helpers.cleanup('container',other,owner);containers.remove(other)
                 helpers.docker(*network_args,net,redis)
                 restored=diag._redis_inspect(redis)['networks'][netname]
-                if (restored['IPAddress'] != endpoint['IPAddress'] or
-                        set(restored.get('Aliases') or []) != set(endpoint.get('Aliases') or []) or
-                        (restored.get('MacAddress') or '').lower() != plan['endpoint_mac']):
-                    raise RuntimeError('original synthetic endpoint was not reproduced')
+                changed_ip=restored['IPAddress'] != endpoint['IPAddress']
+                changed_aliases=set(restored.get('Aliases') or []) != set(endpoint.get('Aliases') or [])
+                changed_mac=(restored.get('MacAddress') or '').lower() != plan['endpoint_mac']
+                if changed_ip or changed_aliases or changed_mac:
+                    # A mismatch is an expected, correctly blocked result. Do
+                    # not report restoration as successful or resume writers.
+                    try: adapter._state(plan,detached=False,restart='no')
+                    except fence.ComposeFenceAdapterError as error:
+                        if str(error) != 'COMPOSE_FENCE_NETWORK_CHANGED': raise
+                    else: raise RuntimeError('mismatched synthetic endpoint was accepted')
+                    print('Synthetic endpoint mismatch was blocked; IP changed: '+str(changed_ip)
+                          +'; aliases changed: '+str(changed_aliases)+'; MAC changed: '+str(changed_mac),flush=True)
+                else:
+                    adapter._state(plan,detached=False,restart='no')
+                    print('Synthetic endpoint happened to match; production recovery still blocked.',flush=True)
+                if adapter.verify_old_restoration_safe(record) is not False or journal.read(home)['phase']!='capturing':
+                    raise RuntimeError('synthetic recovery was incorrectly authorized')
                 if helpers.docker('exec',redis,'sh','-ec',
                     'export REDISCLI_AUTH="$(cat /run/secrets/redis_password)"; redis-cli --raw GET synthetic:old')!='1':
                     raise RuntimeError('synthetic data changed after endpoint restoration')

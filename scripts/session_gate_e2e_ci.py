@@ -230,9 +230,11 @@ def run_scenario():
                 from scripts import compose_fence_signed_ci
                 try:
                     compose_fence_signed_ci.verify(ROOT/'work/managed', source, public, old)
-                except compose_fence_signed_ci.SignedComposeFenceCheckFailure:
+                except compose_fence_signed_ci.SignedComposeFenceCheckFailure as error:
                     stages={'GUARD','DOCKER_SCOPE','INSPECTION','STOP_WRITERS','WRITER','ISOLATE','SNAPSHOT','CI_RECONNECT'}
                     stage=compose_fence_signed_ci.PHASE
+                    if str(error) in {'COMPOSE_SIGNED_CI_GUARD','COMPOSE_SIGNED_CI_PATH','COMPOSE_SIGNED_CI_IDENTITY'}:
+                        raise CheckFailure(str(error)) from None
                     raise CheckFailure('COMPOSE_SIGNED_CI_'+stage if stage in stages else 'COMPOSE_SIGNED_CI_UNVERIFIED') from None
             if os.environ.get('UTER_CI_VERIFY_REDIS_IDENTITY') == 'true':
                 from scripts import kubernetes_redis_identity_ci
@@ -339,6 +341,7 @@ def main():
                                           '--staged'], env=env, timeout=3300, limit=1024*1024)
             if status:
                 allowed = {'EXPECTED_SIGNED_GATE_MISSING','COMPOSE_SIGNED_CI_UNVERIFIED','COMPOSE_SIGNED_CI_GUARD',
+                           'COMPOSE_SIGNED_CI_PATH','COMPOSE_SIGNED_CI_IDENTITY',
                            'COMPOSE_SIGNED_CI_DOCKER_SCOPE','COMPOSE_SIGNED_CI_INSPECTION','COMPOSE_SIGNED_CI_STOP_WRITERS',
                            'COMPOSE_SIGNED_CI_WRITER','COMPOSE_SIGNED_CI_ISOLATE','COMPOSE_SIGNED_CI_SNAPSHOT',
                            'COMPOSE_SIGNED_CI_CI_RECONNECT','KUBE_IDENTITY_CI_UNVERIFIED','KUBE_IDENTITY_CI_INPUT',

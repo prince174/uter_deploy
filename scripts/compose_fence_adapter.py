@@ -60,6 +60,28 @@ class Adapter:
         except (OSError, ValueError):
             raise ComposeFenceAdapterError('COMPOSE_FENCE_LOCK_INVALID') from None
 
+    def _config(self, installed):
+        """Fail closed on any deviation; never disclose config or password."""
+        try:
+            import yaml
+            document = yaml.safe_load((installed/'compose/compose.yaml').read_text(encoding='utf-8'))
+            redis_service = document['services']['redis']
+            if (redis_service.get('command') != ['redis-server', '/usr/local/etc/redis/redis.conf']
+                    or 'entrypoint' in redis_service): raise ValueError
+            config = self.home/'runtime/redis.conf'
+            password_file = self.home/'runtime/redis-password'
+            for path in (config, password_file):
+                info = path.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o007):
+                    raise ValueError
+            password = password_file.read_bytes()
+            template = (installed/'examples/redis.conf.example').read_bytes()
+            if (not re.fullmatch(rb'[0-9a-f]{64}', password) or template.count(b'REPLACE') != 1
+                    or config.read_bytes() != template.replace(b'REPLACE', password)):
+                raise ValueError
+        except Exception:
+            raise ComposeFenceAdapterError('COMPOSE_FENCE_CONFIG_UNSUPPORTED') from None
+
     def _signed(self, plan):
         try:
             self._lock()
@@ -89,6 +111,9 @@ class Adapter:
                 digest = plan['image_ref'].rsplit('@', 1)[-1]
                 if image != digest or self._json('image', 'inspect', '--format', '{{json .Descriptor.Digest}}', plan['image_ref']) != digest:
                     raise ValueError
+            # Signed template and current config must match; the files contain
+            # secrets, so errors intentionally contain only a fixed category.
+            self._config(installed)
             command, env = install.commands(self.home, cfg)
             command[command.index('-f')+1] = str(installed/'compose/compose.yaml')
             for service in ('guardrail', 'agent'):
@@ -101,8 +126,23 @@ class Adapter:
         except Exception:
             raise ComposeFenceAdapterError('COMPOSE_FENCE_IDENTITY_INVALID') from None
 
+    def _inspect_redis(self, container):
+        # Explicit fields only: never inspect Config.Env or full config.
+        fmt = ('{"id":{{json .Id}},"running":{{json .State.Running}},"pid":{{json .State.Pid}},'
+               '"started":{{json .State.StartedAt}},"restart_count":{{json .RestartCount}},'
+               '"image":{{json .Config.Image}},"image_id":{{json .Image}},'
+               '"restart":{{json .HostConfig.RestartPolicy.Name}},"network_mode":{{json .HostConfig.NetworkMode}},'
+               '"ports":{{json .HostConfig.PortBindings}},"publish_all":{{json .HostConfig.PublishAllPorts}},'
+               '"runtime_ports":{{json .NetworkSettings.Ports}},"privileged":{{json .HostConfig.Privileged}},'
+               '"pid_mode":{{json .HostConfig.PidMode}},"cap_add":{{json .HostConfig.CapAdd}},'
+               '"readonly":{{json .HostConfig.ReadonlyRootfs}},"tmpfs":{{json .HostConfig.Tmpfs}},'
+               '"user":{{json .Config.User}},"command":{{json .Config.Cmd}},'
+               '"entrypoint":{{json .Config.Entrypoint}},"mounts":{{json .Mounts}},'
+               '"networks":{{json .NetworkSettings.Networks}}}')
+        return self._json('inspect', '--format', fmt, container)
+
     def _state(self, plan, *, detached, restart):
-        state = diagnostic._redis_inspect(plan['container_id'])
+        state = self._inspect_redis(plan['container_id'])
         networks = state.get('networks')
         if (state.get('id') != plan['container_id'] or state.get('running') is not True
                 or state.get('started') != plan['started_at'] or state.get('restart_count') != plan['restart_count']
@@ -110,15 +150,34 @@ class Adapter:
                 or state.get('image') != plan['image_ref'] or state.get('image_id') != plan['image_config_id']
                 or state.get('restart') != restart or state.get('privileged') is not False
                 or state.get('network_mode') != plan['network_name']
+                or state.get('readonly') is not True or state.get('user') != '999:1000'
+                or state.get('command') != ['redis-server', '/usr/local/etc/redis/redis.conf']
+                or not isinstance(state.get('tmpfs'), dict) or set(state['tmpfs']) != {'/tmp'}
                 or state.get('pid_mode') not in ('', None) or state.get('cap_add') not in (None, [])
                 or state.get('ports') or state.get('publish_all') is not False
                 or not isinstance(state.get('runtime_ports'), dict)
                 or any(x not in (None, []) for x in state['runtime_ports'].values())
                 or not isinstance(state.get('mounts'), list) or not isinstance(networks, dict)):
             raise ComposeFenceAdapterError('COMPOSE_FENCE_REDIS_CHANGED')
+        entrypoint = self._json('image', 'inspect', '--format', '{{json .Config.Entrypoint}}', plan['image_ref'])
+        if state.get('entrypoint') != entrypoint:
+            raise ComposeFenceAdapterError('COMPOSE_FENCE_REDIS_CHANGED')
+        expected_mounts = {'/data', '/usr/local/etc/redis/redis.conf', '/run/secrets/redis_password'}
+        if (len(state['mounts']) != len(expected_mounts)
+                or any(not isinstance(m, dict) for m in state['mounts'])
+                or {m.get('Destination') for m in state['mounts']} != expected_mounts):
+            raise ComposeFenceAdapterError('COMPOSE_FENCE_MOUNTS_UNSUPPORTED')
         data = [m for m in state['mounts'] if isinstance(m, dict) and m.get('Destination') == '/data']
         if len(data) != 1 or data[0].get('Type') != 'volume' or data[0].get('Name') != plan['volume_name'] or data[0].get('RW') is not True:
             raise ComposeFenceAdapterError('COMPOSE_FENCE_VOLUME_CHANGED')
+        for target, filename in (('/usr/local/etc/redis/redis.conf', 'redis.conf'),
+                                 ('/run/secrets/redis_password', 'redis-password')):
+            mount = next(m for m in state['mounts'] if m.get('Destination') == target)
+            expected = self.home/'runtime'/filename
+            if (mount.get('Type') != 'bind' or mount.get('RW') is not False
+                    or not isinstance(mount.get('Source'), str) or expected.is_symlink()
+                    or not expected.is_file() or Path(mount['Source']).resolve() != expected.resolve()):
+                raise ComposeFenceAdapterError('COMPOSE_FENCE_MOUNTS_UNSUPPORTED')
         if detached:
             if networks: raise ComposeFenceAdapterError('COMPOSE_FENCE_NETWORK_CHANGED')
         else:
@@ -177,8 +236,8 @@ class Adapter:
     def _redis(self, plan, *args):
         # All arguments are fixed by this module. Password stays inside container.
         import shlex
-        cmd = 'export REDISCLI_AUTH="$(cat /run/secrets/redis_password)"; exec redis-cli --raw ' + ' '.join(shlex.quote(x) for x in args)
-        return self._run('exec', plan['container_id'], 'sh', '-ec', cmd)
+        cmd = 'export REDISCLI_AUTH="$(/bin/cat /run/secrets/redis_password)"; exec /usr/local/bin/redis-cli --raw ' + ' '.join(shlex.quote(x) for x in args)
+        return self._run('exec', '--user', '999:1000', plan['container_id'], '/bin/sh', '-ec', cmd)
 
     def _redis_config(self, plan):
         if self._redis(plan, 'CONFIG', 'GET', 'unixsocket').strip() != 'unixsocket':
@@ -190,6 +249,8 @@ class Adapter:
         persistence = {x.strip() for x in self._redis(plan, 'INFO', 'persistence').splitlines()}
         if 'aof_enabled:1' not in persistence or 'aof_last_write_status:ok' not in persistence:
             raise ComposeFenceAdapterError('COMPOSE_FENCE_AOF_UNHEALTHY')
+        if self._redis(plan, 'MODULE', 'LIST').strip():
+            raise ComposeFenceAdapterError('COMPOSE_FENCE_MODULES_UNSUPPORTED')
 
     def _no_other_clients(self, plan):
         result = self._redis(plan, 'CLIENT', 'LIST')
