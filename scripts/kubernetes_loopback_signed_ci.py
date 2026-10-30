@@ -410,6 +410,11 @@ def _verify(home,bundle,key,manifest):
     def rollout():
         k('rollout','status','deployment/'+DEPLOYMENT,'--timeout=180s',timeout=210)
     with uterctl.locked(home):
+        PHASE='PINNED_PREFLIGHT'
+        from scripts import kubernetes_pinned_preflight_ci
+        result=kubernetes_pinned_preflight_ci.verify(home,bundle,key,manifest)
+        if result!={'result':'sealed_pinned_queries_exercised','cluster_authenticated':False,'safe_to_update':False}:
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_IDENTITY')
         # CI-only baseline observed in the same cluster; this is not an
         # independently authenticated identity for a production installation.
         PHASE='BASELINE_IDENTITY'

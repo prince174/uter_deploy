@@ -111,17 +111,30 @@ def plan_from_pod(context, namespace, name, pod):
 
 class Kubectl:
     """Explicit context/namespace, selected Pod and namespace Redis Deployment."""
-    def __init__(self, *, context, namespace, env=None):
+    def __init__(self, *, context, namespace, env=None, config_fd=None, config_sha256=None):
+        if (config_fd is None)!=(config_sha256 is None):raise FinalizerError('KUBE_FINALIZER_ARGUMENT_INVALID')
+        if config_fd is not None and (type(config_fd) is not int or config_fd<0
+                or not isinstance(config_sha256,str) or not re.fullmatch(r'[0-9a-f]{64}',config_sha256)):
+            raise FinalizerError('KUBE_FINALIZER_ARGUMENT_INVALID')
         self.context=context;self.namespace=namespace;self.env=env
+        self.config_fd=config_fd;self.config_sha256=config_sha256
 
     def _call(self, args):
         process=None
         try:
             if os.name!='posix' or not hasattr(os,'waitid'):
                 raise FinalizerError('KUBE_FINALIZER_API_UNCERTAIN')
-            process=subprocess.Popen(['kubectl','--context='+self.context,'--namespace='+self.namespace,*args],
+            command=['kubectl']
+            inherited=()
+            if self.config_fd is not None:
+                from scripts import kubernetes_sealed_config
+                kubernetes_sealed_config.verify_sealed(self.config_fd,self.config_sha256)
+                command.append('--kubeconfig=/proc/self/fd/'+str(self.config_fd))
+                inherited=(self.config_fd,)
+            command+=['--context='+self.context,'--namespace='+self.namespace,*args]
+            process=subprocess.Popen(command,
                                      env=self.env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL,bufsize=0,start_new_session=True)
+                                     stderr=subprocess.DEVNULL,bufsize=0,start_new_session=True,pass_fds=inherited)
             deadline=time.monotonic()+API_TIMEOUT;output=bytearray()
             while True:
                 remaining=deadline-time.monotonic()
