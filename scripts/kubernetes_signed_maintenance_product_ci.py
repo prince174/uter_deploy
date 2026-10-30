@@ -174,7 +174,7 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
             result=subprocess.run(child+[redis_run],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=240)
             lines=result.stdout.splitlines();status=lines[-1] if lines else b''
             if status.decode('ascii') != expected or (result.returncode == 0) != (expected.endswith('VERIFIED')):
-                permitted={b'READONLY_TRANSPORT_REFUSED_'+x for x in (b'INITIAL',b'SESSION',b'PLAN',b'JOURNAL',b'POD',b'CONNECT',b'QUERY')}
+                permitted={b'READONLY_TRANSPORT_REFUSED_'+x for x in (b'INITIAL',b'EXECUTOR',b'PROFILE',b'SESSION',b'PLAN',b'JOURNAL',b'POD',b'CONNECT',b'QUERY')}
                 if status in permitted: print('KUBE_SIGNED_CI_'+status.decode('ascii'),file=sys.stderr)
                 allowed_details={b'READONLY_TRANSPORT_DETAIL_'+x for x in (b'KUBE_OPERATOR_PROFILE_UNVERIFIED',
                     b'KUBE_OPERATOR_SESSION_UNVERIFIED',b'KUBE_OPERATOR_PROFILE_CHANGED',b'KUBE_EXECUTOR_ISOLATION_REQUIRED',

@@ -16,8 +16,13 @@ def main():
     if not sys.flags.isolated or len(sys.argv)!=11: raise ValueError
     home,bundle,publisher,config,profile,key,kubectl,operation,admin_key,run_id=sys.argv[1:]
     home=Path(home);bundle=Path(bundle);publisher=Path(publisher)
-    PHASE='SESSION'
+    PHASE='EXECUTOR'
     with uterctl.locked(home):
+        kubernetes_fence_coordinator._executor_identity(ROOT,publisher)
+        PHASE='PROFILE'
+        profile_key=Path(key).read_bytes()
+        kubernetes_fence_coordinator.store.read(Path(profile),profile_key)
+        PHASE='SESSION'
         with kubernetes_fence_coordinator.checked_session(home,bundle,publisher,Path(config),Path(profile),Path(key),
                 executor_bundle=ROOT,executor_key=publisher,kubectl_path=Path(kubectl)) as session:
             PHASE='PLAN'
