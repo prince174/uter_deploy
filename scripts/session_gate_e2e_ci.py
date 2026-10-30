@@ -226,20 +226,6 @@ def run_scenario():
     def capture(cmd, env, action):
         result = old_audit(cmd, env, action)
         if action == 'write':
-            if os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true':
-                from scripts import compose_fence_signed_ci
-                try:
-                    compose_fence_signed_ci.verify(ROOT/'work/managed', source, public, old)
-                except compose_fence_signed_ci.SignedComposeFenceCheckFailure as error:
-                    stages={'GUARD','DOCKER_SCOPE','INSPECTION','STOP_WRITERS','WRITER','ISOLATE','SNAPSHOT','CI_RECONNECT'}
-                    stage=compose_fence_signed_ci.PHASE
-                    if str(error) in {'COMPOSE_SIGNED_CI_GUARD','COMPOSE_SIGNED_CI_PATH','COMPOSE_SIGNED_CI_IDENTITY',
-                                      'COMPOSE_SIGNED_CI_ACTIONS_GUARD','COMPOSE_SIGNED_CI_HOSTED_GUARD',
-                                      'COMPOSE_SIGNED_CI_OS_GUARD','COMPOSE_SIGNED_CI_STRICT_GUARD',
-                                      'COMPOSE_SIGNED_CI_BACKEND_GUARD','COMPOSE_SIGNED_CI_HOST_GUARD',
-                                      'COMPOSE_SIGNED_CI_CONTEXT_GUARD'}:
-                        raise CheckFailure(str(error)) from None
-                    raise CheckFailure('COMPOSE_SIGNED_CI_'+stage if stage in stages else 'COMPOSE_SIGNED_CI_UNVERIFIED') from None
             if os.environ.get('UTER_CI_VERIFY_REDIS_IDENTITY') == 'true':
                 from scripts import kubernetes_redis_identity_ci
                 try:
@@ -262,6 +248,20 @@ def run_scenario():
         if len(saved) != 1 or Path(new_bundle) != target or Path(old_bundle) != source:
             raise CheckFailure('SIGNED_FIXTURE_INVALID')
         cmd, env, before_audit = saved[0]
+        if os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true':
+            from scripts import compose_fence_signed_ci
+            try:
+                compose_fence_signed_ci.verify(Path(home), source, public, old)
+            except compose_fence_signed_ci.SignedComposeFenceCheckFailure as error:
+                stages={'GUARD','DOCKER_SCOPE','INSPECTION','STOP_WRITERS','WRITER','ISOLATE','SNAPSHOT','CI_RECONNECT'}
+                stage=compose_fence_signed_ci.PHASE
+                if str(error) in {'COMPOSE_SIGNED_CI_GUARD','COMPOSE_SIGNED_CI_PATH','COMPOSE_SIGNED_CI_IDENTITY',
+                                  'COMPOSE_SIGNED_CI_ACTIONS_GUARD','COMPOSE_SIGNED_CI_HOSTED_GUARD',
+                                  'COMPOSE_SIGNED_CI_OS_GUARD','COMPOSE_SIGNED_CI_STRICT_GUARD',
+                                  'COMPOSE_SIGNED_CI_BACKEND_GUARD','COMPOSE_SIGNED_CI_HOST_GUARD',
+                                  'COMPOSE_SIGNED_CI_CONTEXT_GUARD'}:
+                    raise CheckFailure(str(error)) from None
+                raise CheckFailure('COMPOSE_SIGNED_CI_'+stage if stage in stages else 'COMPOSE_SIGNED_CI_UNVERIFIED') from None
         baseline = fixture(cmd, env, 'seed')
         if baseline['count'] != 2 or not baseline['matches'] or baseline['ttl'] <= 0:
             raise CheckFailure('FIXTURE_SEED_FAILED')
