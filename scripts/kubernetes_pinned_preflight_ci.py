@@ -62,6 +62,7 @@ def _material(home,bundle,key):
 
 
 def verify(home,bundle,key,manifest):
+    stage='PIN_MATERIAL'
     try:
         raw,profile=_material(home,bundle,key)
         # A different pinned CA is rejected before any API object is created.
@@ -71,9 +72,11 @@ def verify(home,bundle,key,manifest):
             with preflight.checked_session(home,bundle,key,raw,wrong):pass
         except pin.PinError:refused=True
         if not refused:raise ValueError
+        stage='PIN_BASELINE'
         with preflight.checked_session(home,bundle,key,raw,profile) as session:
             if session.manifest!=manifest or session.reverify()['safe_to_update'] is not False:raise ValueError
         # Disposable CI-only binary pin, not independently trusted evidence.
+        stage='PIN_BINARY_OPEN'
         binary_path=Path('/usr/local/bin/uter-ci-kubectl')
         binary_digest=hashlib.sha256(binary_path.read_bytes()).hexdigest()
         fd=trusted_kubectl.open_binary(binary_path,binary_digest)
@@ -82,7 +85,9 @@ def verify(home,bundle,key,manifest):
             try:
                 os.environ.update(PATH='/nonexistent',HTTPS_PROXY='http://127.0.0.1:1',
                                   HTTP_PROXY='http://127.0.0.1:1',KUBECTL_EXTERNAL_DIFF='/nonexistent')
+                stage='PIN_BINARY_SESSION'
                 with preflight.checked_session(home,bundle,key,raw,profile,binary_fd=fd,binary_sha256=binary_digest) as pinned:
+                    stage='PIN_BINARY_REVERIFY'
                     if pinned.reverify()['safe_to_update'] is not False:raise ValueError
             finally:
                 for name,value in old.items():
@@ -93,6 +98,7 @@ def verify(home,bundle,key,manifest):
         # kubeconfig bytes on the single disposable kind runner only. These
         # synthetic pins are observed on this same test cluster and do not
         # constitute independent trust for a real installation.
+        stage='PIN_OPERATOR_PROFILE'
         config_path=Path(os.environ.get('KUBECONFIG') or Path.home()/'.kube'/'config')
         with tempfile.TemporaryDirectory(prefix='kube-pin-ci-',dir=ROOT/'work') as folder:
             private=Path(folder);backup_key=private/'key';backup_key.write_bytes(os.urandom(32));backup_key.chmod(0o600)
@@ -107,7 +113,7 @@ def verify(home,bundle,key,manifest):
                 if bound.reverify().get('safe_to_update') is not False:raise ValueError
                 obj=json.loads(bound.api._call(['--request-timeout=20s','get','namespace','kube-system','-o','json']))
                 if obj.get('metadata',{}).get('uid')!=profile['kube_system_uid']:raise ValueError
-    except Exception:raise PinnedCITestError('KUBE_PINNED_CI_UNVERIFIED') from None
+    except Exception:raise PinnedCITestError('KUBE_PINNED_CI_UNVERIFIED',stage) from None
     return {'result':'sealed_pinned_queries_exercised','cluster_authenticated':False,'safe_to_update':False}
 
 
