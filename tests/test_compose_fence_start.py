@@ -166,7 +166,9 @@ class ComposeFenceStartTests(unittest.TestCase):
         with patch.object(start.diagnostic,'_json',return_value=good):
             start._writers_stopped({'guardrail':writer},'test')
         cases=(({'id':'0'*64},'IDENTITY'),({'running':True},'RUNNING'),({'exit':True},'EXIT_TYPE'),
-               ({'exit':137},'EXIT_NONZERO'),({'oom':True},'OOM'),({'error':'secret-canary'},'ENGINE_ERROR'),
+               ({'exit':137},'EXIT_KILL_LIKE_OOM_FALSE'),({'exit':143},'EXIT_TERM_LIKE_OOM_FALSE'),
+               ({'exit':1},'EXIT_OTHER_OOM_FALSE'),({'exit':137,'oom':True},'EXIT_KILL_LIKE_OOM_TRUE'),
+               ({'exit':143,'oom':None},'EXIT_TERM_LIKE_OOM_UNKNOWN'),({'oom':True},'OOM'),({'error':'secret-canary'},'ENGINE_ERROR'),
                ({'started':'changed'},'STARTED'),({'restart_count':1},'RESTART_COUNT'),
                ({'project':'other'},'PROJECT'),({'service':'other'},'SERVICE'),({'image_ref':'other'},'IMAGE_REF'),
                ({'image_id':'sha256:'+'0'*64},'IMAGE_ID'),({'finished':'0001-01-01T00:00:00Z'},'FINISHED'))

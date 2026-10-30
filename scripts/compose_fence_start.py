@@ -212,7 +212,13 @@ def _writer_stop_problem(observed,expected,service,site):
     if observed.get('id')!=expected['id']:return 'IDENTITY'
     if observed.get('running') is not False:return 'RUNNING'
     if type(observed.get('exit')) is not int:return 'EXIT_TYPE'
-    if observed['exit']!=0:return 'EXIT_NONZERO'
+    if observed['exit']!=0:
+        # A termination-like exit is diagnostic only; it is not proof that
+        # pending requests or audit writes were drained safely.
+        kind={137:'KILL_LIKE',143:'TERM_LIKE'}.get(observed['exit'],'OTHER')
+        oom=observed.get('oom')
+        state='TRUE' if oom is True else 'FALSE' if oom is False else 'UNKNOWN'
+        return 'EXIT_'+kind+'_OOM_'+state
     if observed.get('oom') is not False:return 'OOM'
     if observed.get('error')!='':return 'ENGINE_ERROR'
     if observed.get('started')!=expected['started']:return 'STARTED'
