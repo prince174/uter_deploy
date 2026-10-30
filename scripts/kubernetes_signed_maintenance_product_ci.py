@@ -172,10 +172,16 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
         STAGE='TRANSPORT'
         for expected,redis_run in (('READONLY_TRANSPORT_VERIFIED',run_id),('READONLY_TRANSPORT_REFUSED_CONNECT','0'*40)):
             result=subprocess.run(child+[redis_run],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=240)
-            if result.stdout.strip().decode('ascii') != expected or (result.returncode == 0) != (expected.endswith('VERIFIED')):
-                permitted={b'READONLY_TRANSPORT_REFUSED_'+x for x in (b'INITIAL',b'SESSION',b'POD',b'CONNECT',b'QUERY')}
-                status=result.stdout.strip()
+            lines=result.stdout.splitlines();status=lines[-1] if lines else b''
+            if status.decode('ascii') != expected or (result.returncode == 0) != (expected.endswith('VERIFIED')):
+                permitted={b'READONLY_TRANSPORT_REFUSED_'+x for x in (b'INITIAL',b'SESSION',b'PLAN',b'JOURNAL',b'POD',b'CONNECT',b'QUERY')}
                 if status in permitted: print('KUBE_SIGNED_CI_'+status.decode('ascii'),file=sys.stderr)
+                allowed_details={b'READONLY_TRANSPORT_DETAIL_'+x for x in (b'KUBE_OPERATOR_PROFILE_UNVERIFIED',
+                    b'KUBE_OPERATOR_SESSION_UNVERIFIED',b'KUBE_OPERATOR_PROFILE_CHANGED',b'KUBE_EXECUTOR_ISOLATION_REQUIRED',
+                    b'KUBE_EXECUTOR_ROOT_CHANGED',b'KUBE_EXECUTOR_MODULE_UNTRUSTED',b'KUBE_PREFLIGHT_INSTALLATION_UNVERIFIED',
+                    b'KUBE_PREFLIGHT_IDENTITY_UNVERIFIED',b'KUBE_FINALIZER_PLAN_MISMATCH',b'KUBE_FINALIZER_JOURNAL_MISMATCH',b'UNCLASSIFIED')}
+                if len(lines)>1 and lines[-2] in allowed_details:
+                    print('KUBE_SIGNED_CI_'+lines[-2].decode('ascii'),file=sys.stderr)
                 raise FixtureError('KUBE_SIGNED_CI_READONLY_TRANSPORT_UNVERIFIED')
         # Caller uses these fixture paths only for a later test of Pod replacement.
         return {'child':child,'run_id':run_id,'pod_uid':meta['uid'],'pod_name':meta['name']}

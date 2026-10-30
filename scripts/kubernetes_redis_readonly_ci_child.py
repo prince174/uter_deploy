@@ -20,7 +20,9 @@ def main():
     with uterctl.locked(home):
         with kubernetes_fence_coordinator.checked_session(home,bundle,publisher,Path(config),Path(profile),Path(key),
                 executor_bundle=ROOT,executor_key=publisher,kubectl_path=Path(kubectl)) as session:
+            PHASE='PLAN'
             plan=kubernetes_fence_finalizer.read_plan(home)
+            PHASE='JOURNAL'
             kubernetes_fence_finalizer._check_journal(home,plan,operation,'prepared')
             PHASE='POD'
             try:
@@ -50,6 +52,13 @@ def main():
 
 if __name__ == '__main__':
     try: raise SystemExit(main())
-    except Exception:
+    except Exception as error:
+        allowed={'KUBE_OPERATOR_PROFILE_UNVERIFIED','KUBE_OPERATOR_SESSION_UNVERIFIED',
+                 'KUBE_OPERATOR_PROFILE_CHANGED','KUBE_EXECUTOR_ISOLATION_REQUIRED',
+                 'KUBE_EXECUTOR_ROOT_CHANGED','KUBE_EXECUTOR_MODULE_UNTRUSTED',
+                 'KUBE_PREFLIGHT_INSTALLATION_UNVERIFIED','KUBE_PREFLIGHT_IDENTITY_UNVERIFIED',
+                 'KUBE_FINALIZER_PLAN_MISMATCH','KUBE_FINALIZER_JOURNAL_MISMATCH'}
+        code=str(error) if str(error) in allowed else 'UNCLASSIFIED'
+        print('READONLY_TRANSPORT_DETAIL_'+code)
         print('READONLY_TRANSPORT_REFUSED_'+PHASE)
         raise SystemExit(1)
