@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 import uterctl
 from scripts import (adopt_backup_ci as harness, backup_crypto, backup_store,
                      release_upgrade_preflight_ci as release, session_identity_upgrade_ci as sessions,
+                     recovery_compose_api_ci, recovery_kubernetes_api_ci,
                      verify_changed_image_upgrade_ci as stage_tools, wizard_ci as common,
                      wizard_real_llm_ci as runner)
 
@@ -67,6 +68,13 @@ def fixture(cmd, env, action):
         return result
     except Exception:
         raise CheckFailure('FIXTURE_PROBE_FAILED') from None
+
+
+def verify_restored_fixture(cmd, env, original):
+    restored = fixture(cmd, env, 'read')
+    if (restored['count'] != original['count'] or restored['sha256'] != original['sha256']
+            or not restored['matches'] or not 0 < restored['ttl'] <= original['ttl']):
+        raise CheckFailure('RESTORED_FIXTURE_DATA_CHANGED')
 
 
 def verify_live_old(home, old, public, backend):
@@ -212,6 +220,8 @@ def run_scenario():
     if old['data_epoch'] != 1 or new['data_epoch'] != 2 or not new.get('session_identity_gate'):
         raise CheckFailure('EXPECTED_SIGNED_GATE_MISSING')
     saved = []
+    restore_expected = []
+    restore_verified = []
 
     def capture(cmd, env, action):
         result = old_audit(cmd, env, action)
@@ -219,6 +229,11 @@ def run_scenario():
             if saved:
                 raise CheckFailure('FIXTURE_CAPTURE_REPEATED')
             saved.append((cmd, env, result))
+        elif action == 'read' and restore_expected:
+            if restore_verified:
+                raise CheckFailure('BLOCKED_BACKUP_RESTORE_REPEATED')
+            verify_restored_fixture(cmd, env, restore_expected[0])
+            restore_verified.append(True)
         return result
 
     def blocked_builder(python, old_bundle, new_bundle, home, key, backup_root, backup_key):
@@ -234,6 +249,18 @@ def run_scenario():
         if (after['sha256'] != baseline['sha256'] or after['count'] != baseline['count']
                 or not after['matches'] or not 0 < after['ttl'] <= baseline['ttl']):
             raise CheckFailure('FIXTURE_DATA_CHANGED')
+        # Restore the independently authenticated first backup of 0.1.6 into
+        # a separate CI-owned project/namespace. The recovery helper verifies
+        # HMAC audit; the hook above checks the session before resource cleanup.
+        restore_expected.append(baseline)
+        recovery = recovery_kubernetes_api_ci if os.environ['BACKEND'] == 'kubernetes' else recovery_compose_api_ci
+        try:
+            recovery.test(Path(home), Path(first['backup']), Path(backup_key), Path(public),
+                          before_audit, recovery_bundle=source)
+        except Exception:
+            raise CheckFailure('BLOCKED_BACKUP_TEST_RESTORE_FAILED') from None
+        if restore_verified != [True]:
+            raise CheckFailure('BLOCKED_BACKUP_SESSION_NOT_VERIFIED')
         old_controller_refuses(source, target, home, public)
         old_audit(cmd, env, 'check')
         clear_own_marker(home, first)
@@ -248,7 +275,7 @@ def run_scenario():
                       'empty_database_without_external_fence_blocked':'pass',
                       'old_controller_epoch_change_blocked':'pass',
                       'both_encrypted_backups_independently_verified':'pass',
-                      'old_version_and_writers_restored':'pass'})
+                      'old_version_and_writers_restored':'pass', 'blocked_backup_test_restore':'pass'})
         raise Done()
 
     harness.audit_and_redis, harness.published_update_command = capture, blocked_builder
@@ -300,6 +327,8 @@ def main():
                            'SIGNED_UPDATE_BLOCK_INVALID','OLD_STATE_NOT_PRESERVED','OLD_SIGNATURE_NOT_PRESERVED',
                            'OLD_SERVICE_NOT_READY','OLD_AUTHENTICATED_SMOKE_FAILED','FIXTURE_DATA_CHANGED','OLD_CONTROLLER_ACCEPTED_EPOCH_CHANGE',
                            'OWN_TEST_MARKER_INVALID','FIXTURE_CLEAN_FAILED','BACKUP_NOT_NEW','BLOCK_TEST_INCOMPLETE',
+                           'RESTORED_FIXTURE_DATA_CHANGED','BLOCKED_BACKUP_RESTORE_REPEATED',
+                           'BLOCKED_BACKUP_TEST_RESTORE_FAILED','BLOCKED_BACKUP_SESSION_NOT_VERIFIED',
                            'UPDATE_PROCESS_UNAVAILABLE','UPDATE_OUTPUT_TOO_LARGE','CHILD_INTERRUPTED_CLEANUP_INCONCLUSIVE',
                            'WIZARD_INPUT_OR_VERIFICATION_FAILED','WIZARD_SIGNED_UPDATE_FAILED_INSPECT_STATE',
                            'WIZARD_REQUIRED_ARGUMENT_MISSING','WIZARD_PLAN_CHANGED','WIZARD_CURRENT_SIGNED_BUNDLE_REQUIRED',
@@ -316,7 +345,8 @@ def main():
                 report = json.loads(data)
                 expected = {'ambiguous_session_blocked', 'fixture_data_and_ttl_preserved',
                             'empty_database_without_external_fence_blocked', 'old_controller_epoch_change_blocked',
-                            'both_encrypted_backups_independently_verified', 'old_version_and_writers_restored'}
+                            'both_encrypted_backups_independently_verified', 'old_version_and_writers_restored',
+                            'blocked_backup_test_restore'}
                 if (not isinstance(report, dict) or set(report) != expected | {'backend','old_version','new_version'}
                         or report['backend'] != os.environ['BACKEND']
                         or report['old_version'] != os.environ['UTER_CI_OLD_VERSION']

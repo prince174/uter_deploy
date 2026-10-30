@@ -22,6 +22,52 @@ class SessionGateCiTests(unittest.TestCase):
         with mock.patch.object(ci.sessions, 'container_command', return_value=expected):
             self.assertEqual(ci.fixture([], None, 'read'), expected)
 
+    def test_restored_session_must_match_content_count_and_live_expiry(self):
+        original = {'count': 2, 'sha256': 'a'*64, 'ttl': 300, 'matches': True}
+        with mock.patch.object(ci, 'fixture', return_value={**original, 'ttl': 250}):
+            ci.verify_restored_fixture([], None, original)
+        for change in ({'count': 1}, {'sha256': 'b'*64}, {'ttl': -1}, {'ttl': 301}, {'matches': False}):
+            with self.subTest(change=change), mock.patch.object(ci, 'fixture', return_value={**original, **change}):
+                with self.assertRaisesRegex(ci.CheckFailure, '^RESTORED_FIXTURE_DATA_CHANGED$'):
+                    ci.verify_restored_fixture([], None, original)
+
+    def test_first_block_backup_is_restored_before_fixture_cleanup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); (root/'work').mkdir()
+            old_path, new_path, home, key, backups, backup_key = (root/x for x in
+                ('old', 'new', 'home', 'public', 'backups', 'backup-key'))
+            old = {'version':'0.1.6', 'data_epoch':1}
+            new = {'version':'0.1.7', 'data_epoch':2, 'session_identity_gate':{'schema':1}}
+            baseline = {'count':2, 'sha256':'a'*64, 'ttl':300, 'matches':True}
+            first = {'code':'SESSION_MIGRATION_AMBIGUOUS', 'backup_id':'a'*32, 'backup':str(backups/'first')}
+            second = {'code':'SESSION_MIGRATION_FENCE_UNVERIFIED', 'backup_id':'b'*32, 'backup':str(backups/'second')}
+            actions=[]
+            def fake_main():
+                ci.harness.audit_and_redis(['guardrail'], None, 'write')
+                ci.harness.published_update_command('python', old_path, new_path, home, key, backups, backup_key)
+            def fake_recovery(*args, **kwargs):
+                actions.append('restore')
+                self.assertEqual(args[1], Path(first['backup']))
+                self.assertEqual(kwargs['recovery_bundle'], old_path)
+                ci.harness.audit_and_redis(['restored-guardrail'], None, 'read')
+            def fake_fixture(cmd, env, action):
+                actions.append(action)
+                return {'count':0,'sha256':'0'*64,'ttl':-2,'matches':False} if action == 'clean' else baseline
+            with mock.patch.dict(os.environ, {'BACKEND':'compose', 'OLD_SIGNED_BUNDLE_PATH':str(old_path),
+                 'NEW_SIGNED_BUNDLE_PATH':str(new_path), 'PUBLISHER_KEY_PATH':str(key)}, clear=True), \
+                 mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci.stage_tools, 'validate_inputs'), \
+                 mock.patch.object(ci.uterctl, 'verify', side_effect=[old,new]), \
+                 mock.patch.object(ci.harness, 'audit_and_redis', return_value={'first_sha256':'c'*64}), \
+                 mock.patch.object(ci.harness, 'main', side_effect=fake_main), \
+                 mock.patch.object(ci, 'fixture', side_effect=fake_fixture), \
+                 mock.patch.object(ci, 'assert_blocked', side_effect=[first,second]), \
+                 mock.patch.object(ci, 'old_controller_refuses'), mock.patch.object(ci, 'clear_own_marker'), \
+                 mock.patch.object(ci.recovery_compose_api_ci, 'test', side_effect=fake_recovery):
+                ci.run_scenario()
+            self.assertEqual(actions, ['seed','read','restore','read','clean'])
+            report=json.loads((root/'work/session-gate-e2e-evidence.json').read_text())
+            self.assertEqual(report['blocked_backup_test_restore'], 'pass')
+
     def test_historical_controller_requires_epoch_error_not_incidental_failure(self):
         with mock.patch.object(ci, 'run_checked', return_value=(1,b'uterctl: Data migration required')) as command:
             ci.old_controller_refuses(Path('/old'), Path('/new'), Path('/home'), Path('/pub'))
