@@ -1,0 +1,60 @@
+name: Experimental audit backup comparison on protected image
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful authenticated snapshot image build run
+        required: true
+        type: string
+      patch_sha256:
+        description: Exact source snapshot patch digest
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      PATCH_SHA256: ${{ inputs.patch_sha256 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Validate authenticated build run
+        run: |
+          python - <<'PY'
+          import json,os,re,subprocess
+          run_id=os.environ['BUILD_RUN_ID'];patch=os.environ['PATCH_SHA256'];repo=os.environ['GITHUB_REPOSITORY']
+          assert re.fullmatch(r'[1-9][0-9]{0,19}',run_id) and re.fullmatch(r'[0-9a-f]{64}',patch)
+          assert re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repo)
+          run=json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/actions/runs/{run_id}']))
+          assert run['path']=='.github/workflows/snapshot-protected-images.yml' and run['conclusion']=='success'
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: protected-guardrail
+          path: work/images
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify provenance and image ID
+        run: |
+          python - <<'PY'
+          import json,os,pathlib,re
+          root=pathlib.Path('work/images/protected-guardrail/evidence')
+          base=json.loads(pathlib.Path('candidates/source.json').read_text())['source_commit']
+          assert json.loads((root/'source-state.json').read_text())=={'kind':'uncommitted_patch','baseline_commit':base,'patch_sha256':os.environ['PATCH_SHA256']}
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}',(root/'image-id.txt').read_text().strip())
+          PY
+          docker load -i work/images/protected-guardrail/image.tar.gz > /dev/null
+          test "$(docker image inspect uter-guardrail-protected --format '{{.Id}}')" = "$(cat work/images/protected-guardrail/evidence/image-id.txt)"
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt > /dev/null
+      - name: Test comparison and real strict audit on isolated synthetic fixtures
+        run: |
+          python -m unittest tests.test_audit_backup_evidence -q
+          python scripts/audit_backup_image_ci.py
