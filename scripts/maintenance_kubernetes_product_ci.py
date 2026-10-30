@@ -30,10 +30,32 @@ REDIS = 'ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b2
 CLUSTER = 'uter-maint-ci'
 CONTEXT = 'kind-'+CLUSTER
 SITE = 'uter-maint-ci'
+PHASE = 'GUARD'
 
 
 class ProbeError(ValueError):
     pass
+
+
+def install_failure(kube):
+    """Classify only fixed pod failure states; never report manifests or secrets."""
+    allowed = {'ErrImagePull', 'ImagePullBackOff', 'InvalidImageName', 'CreateContainerConfigError',
+               'ContainerCreating', 'CrashLoopBackOff', 'CreateContainerError', 'RunContainerError'}
+    try:
+        raw = run(kube+['-n', SITE, 'get', 'pods', '-o', 'json'], timeout=20)
+        pods = json.loads(raw)['items']
+        for service in ('redis', 'agent', 'guardrail'):
+            matches = [p for p in pods if p.get('metadata', {}).get('labels', {}).get('app.kubernetes.io/name') == service]
+            if len(matches) != 1: return service.upper()+'_POD_MISSING'
+            status = matches[0].get('status', {})
+            if status.get('phase') == 'Pending' and not status.get('containerStatuses'): return service.upper()+'_PENDING'
+            for item in status.get('containerStatuses', []):
+                reason = item.get('state', {}).get('waiting', {}).get('reason')
+                if reason in allowed: return service.upper()+'_'+reason.upper()
+                if item.get('ready') is not True: return service.upper()+'_NOT_READY'
+        return 'UNKNOWN'
+    except Exception:
+        return 'INSPECTION_UNCERTAIN'
 
 
 def run(args, *, data=None, timeout=300):
@@ -112,6 +134,7 @@ def _sealed(raw):
 
 
 def main():
+    global PHASE
     if (os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted'
             or os.environ.get('RUNNER_OS') != 'Linux' or os.environ.get('DOCKER_HOST')
             or os.environ.get('DOCKER_CONTEXT', 'default') != 'default'):
@@ -123,6 +146,7 @@ def main():
     work = ROOT/'work/maintenance-kubernetes'; work.mkdir(mode=0o700, parents=True, exist_ok=False)
     kubeconfig = work/'kubeconfig'; cluster = False; registry = False; fds = []
     try:
+        PHASE = 'REGISTRY'
         registry = True
         run(['docker', '--context', 'default', 'run', '-d', '--name', 'uter-maint-registry', '--restart', 'no',
              '-p', '127.0.0.1:5055:5000', REGISTRY], timeout=300)
@@ -135,6 +159,7 @@ def main():
                 pass
             if time.monotonic() >= deadline: raise ProbeError('MAINTENANCE_KUBE_REGISTRY_UNVERIFIED')
             time.sleep(.5)
+        PHASE = 'IMAGES'
         images = {service: _registry_image(service) for service in ('agent', 'guardrail')}
         images['redis'] = REDIS
         config = work/'kind.yaml'
@@ -145,6 +170,7 @@ containerdConfigPatches:
   [plugins."io.containerd.grpc.v1.cri".registry]
     config_path = "/etc/containerd/certs.d"
 ''', encoding='utf-8')
+        PHASE = 'CLUSTER'
         cluster = True
         run(['kind', 'create', 'cluster', '--name', CLUSTER, '--image', NODE, '--kubeconfig', kubeconfig,
              '--config', config, '--wait', '180s'], timeout=420)
@@ -154,6 +180,7 @@ containerdConfigPatches:
              '/etc/containerd/certs.d/localhost:5055'])
         run(['docker', '--context', 'default', 'exec', '-i', CLUSTER+'-control-plane', 'sh', '-c',
              'cat > /etc/containerd/certs.d/localhost:5055/hosts.toml'], data=hosts)
+        PHASE = 'FIXTURE'
         kube = ['/usr/local/bin/uter-ci-kubectl', '--kubeconfig', str(kubeconfig), '--context', CONTEXT]
         run(kube+['create', 'namespace', 'uter-fixtures'])
         run(kube+['-n', 'uter-fixtures', 'create', 'configmap', 'llm-code',
@@ -170,18 +197,23 @@ containerdConfigPatches:
         images_path = work/'images.json'; images_path.write_text(json.dumps(images))
         llm_key = work/'llm-key'; llm_key.write_text(''); os.chmod(llm_key, 0o600)
         home = work/'installation'; source = ROOT/'work/images/protected-guardrail/evidence'
+        PHASE = 'PREPARE'
         run([sys.executable, ROOT/'scripts/install.py', 'prepare', '--home', home, '--backend', 'kubernetes',
              '--name', SITE, '--context', CONTEXT, '--images', images_path,
              '--policy', source/'policies/default.toml', '--profiles', source/'profiles/model_profiles.toml',
              '--llm-url', 'http://llm.uter-fixtures.svc.cluster.local:8080', '--llm-model', 'test-model',
              '--llm-key-file', llm_key, '--allow-http-llm'])
         _patch_fixture(home, secrets.token_hex(32))
+        PHASE = 'CHECK'
         run([sys.executable, ROOT/'scripts/install.py', 'check', '--home', home])
         # The fixture uses a dedicated kubeconfig, not a developer context.
         env = dict(os.environ, KUBECONFIG=str(kubeconfig))
+        PHASE = 'INSTALL'
         result = subprocess.run([sys.executable, str(ROOT/'scripts/install.py'), 'install', '--home', str(home)],
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
-        if result.returncode: raise ProbeError('MAINTENANCE_KUBE_INSTALL_UNVERIFIED')
+        if result.returncode:
+            print('MAINTENANCE_KUBE_INSTALL_'+install_failure(kube), file=sys.stderr)
+            raise ProbeError('MAINTENANCE_KUBE_INSTALL_UNVERIFIED')
         def snapshot():
             result = {}
             for service in ('agent', 'guardrail', 'redis'):
@@ -198,6 +230,7 @@ containerdConfigPatches:
                 result[service] = {'name': meta['name'], 'uid': meta['uid'], 'container_id': statuses[0]['containerID'],
                                    'image': spec['containers'][0]['image'], 'restart_count': statuses[0]['restartCount']}
             return result
+        PHASE = 'IDENTITY'
         pinned = snapshot()
         for service in ('agent', 'guardrail'):
             expected = run(['docker', '--context', 'default', 'image', 'inspect', '--format', '{{.Id}}',
@@ -211,6 +244,7 @@ containerdConfigPatches:
         def inventory():
             if not stable(): raise ProbeError('MAINTENANCE_KUBE_IDENTITY_CHANGED')
             return dict(identities)
+        PHASE = 'TRUSTED_EXEC'
         config_fd, config_hash = _sealed(kubeconfig.read_bytes()); fds.append(config_fd)
         binary_path = Path('/usr/local/bin/uter-ci-kubectl')
         binary_hash = hashlib.sha256(binary_path.read_bytes()).hexdigest()
@@ -227,6 +261,7 @@ containerdConfigPatches:
             if instance != identities[service][0]: raise ProbeError('MAINTENANCE_KUBE_IDENTITY_CHANGED')
             return maintenance_transport.request(service=service, method=method, session=session,
                 pod=pinned[service]['name'], identity_guard=stable)
+        PHASE = 'MAINTENANCE'
         receipts = maintenance_protocol.collect(identities, observe_inventory=inventory, request=request,
                                                 record_intent=recorder.intent, record_receipt=recorder.receipt)
         if set(receipts) != {identities['agent'][0], identities['guardrail'][0]} or not stable():
@@ -248,5 +283,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception:
-        print('MAINTENANCE_KUBERNETES_PRODUCT_CI_FAILED', file=sys.stderr)
+        print('MAINTENANCE_KUBERNETES_PRODUCT_CI_'+PHASE+'_FAILED', file=sys.stderr)
         raise SystemExit(1)
