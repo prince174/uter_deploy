@@ -117,6 +117,9 @@ class WriterFinalizerTests(unittest.TestCase):
         self.prepare('agent');self.session.api.fail='after'
         with self.assertRaises(writer.WriterFinalizerError):self.hold('agent')
         self.session.api.fail=None
+        self.assertEqual(writer.classify_hold(self.home,self.session,self.operation,'agent',self.key),
+                         {'state':'finalizer_observed','request_may_be_in_flight':True,
+                          'safe_to_backup':False,'safe_to_update':False})
         with self.assertRaises(writer.WriterFinalizerError):self.hold('agent')
         self.assertEqual(len(self.session.api.calls),1)
         self.assertTrue((self.home/'kubernetes-writer-hold-agent-attempt.json').exists())
@@ -126,9 +129,34 @@ class WriterFinalizerTests(unittest.TestCase):
         self.session.api.fail='after'
         with self.assertRaises(writer.WriterFinalizerError):self.release('agent')
         self.session.api.fail=None
+        self.assertEqual(writer.classify_release(self.home,self.session,self.operation,'agent',self.key),
+                         {'state':'finalizer_absent_observed','request_may_be_in_flight':True,
+                          'audit_durability_verified':False,'safe_to_backup':False,'safe_to_update':False})
         with self.assertRaises(writer.WriterFinalizerError):self.release('agent')
         self.assertEqual(len([x for x in self.session.api.calls if x[2].startswith('pod/')]),2)
         self.assertTrue((self.home/'kubernetes-writer-release-agent-attempt.json').exists())
+
+    def test_timeout_before_hold_or_release_remains_ambiguous(self):
+        self.prepare('agent');self.session.api.fail='before'
+        with self.assertRaises(writer.WriterFinalizerError):self.hold('agent')
+        self.session.api.fail=None
+        self.assertEqual(writer.classify_hold(self.home,self.session,self.operation,'agent',self.key)['state'],
+                         'original_pod_observed')
+        with self.assertRaises(writer.WriterFinalizerError):self.hold('agent')
+
+    def test_classify_release_rejects_changed_or_disappeared_pod(self):
+        self.prepare('agent');self.hold('agent');quiesce.stop(self.home,self.session,self.operation,'agent',self.key)
+        self.session.api.fail='before'
+        with self.assertRaises(writer.WriterFinalizerError):self.release('agent')
+        self.session.api.fail=None
+        result=writer.classify_release(self.home,self.session,self.operation,'agent',self.key)
+        self.assertEqual(result['state'],'finalizer_present_observed')
+        self.session.writer_pods['agent']['metadata']['uid']='00000000-0000-0000-0000-000000000000'
+        with self.assertRaises(writer.WriterFinalizerError):
+            writer.classify_release(self.home,self.session,self.operation,'agent',self.key)
+        self.session.writer_pods.pop('agent')
+        with self.assertRaises(writer.WriterFinalizerError):
+            writer.classify_release(self.home,self.session,self.operation,'agent',self.key)
 
     def test_nonzero_exit_has_bounded_diagnostic_without_contents(self):
         self.prepare('agent');self.hold('agent');quiesce.stop(self.home,self.session,self.operation,'agent',self.key)

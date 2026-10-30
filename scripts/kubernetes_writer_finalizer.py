@@ -150,6 +150,23 @@ def assert_held(home,session,operation,service,key):
     _pod(session,record,[_token(operation,service)],deleting=False)
 
 
+def classify_hold(home,session,operation,service,key):
+    """Observe a timed-out hold without retrying or inferring cancellation."""
+    record,_=_record(home,session,operation,service,key)
+    try:
+        expected={'operation':operation,'pod_plan_sha256':writers._hash(record)}
+        if writers._read(home,'kubernetes-writer-hold-'+service+'-attempt.json',key)!=expected:raise ValueError
+        session.reverify()
+        try:
+            _pod(session,record,[_token(operation,service)],deleting=False)
+            state='finalizer_observed'
+        except WriterFinalizerError:
+            _pod(session,record,[],deleting=False,original_rv=True)
+            state='original_pod_observed'
+        return {'state':state,'request_may_be_in_flight':True,'safe_to_backup':False,'safe_to_update':False}
+    except Exception:raise WriterFinalizerError('KUBE_WRITER_HOLD_RESULT_UNCERTAIN') from None
+
+
 def observe(home,session,operation,service,key):
     record,_=_record(home,session,operation,service,key)
     try:
@@ -180,3 +197,27 @@ def release(home,session,operation,service,key):
         return {'result':'writer_finalizer_release_requested','termination_verified':True,
                 'audit_durability_verified':False,'safe_to_backup':False}
     except Exception:raise WriterFinalizerError('KUBE_WRITER_RELEASE_UNCERTAIN') from None
+
+
+def classify_release(home,session,operation,service,key):
+    """Observe a timed-out removal only while the exact old Pod still exists."""
+    record,_=_record(home,session,operation,service,key)
+    try:
+        digest=writers._hash(record)
+        attempted=writers._read(home,'kubernetes-writer-release-'+service+'-attempt.json',key)
+        observed=writers._read(home,'kubernetes-writer-observed-'+service+'.json',key)
+        if (attempted!={'operation':operation,'pod_plan_sha256':digest}
+                or set(observed)!={'operation','pod_plan_sha256','resource_version'}
+                or observed['operation']!=operation or observed['pod_plan_sha256']!=digest
+                or not isinstance(observed['resource_version'],str)
+                or not re.fullmatch(r'[0-9]{1,32}',observed['resource_version'])):raise ValueError
+        session.reverify()
+        try:
+            _pod(session,record,[_token(operation,service)],deleting=True,terminated=True)
+            state='finalizer_present_observed'
+        except WriterFinalizerError:
+            _pod(session,record,[],deleting=True,terminated=True)
+            state='finalizer_absent_observed'
+        return {'state':state,'request_may_be_in_flight':True,'audit_durability_verified':False,
+                'safe_to_backup':False,'safe_to_update':False}
+    except Exception:raise WriterFinalizerError('KUBE_WRITER_RELEASE_RESULT_UNCERTAIN') from None
