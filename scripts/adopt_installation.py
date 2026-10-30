@@ -89,7 +89,7 @@ def verify_live(home, cfg, manifest):
                 raise ValueError(f'Expected one ready {service} pod with signed registry or configuration digest')
 
 
-def adopt(home, bundle, key, smoke):
+def adopt(home, bundle, key, smoke, *, prepare_smoke=None):
     home = Path(home).resolve(strict=True); bundle = Path(bundle).resolve(strict=True)
     manifest = uterctl.verify(bundle, key)
     cfg = uterctl.read(home/'install.json')
@@ -102,8 +102,10 @@ def adopt(home, bundle, key, smoke):
         raise ValueError('Explicit installation context required')
     if uterctl.read(home/'install-state.json').get('status') != 'ready':
         raise ValueError('Installation is not in ready state')
-    if not isinstance(smoke, list) or not smoke or not all(isinstance(x, str) and x for x in smoke):
+    if prepare_smoke is None and (not isinstance(smoke, list) or not smoke or not all(isinstance(x, str) and x for x in smoke)):
         raise ValueError('Smoke command must be a non-empty JSON argv array')
+    if prepare_smoke is not None and (smoke is not None or not callable(prepare_smoke)):
+        raise ValueError('Invalid managed smoke preparation')
     if not same_tree(home/'compose', bundle/'compose') or not same_tree(home/'charts', bundle/'charts'):
         raise ValueError('Installation deployment assets do not match signed bundle')
     runtime = home/'runtime'
@@ -111,35 +113,53 @@ def adopt(home, bundle, key, smoke):
             'namespace': cfg['name'], 'context': context, 'port': cfg['port'],
             'guardrail_cpus': cfg.get('guardrail_cpus', 4), 'smoke_command': smoke}
     with uterctl.locked(home):
-        for path in (home/'state.json', runtime/'site.json', runtime/'values.yaml', home/'releases'/manifest['version']):
-            if path.exists(): raise ValueError('Controller adoption destination already exists; refusing overwrite')
-        verify_live(home, cfg, manifest)
-        # The operator-supplied smoke command must succeed before state is adopted.
-        result = subprocess.run(smoke, cwd=runtime, capture_output=True)
-        if result.returncode: raise ValueError('Pre-adoption smoke failed; output withheld')
-        destination = home/'releases'/manifest['version']
-        destination.parent.mkdir(exist_ok=True)
-        created = []
+        if os.path.lexists(home/'redis-fence-operation.json'):
+            raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+        smoke_files = []
+        if prepare_smoke is not None:
+            smoke, smoke_files = prepare_smoke()
+            if not isinstance(smoke, list) or not smoke or not all(isinstance(x, str) and x for x in smoke):
+                for path in smoke_files: path.unlink(missing_ok=True)
+                raise ValueError('Smoke command must be a non-empty JSON argv array')
+            site['smoke_command'] = smoke
         try:
-            with tempfile.TemporaryDirectory(dir=destination.parent) as tmp:
-                staged = Path(tmp)/'bundle'
-                shutil.copytree(bundle, staged)
-                if uterctl.verify(staged, key) != manifest: raise ValueError('Staged bundle changed')
-                staged.rename(destination);created.append(destination)
-            if cfg['backend'] == 'kubernetes':
-                with (runtime/'values.yaml').open('xb') as f: f.write((home/'values.yaml').read_bytes())
-                created.append(runtime/'values.yaml')
-            with (runtime/'site.json').open('x', encoding='utf-8') as f: json.dump(site, f, indent=2)
-            os.chmod(runtime/'site.json', 0o600);created.append(runtime/'site.json')
-            uterctl.site_config(home)
-            uterctl.write(home/'state.json', {'current': manifest, 'previous': None, 'pending': None,
-                                               'adopted_installer': True})
+            _adopt_locked(home, bundle, key, smoke, manifest, cfg, runtime, site)
         except BaseException:
-            for path in reversed(created):
-                if path.is_dir(): shutil.rmtree(path)
-                else: path.unlink(missing_ok=True)
+            for path in smoke_files: path.unlink(missing_ok=True)
             raise
     print(f'Adopted {cfg["backend"]} installation {cfg["name"]}; workloads unchanged.')
+
+
+def _adopt_locked(home, bundle, key, smoke, manifest, cfg, runtime, site):
+    """Caller owns the controller lock and has checked the fence marker."""
+    for path in (home/'state.json', runtime/'site.json', runtime/'values.yaml', home/'releases'/manifest['version']):
+        if path.exists(): raise ValueError('Controller adoption destination already exists; refusing overwrite')
+    verify_live(home, cfg, manifest)
+    # The operator-supplied smoke command must succeed before state is adopted.
+    result = subprocess.run(smoke, cwd=runtime, capture_output=True)
+    if result.returncode: raise ValueError('Pre-adoption smoke failed; output withheld')
+    destination = home/'releases'/manifest['version']
+    destination.parent.mkdir(exist_ok=True)
+    created = []
+    try:
+        with tempfile.TemporaryDirectory(dir=destination.parent) as tmp:
+            staged = Path(tmp)/'bundle'
+            shutil.copytree(bundle, staged)
+            if uterctl.verify(staged, key) != manifest: raise ValueError('Staged bundle changed')
+            staged.rename(destination);created.append(destination)
+        if cfg['backend'] == 'kubernetes':
+            with (runtime/'values.yaml').open('xb') as f: f.write((home/'values.yaml').read_bytes())
+            created.append(runtime/'values.yaml')
+        with (runtime/'site.json').open('x', encoding='utf-8') as f: json.dump(site, f, indent=2)
+        os.chmod(runtime/'site.json', 0o600);created.append(runtime/'site.json')
+        uterctl.site_config(home)
+        uterctl.write(home/'state.json', {'current': manifest, 'previous': None, 'pending': None,
+                                           'adopted_installer': True})
+    except BaseException:
+        for path in reversed(created):
+            if path.is_dir(): shutil.rmtree(path)
+            else: path.unlink(missing_ok=True)
+        raise
 
 
 def main():

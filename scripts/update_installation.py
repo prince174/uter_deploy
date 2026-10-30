@@ -107,12 +107,18 @@ def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=Non
             if signed_current != old:
                 raise ValueError('Current state does not match the signed installed bundle')
         verify_offline_images(cfg, (old, new))
-    if backup_key.exists():
-        if create_backup_key:raise ValueError('Backup key already exists; refusing replacement')
-        backup_crypto.read_key(backup_key)
-    else:
-        if not create_backup_key:raise ValueError('Backup key not found; explicitly request key creation')
-        backup_crypto.create_key(backup_key)
+    # Recheck under the controller lock before creating a key or adopting.
+    # Adoption and uterctl apply each check again under their own lock, so an
+    # intervening fence cannot slip through after this short preflight lock.
+    with uterctl.locked(home):
+        if os.path.lexists(home/'redis-fence-operation.json'):
+            raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+        if backup_key.exists():
+            if create_backup_key:raise ValueError('Backup key already exists; refusing replacement')
+            backup_crypto.read_key(backup_key)
+        else:
+            if not create_backup_key:raise ValueError('Backup key not found; explicitly request key creation')
+            backup_crypto.create_key(backup_key)
     if not state_path.exists():
         adopt_managed.adopt(home,current_bundle,publisher_key)
     label=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+secrets.token_hex(8)

@@ -1,6 +1,8 @@
 import argparse
 import base64
+import contextlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,7 +12,7 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from scripts import install, adopt_installation
+from scripts import install, adopt_installation, adopt_managed, managed_smoke
 from scripts.bundle import build
 import uterctl
 
@@ -83,6 +85,47 @@ class AdoptionTests(unittest.TestCase):
         with patch.object(adopt_installation,'verify_live'), patch.object(adopt_installation.subprocess,'run',return_value=subprocess.CompletedProcess([],1)):
             with self.assertRaisesRegex(ValueError,'smoke failed'):adopt_installation.adopt(home,self.bundle,self.pub,['smoke'])
         self.assertFalse((home/'state.json').exists());self.assertFalse((home/'runtime/site.json').exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX fence and locking')
+    def test_adoption_refuses_fence_created_before_lock_without_smoke_or_writes(self):
+        for managed in (False, True):
+            with self.subTest(managed=managed), tempfile.TemporaryDirectory() as folder:
+                original=self.root; self.root=Path(folder)
+                try:
+                    for name,data in [('images',json.dumps(self.images)),('policy','[policy]\nenabled=true\n'),
+                                      ('profiles','[profile]\nenabled=true\n')]: (self.root/name).write_text(data)
+                    home=self.prepare(); before=sorted(p.name for p in (home/'runtime').iterdir())
+                    marker=home/'redis-fence-operation.json'; real_lock=uterctl.locked
+                    @contextlib.contextmanager
+                    def inject(path):
+                        with real_lock(path):
+                            marker.symlink_to(home/'missing')
+                            yield
+                    with patch.object(uterctl,'locked',side_effect=inject), \
+                            patch.object(adopt_installation,'verify_live') as live, \
+                            patch.object(adopt_installation.subprocess,'run') as smoke, \
+                            patch.object(managed_smoke,'prepare') as prepare:
+                        with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                            if managed: adopt_managed.adopt(home,self.bundle,self.pub)
+                            else: adopt_installation.adopt(home,self.bundle,self.pub,['smoke'])
+                        live.assert_not_called();smoke.assert_not_called();prepare.assert_not_called()
+                    self.assertEqual(before,sorted(p.name for p in (home/'runtime').iterdir()))
+                    self.assertFalse((home/'state.json').exists())
+                    self.assertTrue(marker.is_symlink())
+                finally:self.root=original
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX locking')
+    def test_managed_smoke_files_are_prepared_under_adoption_lock(self):
+        home=self.prepare(); real_prepare=managed_smoke.prepare
+        def prepare(path):
+            self.assertTrue((path/'operation.lock').is_file())
+            return real_prepare(path)
+        with patch.object(managed_smoke,'prepare',side_effect=prepare), \
+                patch.object(adopt_installation,'verify_live'), \
+                patch.object(adopt_installation.subprocess,'run',return_value=subprocess.CompletedProcess([],0)):
+            adopt_managed.adopt(home,self.bundle,self.pub)
+        self.assertTrue((home/'runtime/uter_managed_smoke.py').is_file())
+        self.assertFalse((home/'operation.lock').exists())
 
     def test_signed_bundle_includes_and_protects_runtime_tooling(self):
         manifest=dict(self.manifest,tooling_schema=1)

@@ -19,12 +19,10 @@ def adopt(home,bundle,publisher_key):
     if cfg.get('images')!=manifest['images']:raise ValueError('Current bundle does not match installed images')
     runtime=home/'runtime'
     if runtime.is_symlink() or not runtime.is_dir():raise ValueError('Installation runtime must be a regular directory')
-    smoke,created=managed_smoke.prepare(home)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):adopt_installation.adopt(home,bundle,publisher_key,smoke)
-    except BaseException:
-        for path in created:path.unlink(missing_ok=True)
-        raise
+    # Prepare runtime smoke files only after the shared lock and fence check.
+    with contextlib.redirect_stdout(io.StringIO()):
+        adopt_installation.adopt(home,bundle,publisher_key,None,
+                                 prepare_smoke=lambda:managed_smoke.prepare(home))
     return manifest
 
 

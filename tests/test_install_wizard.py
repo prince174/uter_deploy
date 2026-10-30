@@ -260,6 +260,20 @@ class InstallWizardTests(unittest.TestCase):
                 fetch.assert_not_called()
 
     @unittest.skipUnless(os.name == 'posix', 'POSIX locking and private directories')
+    def test_acceptance_refuses_fence_before_smoke_or_state_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home=Path(temp); state=home/'install-state.json'
+            state.write_text('{"status":"ready","acceptance":"not-run"}');state.chmod(0o600)
+            marker=home/'redis-fence-operation.json'; marker.symlink_to(home/'missing')
+            with mock.patch.object(wizard,'smoke') as smoke:
+                with self.assertRaisesRegex(wizard.WizardError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                    wizard.accept_with_operation_lock(home/'bundle',home,18000)
+                smoke.assert_not_called()
+            self.assertEqual(json.loads(state.read_text()),{'status':'ready','acceptance':'not-run'})
+            self.assertTrue(marker.is_symlink())
+            self.assertFalse((home/'operation.lock').exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX locking and private directories')
     def test_acceptance_holds_operation_lock_during_smoke_and_state_write(self):
         with tempfile.TemporaryDirectory() as temp:
             home=Path(temp); state=home/'install-state.json'

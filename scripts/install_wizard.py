@@ -406,6 +406,8 @@ def accept_with_operation_lock(bundle, home, port):
     try:
         workload_preflight.secure_directory(home)
         with uterctl.locked(home):
+            if os.path.lexists(home/'redis-fence-operation.json'):
+                raise WizardError('REDIS_FENCE_REQUIRES_INSPECTION')
             # An adoption or update that completed after install but before this
             # lock makes the earlier install identity unsuitable for acceptance.
             if os.path.lexists(home/'state.json'):

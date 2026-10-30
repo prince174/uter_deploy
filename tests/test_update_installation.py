@@ -55,6 +55,44 @@ class ManagedUpdateTests(unittest.TestCase):
         adopt.assert_not_called()
         self.assertFalse(self.backup_key.exists())
 
+    def test_fence_appearing_after_initial_check_blocks_under_lock_before_key_or_adoption(self):
+        marker=self.home/'redis-fence-operation.json'
+        verify=update_installation.uterctl.verify
+        def insert_fence(*args, **kwargs):
+            result=verify(*args, **kwargs)
+            if not os.path.lexists(marker): marker.symlink_to(self.home/'missing')
+            return result
+        with patch.object(update_installation.uterctl,'verify',side_effect=insert_fence), \
+                patch.object(update_installation.adopt_managed,'adopt') as adopt:
+            with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                update_installation.update(self.home,self.root/'new',self.public,self.backups,self.backup_key,
+                                           current_bundle=self.root/'old',create_backup_key=True)
+        adopt.assert_not_called()
+        self.assertFalse(self.backup_key.exists())
+        self.assertTrue(marker.is_symlink())
+        self.assertFalse((self.home/'operation.lock').exists())
+
+    def test_fence_created_after_preflight_is_rechecked_by_adoption(self):
+        marker=self.home/'redis-fence-operation.json'
+        create=backup_crypto.create_key
+        def create_then_fence(path):
+            create(path)
+            marker.symlink_to(self.home/'missing')
+        # Supply the ordinary ready state and matching signed deployment assets.
+        (self.home/'install-state.json').write_text('{"status":"ready"}')
+        import shutil
+        shutil.copytree(self.root/'old'/'compose',self.home/'compose')
+        shutil.copytree(self.root/'old'/'charts',self.home/'charts')
+        with patch.object(backup_crypto,'create_key',side_effect=create_then_fence), \
+                patch.object(update_installation.adopt_managed.managed_smoke,'prepare') as smoke:
+            with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                update_installation.update(self.home,self.root/'new',self.public,self.backups,self.backup_key,
+                                           current_bundle=self.root/'old',create_backup_key=True)
+        smoke.assert_not_called()
+        self.assertTrue(self.backup_key.exists())  # Never silently delete a newly created encryption key.
+        self.assertFalse((self.home/'state.json').exists())
+        self.assertFalse((self.home/'operation.lock').exists())
+
     def test_backup_key_cannot_be_inside_backup_directory(self):
         with self.assertRaisesRegex(ValueError,'stored separately'):
             update_installation.update(self.home,self.root/'new',self.public,self.backups,self.backups/'key',current_bundle=self.root/'old')
