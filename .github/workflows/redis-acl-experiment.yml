@@ -1,0 +1,15 @@
+name: Experimental Redis ACL exclusion on disposable runner
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Check fail-closed cases
+        run: python3 -m unittest tests.test_redis_acl_experiment -v
+      - name: Exercise real Redis with synthetic credentials
+        run: python3 scripts/redis_acl_experiment_ci.py
