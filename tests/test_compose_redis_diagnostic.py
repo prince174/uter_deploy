@@ -82,6 +82,29 @@ class ComposeDiagnosticTests(unittest.TestCase):
         with self.assertRaisesRegex(diag.ComposeDiagnosticError,'INSTALLED_BUNDLE_MISMATCH'):
             self.run_diagnostic()
 
+    def test_rejects_remote_context_or_environment_before_any_runtime_query(self):
+        for overrides in ({'DOCKER_HOST':'unix:///tmp/other.sock'},{'DOCKER_CONTEXT':'external'}):
+            with self.subTest(overrides=overrides), mock.patch.dict(diag.os.environ, overrides,clear=True), \
+                 mock.patch.object(diag.uterctl,'verify',return_value=self.signed), \
+                 mock.patch.object(diag.uterctl,'read',side_effect=[self.state,self.cfg]), \
+                 mock.patch.object(diag.uterctl,'site_config',return_value=self.site), \
+                 mock.patch.object(diag,'_json') as runtime, \
+                 mock.patch.object(diag.adopt_installation,'verify_live') as live:
+                with self.assertRaisesRegex(diag.ComposeDiagnosticError,'IDENTITY_INVALID'):
+                    diag.inspect_installation(self.home,self.home/'bundle',self.home/'publisher')
+                runtime.assert_not_called();live.assert_not_called()
+
+    def test_rejects_unadopted_pending_or_unmatched_state(self):
+        for update in ({'adopted_installer':False},{'pending':{'version':'pending'}},{'current':{}}):
+            with self.subTest(update=update), mock.patch.dict(diag.os.environ,{},clear=True), \
+                 mock.patch.object(diag.uterctl,'verify',return_value=self.signed), \
+                 mock.patch.object(diag.uterctl,'read',side_effect=[dict(self.state,**update),self.cfg]), \
+                 mock.patch.object(diag.uterctl,'site_config',return_value=self.site), \
+                 mock.patch.object(diag,'_json') as runtime:
+                with self.assertRaisesRegex(diag.ComposeDiagnosticError,'IDENTITY_INVALID'):
+                    diag.inspect_installation(self.home,self.home/'bundle',self.home/'publisher')
+                runtime.assert_not_called()
+
     def test_runtime_error_is_sanitized(self):
         with mock.patch.object(diag.install_recovery,'run_readonly',side_effect=ValueError('secret content')):
             with self.assertRaisesRegex(diag.ComposeDiagnosticError,'^COMPOSE_DIAGNOSTIC_QUERY_FAILED$') as error:

@@ -62,6 +62,18 @@ class FenceJournalTests(unittest.TestCase):
             self.make()
         self.assertEqual(journal.read(self.home), initial)
 
+    def test_caller_operation_is_strict_and_existing_operation_cannot_be_reused_in_home(self):
+        value = '1'*32
+        record = journal.create(self.home, **self.fields, operation=value)
+        self.assertEqual(record['operation'], value)
+        with self.assertRaises(journal.FenceJournalError):
+            journal.create(self.home, **self.fields, operation=value)
+        self.assertEqual(journal.read(self.home),record)
+        with tempfile.TemporaryDirectory() as other:
+            for invalid in ('x'*32, '1'*31, 1, True):
+                with self.subTest(invalid=invalid), self.assertRaises(journal.FenceJournalError):
+                    journal.create(other, **self.fields, operation=invalid)
+
     def test_rejects_bad_fields_and_unexpected_data(self):
         for field, bad in (('site', '../secret'), ('resource', 'x'*64), ('plan_sha256', 'b'*63),
                            ('backend', 'other')):

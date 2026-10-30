@@ -111,8 +111,10 @@ def _write(fd, record, *, create):
             pass
 
 
-def create(directory, *, backend, site, resource, plan_sha256):
-    record = {'schema': 1, 'operation': secrets.token_hex(16), 'backend': backend,
+def create(directory, *, backend, site, resource, plan_sha256, operation=None):
+    if operation is None:
+        operation = secrets.token_hex(16)
+    record = {'schema': 1, 'operation': operation, 'backend': backend,
               'site': site, 'resource': resource, 'plan_sha256': plan_sha256, 'phase': 'prepared'}
     _validate(record)
     fd = _directory(directory)
