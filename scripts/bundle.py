@@ -35,7 +35,8 @@ def build(manifest, output, key, *, source_root=ROOT):
                      'update_installation.py','smoke_http.py','extract_release_inputs.py','preflight.py',
                      'fetch_release.py','install_recovery.py','backup_installation.py',
                      'workload_preflight.py','render_backup_systemd.py',
-                     'bootstrap_wizard.py','uter_wizard.py','install_wizard.py','update_wizard.py'):
+                     'bootstrap_wizard.py','uter_wizard.py','install_wizard.py','update_wizard.py',
+                     'redis_fence_journal.py'):
             shutil.copy2(source_root/'scripts'/name,scripts/name)
         if m.get('session_identity_gate'):
             shutil.copy2(source_root/'scripts/session_migration_guard.py', scripts/'session_migration_guard.py')

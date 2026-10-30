@@ -71,4 +71,6 @@ class BundleProvenanceTests(unittest.TestCase):
         result = self.make_bundle(gated=False)
         self.assertFalse((result / 'scripts/session_provenance.py').exists())
         self.assertFalse((result / 'scripts/session_migration_guard.py').exists())
+        self.assertEqual((result / 'scripts/redis_fence_journal.py').read_bytes(),
+                         (uterctl.ROOT / 'scripts/redis_fence_journal.py').read_bytes())
         self.assertEqual(uterctl.verify(result, self.public)['data_epoch'], 1)

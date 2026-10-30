@@ -218,7 +218,7 @@ def deploy(home, bundle, m, site, *, check=False, offline=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
@@ -228,6 +228,22 @@ def main(argv=None):
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args(argv)
     home = args.home.resolve()
+    if args.command == "fence-status":
+        # A journal is a recovery aid, never proof that a fence currently
+        # exists. Do not create the installation directory for inspection.
+        from scripts import redis_fence_journal
+        if not home.is_dir():
+            raise ValueError('Installation directory not found')
+        marker = home / redis_fence_journal.NAME
+        if os.path.lexists(marker):
+            record = redis_fence_journal.read(home)
+            result = {'journal': 'present', 'backend': record['backend'], 'phase': record['phase'],
+                      'operation': record['operation'], 'live_fence_verified': False}
+        else:
+            result = {'journal': 'absent', 'live_fence_verified': False}
+        print(json.dumps(result, sort_keys=True))
+        print('Journal observation only; Redis and workloads were not inspected.')
+        return
     home.mkdir(parents=True, exist_ok=True)
     state_path = home / "state.json"
     state = read(state_path) if state_path.exists() else {"current": None, "previous": None, "pending": None}
