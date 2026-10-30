@@ -172,7 +172,7 @@ def capture_for_mutation(adapter,record,executor_bundle,executor_publisher,desti
 
 def recover(adapter,executor_bundle,executor_publisher,destination):
     """Snapshot-only recovery excludes a durable mutation decision."""
-    if any(os.path.lexists(Path(adapter.home)/name) for name in (journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT)):
+    if any(os.path.lexists(Path(adapter.home)/name) for name in (journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT,journal.CLEANUP_INTENT)):
         raise SnapshotOnlyError('SNAPSHOT_RECOVERY_INCOMPLETE')
     return _recover(adapter,executor_bundle,executor_publisher,destination,'release')
 

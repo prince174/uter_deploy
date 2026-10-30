@@ -73,7 +73,7 @@ def _attach_running_redis(adapter,record,plan,saved):
 def _validate_live(adapter,record,executor_key,destination):
     """Recheck signed installation, original IDs, Redis, health and all HMACs."""
     if journal.read(adapter.home)!=record or record['phase']!='writers_resumed':raise ValueError
-    for name in (journal.FINALIZE_ANCHOR,journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT,'backup-operation.json','recovery-operation.json','session-migration-block.json',
+    for name in (journal.FINALIZE_ANCHOR,journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT,journal.CLEANUP_INTENT,'backup-operation.json','recovery-operation.json','session-migration-block.json',
                  'redis-loopback-intent.json','redis-loopback-attempt.json'):
         if os.path.lexists(adapter.home/name):raise ValueError
     diagnostic.inspect_installation(adapter.home,adapter.bundle,adapter.publisher_key)

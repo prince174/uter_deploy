@@ -281,9 +281,13 @@ class ComposeFencedUpdateTests(unittest.TestCase):
                          update.receipts.RECEIPT,update.receipts.DECISION):
                 path=home/name;path.write_text('fixture');path.chmod(0o600)
             adapter=Mock();adapter._plan.return_value={}
+            def fake_cleanup(*args):
+                for name in update._evidence_names()+(journal.NAME,):(home/name).unlink()
+                return self.new
             with patch.object(update,'_verify_binding',return_value=(intent,self.old,self.new)), \
                  patch.object(update,'_verify_mutation_backup',return_value={'id':'f'*32}), \
                  patch.object(update,'_verify_running_source',return_value={'images':self.old['images']}), \
+                 patch.object(update,'seal_cleanup'),patch.object(update,'finish_sealed_cleanup',side_effect=fake_cleanup), \
                  patch.object(update.snapshot,'_executor',return_value='e'*64), \
                  patch.object(update.compose_nsfirewall_adapter,'Adapter',return_value=adapter), \
                  patch.object(update.compose_fence_finalize.checkpoint,'read',return_value={}), \

@@ -16,12 +16,13 @@ FINALIZE_ANCHOR = 'compose-fence-finalize-anchor.json'
 UPDATE_INTENT = 'compose-fenced-update-intent.json'
 UPDATE_START = 'compose-fenced-target-start.json'
 UPDATE_RESULT = 'compose-fenced-target-result.json'
+CLEANUP_INTENT = 'compose-fenced-cleanup.json'
 
 
 def blocks_mutation(directory):
-    """Both names block; a dangling link or partial cleanup is never ignored."""
+    """Any marker blocks; a dangling link or partial cleanup is never ignored."""
     directory=Path(directory)
-    return any(os.path.lexists(directory/name) for name in (NAME,FINALIZE_ANCHOR,UPDATE_INTENT,UPDATE_START,UPDATE_RESULT))
+    return any(os.path.lexists(directory/name) for name in (NAME,FINALIZE_ANCHOR,UPDATE_INTENT,UPDATE_START,UPDATE_RESULT,CLEANUP_INTENT))
 
 
 PHASES = ('prepared', 'isolating', 'isolated', 'capturing', 'captured', 'snapshot_releasing', 'releasing', 'aborting', 'pre_capture_aborting', 'redis_released', 'writers_resuming', 'writers_resumed', 'finalizing', 'target_starting', 'target_running', 'update_finalizing', 'restored')

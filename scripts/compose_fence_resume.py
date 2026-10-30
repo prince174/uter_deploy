@@ -158,7 +158,7 @@ def _healthy(adapter,writer,service,site,timeout=180):
 def resume(adapter,record,executor_key,destination):
     """Resume only original writers once; caller holds the O_EXCL lock."""
     try:
-        if any(os.path.lexists(adapter.home/name) for name in (journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT)):raise ValueError
+        if any(os.path.lexists(adapter.home/name) for name in (journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT,journal.CLEANUP_INTENT)):raise ValueError
         if journal.read(adapter.home)!=record or record['phase']!='redis_released':raise ValueError
         plan=adapter._plan(record)
         if adapter._attach_recovery(record,('redis_released',)) is not True or adapter.installed:

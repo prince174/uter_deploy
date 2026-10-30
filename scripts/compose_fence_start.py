@@ -311,7 +311,7 @@ def start(home,bundle,publisher,key):
     phase='PRECHECK'
     try:
         adapter._lock()
-        for name in (journal.NAME,journal.FINALIZE_ANCHOR,journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT,plans.NAME,NAME,'backup-operation.json','session-migration-block.json'):
+        for name in (journal.NAME,journal.FINALIZE_ANCHOR,journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT,journal.CLEANUP_INTENT,plans.NAME,NAME,'backup-operation.json','session-migration-block.json'):
             if os.path.lexists(Path(home)/name):raise StartError('FENCE_START_PRIOR_OPERATION')
         plan,writers,bundle_hash=_observe(home,bundle,publisher,key,adapter)
         phase='PLAN'

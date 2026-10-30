@@ -63,7 +63,7 @@ class SignedUpdateWizardTests(unittest.TestCase):
                                    backup_key=self.keyfile, **kwargs)
 
     def test_incomplete_fence_blocks_plan_before_new_paths(self):
-        for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json'):
+        for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json'):
             with self.subTest(name=name):
                 marker=self.home/name;marker.write_text('{}')
                 with self.assertRaisesRegex(wizard.WizardError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):

@@ -149,7 +149,7 @@ class InstallerTests(unittest.TestCase):
     def test_install_refuses_finalize_anchor_before_inspection_or_mutation(self):
         self.args.home.mkdir()
         for name in ('compose-fence-finalize-anchor.json','compose-fenced-update-intent.json',
-                     'compose-fenced-target-start.json','compose-fenced-target-result.json'):
+                     'compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json'):
             anchor=self.args.home/name;anchor.symlink_to(self.args.home/'missing')
             with patch.object(m,'check') as check,patch.object(m,'run') as run:
                 with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):

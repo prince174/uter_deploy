@@ -227,7 +227,7 @@ def prepare_plan(home, bundle, publisher_key, fingerprint, *, current_bundle=Non
         raise WizardError('RECOVERY_INCOMPLETE')
     if security.present(home / 'backup-operation.json'):
         raise WizardError('BACKUP_REQUIRES_INSPECTION')
-    if any(security.present(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json')):
+    if any(security.present(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json')):
         raise WizardError('REDIS_FENCE_REQUIRES_INSPECTION')
     state_file = home / 'state.json'
     adopted = security.present(state_file)

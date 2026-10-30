@@ -33,7 +33,7 @@ class FenceBackupCLITests(unittest.TestCase):
         commands=('fence-recover-redis','fence-backup-redis','fence-start-redis',
                   'fence-recover-snapshot-redis','fence-resume-writers','fence-finalize')
         with patch.object(compose_nsfirewall_adapter.Adapter,'__init__',side_effect=AssertionError('adapter created')):
-            for name in (journal.FINALIZE_ANCHOR,journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT):
+            for name in (journal.FINALIZE_ANCHOR,journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT,journal.CLEANUP_INTENT):
                 marker=self.fx.home/name;marker.symlink_to(self.fx.home/'missing')
                 for command in commands:
                     with self.subTest(command=command,name=name),self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
@@ -44,7 +44,7 @@ class FenceBackupCLITests(unittest.TestCase):
         self.assertEqual(journal.read(self.fx.home)['phase'],'isolated')
 
     def test_anchor_is_rechecked_under_lock_before_recovery_record(self):
-        for name in (journal.FINALIZE_ANCHOR,journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT):
+        for name in (journal.FINALIZE_ANCHOR,journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT,journal.CLEANUP_INTENT):
             marker=self.fx.home/name;marker.symlink_to(self.fx.home/'missing')
             with patch.object(uterctl,'verify') as verify:
                 with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):

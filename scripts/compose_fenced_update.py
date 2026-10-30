@@ -27,6 +27,13 @@ class FencedUpdateError(ValueError): pass
 
 TARGET_START=journal.UPDATE_START
 TARGET_RESULT=journal.UPDATE_RESULT
+CLEANUP=journal.CLEANUP_INTENT
+
+
+def _evidence_names():
+    return (compose_fence_recovery_plan.NAME,compose_fence_finalize.checkpoint.NAME,
+            compose_fence_start.NAME,compose_fence_origin.NAME,receipts.DESCRIPTOR,receipts.RECEIPT,
+            receipts.DECISION,journal.UPDATE_INTENT,TARGET_START,TARGET_RESULT)
 
 
 def _canonical(value):
@@ -497,15 +504,168 @@ def _verify_running_source(adapter,record,plan,source,publisher,old,new,site,*,a
     return cfg
 
 
+def _cleanup_mac(key,value):
+    if not isinstance(key,bytes) or len(key)!=32:raise FencedUpdateError('FENCED_CLEANUP_KEY_INVALID')
+    return hmac.new(backup_crypto.derive_key(key,b'compose-fenced-cleanup-v1'),_canonical(value),hashlib.sha256).hexdigest()
+
+
+def _validate_cleanup(value):
+    fields={'schema','record','plan','checkpoint','intent','result','source_version','target_version',
+            'site','backup_id','backup_manifest_sha256','state_sha256','config_sha256','evidence'}
+    if (not isinstance(value,dict) or set(value)!=fields or type(value['schema']) is not int or value['schema']!=1
+            or journal._validate(value['record'])!=value['record'] or value['record']['phase']!='update_finalizing'
+            or value['record']['backend']!='compose'
+            or set(value['evidence'])!=set(_evidence_names())):raise ValueError
+    compose_fence_recovery_plan.validate(value['plan'])
+    if (value['plan']['operation']!=value['record']['operation'] or value['plan']['site']!=value['record']['site']
+            or value['plan']['container_id']!=value['record']['resource']):raise ValueError
+    compose_fence_finalize.checkpoint.validate(value['checkpoint'],value['record'])
+    _intent_valid(value['intent'],value['record'])
+    if _target_value(value['record'],value['intent'],value['result'])!=value['result']:raise ValueError
+    if (not isinstance(value['site'],dict) or value['site'].get('name')!=value['record']['site']
+            or value['site'].get('backend')!='compose' or value['site'].get('context')!='default'
+            or value['site'].get('namespace')!=value['record']['site']):raise ValueError
+    for field in ('source_version','target_version'):
+        if not isinstance(value[field],str) or not uterctl.VERSION.fullmatch(value[field]):raise ValueError
+    if (value['source_version']==value['target_version'] or not isinstance(value['backup_id'],str)
+            or not re.fullmatch(r'[0-9a-f]{32}',value['backup_id'])):raise ValueError
+    for digest in (value['backup_manifest_sha256'],value['state_sha256'],value['config_sha256'],*value['evidence'].values()):
+        if not isinstance(digest,str) or not re.fullmatch(r'[0-9a-f]{64}',digest):raise ValueError
+    return value
+
+
+def read_cleanup(home,key):
+    try:
+        raw=backup_installation.safe_file(Path(home)/CLEANUP,private=True,limit=131072)
+        def pairs(items):
+            result={}
+            for name,value in items:
+                if name in result:raise ValueError
+                result[name]=value
+            return result
+        envelope=json.loads(raw,object_pairs_hook=pairs)
+        if not isinstance(envelope,dict) or set(envelope)!={'cleanup','mac'}:raise ValueError
+        value=_validate_cleanup(envelope['cleanup'])
+        if not isinstance(envelope['mac'],str) or not hmac.compare_digest(envelope['mac'],_cleanup_mac(key,value)):raise ValueError
+        return value
+    except Exception:raise FencedUpdateError('FENCED_CLEANUP_UNVERIFIED') from None
+
+
+def seal_cleanup(home,key,record,plan,saved,intent,result,old,new,site,backup,destination,directory,files):
+    """Seal complete pre-cleanup proof after both state files were fsynced."""
+    backup_snapshot._require_legacy_operation_lock(home)
+    if journal.read(home)!=record or record['phase']!='update_finalizing':raise FencedUpdateError('FENCED_CLEANUP_STATE_UNVERIFIED')
+    hashes={}
+    for name in _evidence_names():
+        compose_fence_finalize._same_inode(directory,name,files[name])
+        fd,info=files[name];raw=os.pread(fd,info.st_size+1,0)
+        if len(raw)!=info.st_size:raise FencedUpdateError('FENCED_CLEANUP_EVIDENCE_UNVERIFIED')
+        hashes[name]=hashlib.sha256(raw).hexdigest()
+    def digest(path):return hashlib.sha256(backup_installation.safe_file(path,limit=131072)).hexdigest()
+    value={'schema':1,'record':record,'plan':plan,'checkpoint':saved,'intent':intent,'result':result,
+           'source_version':old['version'],'target_version':new['version'],'site':site,'backup_id':backup['id'],
+           'backup_manifest_sha256':digest(Path(destination)/'manifest.json'),
+           'state_sha256':digest(Path(home)/'state.json'),'config_sha256':digest(Path(home)/'install.json'),
+           'evidence':hashes}
+    _validate_cleanup(value)
+    raw=_canonical({'cleanup':value,'mac':_cleanup_mac(key,value)})+b'\n'
+    if len(raw)>16384:raise FencedUpdateError('FENCED_CLEANUP_PROOF_TOO_LARGE')
+    dirfd=journal._directory(home)
+    try:
+        try:
+            fd=os.open(CLEANUP,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=dirfd)
+            with os.fdopen(fd,'wb') as out:
+                os.fchmod(out.fileno(),0o600);out.write(raw);out.flush();os.fsync(out.fileno())
+            os.fsync(dirfd)
+        except OSError:raise FencedUpdateError('FENCED_CLEANUP_SEAL_UNCERTAIN') from None
+    finally:os.close(dirfd)
+    if read_cleanup(home,key)!=value:raise FencedUpdateError('FENCED_CLEANUP_UNVERIFIED')
+    return value
+
+
+def finish_sealed_cleanup(home,target,publisher,executor_key,key,destination):
+    """Recheck sealed proof and live target; unlink only verified leftovers."""
+    backup_snapshot._require_legacy_operation_lock(home)
+    home=Path(home);target=Path(target);destination=Path(destination);adapter=None
+    try:
+        for name in (journal.FINALIZE_ANCHOR,'backup-operation.json','recovery-operation.json',
+                     'session-migration-block.json','redis-loopback-intent.json','redis-loopback-attempt.json'):
+            if os.path.lexists(home/name):raise ValueError
+        sealed=read_cleanup(home,key);record=sealed['record'];intent=sealed['intent']
+        if os.path.lexists(home/journal.NAME) and journal.read(home)!=record:raise ValueError
+        source=home/'releases'/sealed['source_version']
+        if target!=home/'releases'/sealed['target_version']:raise ValueError
+        old=uterctl.verify(source,publisher);new=uterctl.verify(target,publisher)
+        if (old['version']!=sealed['source_version'] or new['version']!=sealed['target_version']
+                or hashlib.sha256(snapshot._file(source/'checksums.json')).hexdigest()!=intent['source_sha256']
+                or hashlib.sha256(snapshot._file(target/'checksums.json')).hexdigest()!=intent['target_sha256']
+                or snapshot._executor(uterctl.ROOT,executor_key)!=intent['executor_sha256']
+                or hashlib.sha256(str(destination.resolve()).encode()).hexdigest()!=intent['destination_sha256']):raise ValueError
+        state=backup_installation.safe_json(home/'state.json');cfg=backup_installation.safe_json(home/'install.json')
+        site=uterctl.site_config(home)
+        if (site!=sealed['site'] or state.get('current')!=new or state.get('previous')!=old
+                or state.get('pending') is not None or state.get('adopted_installer') is not True
+                or state.get('last_backup')!={'id':sealed['backup_id'],'path':str(destination.resolve()),'version':old['version']}
+                or cfg.get('images')!=new['images'] or cfg.get('backend')!='compose'
+                or cfg.get('context')!='default' or cfg.get('name')!=record['site']):raise ValueError
+        for name,field in (('state.json','state_sha256'),('install.json','config_sha256')):
+            if hashlib.sha256(backup_installation.safe_file(home/name,limit=131072)).hexdigest()!=sealed[field]:raise ValueError
+        preflight(home,source,target,publisher,dict(state,current=old),site)
+        backup=backup_store.verify_set(destination,key,home=home,site=site,version=old['version'])
+        if (backup['id']!=sealed['backup_id'] or hashlib.sha256(snapshot._file(destination/'manifest.json')).hexdigest()!=sealed['backup_manifest_sha256']):raise ValueError
+        adapter=compose_nsfirewall_adapter.Adapter(home,source,publisher,key);adapter._lock()
+        if (os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT','default') not in ('','default')
+                or adapter._json('context','inspect','default','--format','{{json .Endpoints.docker.Host}}')!='unix:///var/run/docker.sock'):
+            raise ValueError
+        adapter._config(source);plan=sealed['plan']
+        if plan['image_ref']!=old['images']['redis'] or new['images']['redis']!=plan['image_ref']:raise ValueError
+        compose_fence_finalize._attach_running_redis(adapter,record,plan,sealed['checkpoint'])
+        with tempfile.TemporaryDirectory(prefix='uter-compose-verify-') as temporary:
+            command,env=_compose_command(home,target,new,site,temporary)
+            writers=compose_fence_start._writers(command,env,site['name'],new)
+        if _target_value(record,intent,writers)!=sealed['result']:raise ValueError
+        for service in ('agent','guardrail'):compose_fence_resume._healthy(adapter,writers[service],service,site['name'])
+        adapter._live_namespace(plan,restart='unless-stopped');adapter._network_and_volume(plan)
+        adapter._peers(plan);adapter._redis_config(plan);adapter._check_firewall(installed=False)
+        remaining=[name for name in _evidence_names() if os.path.lexists(home/name)]
+        has_journal=os.path.lexists(home/journal.NAME)
+        names=remaining+([journal.NAME] if has_journal else [])+[CLEANUP]
+        with compose_fence_finalize._pin_files(home,names) as (directory,files):
+            if read_cleanup(home,key)!=sealed:raise ValueError
+            # A previous seal call may have failed after writing complete bytes
+            # but before durable fsync. Re-establish durability before deleting
+            # any authenticated evidence, even on a recovery invocation.
+            compose_fence_finalize._same_inode(directory,CLEANUP,files[CLEANUP])
+            os.fsync(files[CLEANUP][0]);os.fsync(directory)
+            for name in remaining:
+                compose_fence_finalize._same_inode(directory,name,files[name])
+                fd,info=files[name];raw=os.pread(fd,info.st_size+1,0)
+                if len(raw)!=info.st_size or hashlib.sha256(raw).hexdigest()!=sealed['evidence'][name]:raise ValueError
+            for name in remaining:
+                compose_fence_finalize._same_inode(directory,name,files[name]);os.unlink(name,dir_fd=directory);os.fsync(directory)
+            if has_journal:
+                if journal.read(home)!=record:raise ValueError
+                compose_fence_finalize._same_inode(directory,journal.NAME,files[journal.NAME])
+                os.unlink(journal.NAME,dir_fd=directory);os.fsync(directory)
+            if read_cleanup(home,key)!=sealed:raise ValueError
+            compose_fence_finalize._same_inode(directory,CLEANUP,files[CLEANUP])
+            # State/config were durably committed before sealing. If fsync
+            # fails after this final unlink, no marker can be promised.
+            os.unlink(CLEANUP,dir_fd=directory);os.fsync(directory)
+        if journal.blocks_mutation(home):raise ValueError
+        return new
+    except Exception:raise FencedUpdateError('FENCED_CLEANUP_INCOMPLETE') from None
+    finally:
+        if adapter is not None:adapter.close()
+
+
 def finalize_target(home,source,target,publisher,executor_key,key,destination):
     """Commit a verified target once; remove authenticated evidence only last."""
     backup_snapshot._require_legacy_operation_lock(home)
     home=Path(home);record=journal.read(home)
     if record['phase'] not in ('target_running','update_finalizing'):
         raise FencedUpdateError('FENCED_UPDATE_FINALIZE_STATE_UNVERIFIED')
-    names=[compose_fence_recovery_plan.NAME,compose_fence_finalize.checkpoint.NAME,
-           compose_fence_start.NAME,compose_fence_origin.NAME,receipts.DESCRIPTOR,receipts.RECEIPT,
-           receipts.DECISION,journal.UPDATE_INTENT,TARGET_START,TARGET_RESULT,journal.NAME]
+    names=list(_evidence_names())+[journal.NAME]
     adapter=None
     try:
         for name in (journal.FINALIZE_ANCHOR,'backup-operation.json','recovery-operation.json',
@@ -545,28 +705,8 @@ def finalize_target(home,source,target,publisher,executor_key,key,destination):
             # remains blocking until both fsyncs succeed, including on crash.
             cfg=dict(cfg,images=new['images'])
             _durable_json(home,'install.json',cfg);_durable_json(home,'state.json',state)
-            with compose_fence_finalize._pin_files(home,[journal.NAME]) as (last_directory,last_files):
-                if journal.read(home)!=final:raise ValueError
-                for name in names:
-                    if name==journal.NAME:continue
-                    compose_fence_finalize._same_inode(directory,name,files[name]);os.unlink(name,dir_fd=directory);os.fsync(directory)
-                if journal.read(home)!=final:raise ValueError
-                compose_fence_finalize._same_inode(last_directory,journal.NAME,last_files[journal.NAME])
-                os.link(journal.NAME,journal.FINALIZE_ANCHOR,src_dir_fd=last_directory,
-                        dst_dir_fd=last_directory,follow_symlinks=False)
-                os.fsync(last_directory)
-                try:
-                    os.unlink(journal.NAME,dir_fd=last_directory);os.fsync(last_directory)
-                except OSError:
-                    try:
-                        os.link(journal.FINALIZE_ANCHOR,journal.NAME,src_dir_fd=last_directory,
-                                dst_dir_fd=last_directory,follow_symlinks=False)
-                        os.fsync(last_directory)
-                    except OSError:pass
-                    raise
-                os.unlink(journal.FINALIZE_ANCHOR,dir_fd=last_directory);os.fsync(last_directory)
-        if journal.blocks_mutation(home):raise ValueError
-        return new
+            seal_cleanup(home,key,final,plan,saved,intent,result,old,new,site,verified,destination,directory,files)
+            return finish_sealed_cleanup(home,target,publisher,executor_key,key,destination)
     except Exception:raise FencedUpdateError('FENCED_UPDATE_FINALIZE_INCOMPLETE') from None
     finally:
         if adapter is not None:adapter.close()

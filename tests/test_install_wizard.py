@@ -264,7 +264,7 @@ class InstallWizardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             home=Path(temp); state=home/'install-state.json'
             state.write_text('{"status":"ready","acceptance":"not-run"}');state.chmod(0o600)
-            for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json'):
+            for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json'):
                 with self.subTest(name=name):
                     marker=home/name;marker.symlink_to(home/'missing')
                     with mock.patch.object(wizard,'smoke') as smoke:
@@ -281,7 +281,7 @@ class InstallWizardTests(unittest.TestCase):
             home=Path(temp);state=home/'install-state.json'
             state.write_text('{"status":"ready","acceptance":"not-run"}');state.chmod(0o600)
             for name in ('compose-fence-finalize-anchor.json','compose-fenced-update-intent.json',
-                         'compose-fenced-target-start.json','compose-fenced-target-result.json'):
+                         'compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json'):
                 marker=home/name;marker.symlink_to(home/'missing')
                 with self.assertRaisesRegex(wizard.WizardError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
                     wizard.mark_acceptance(home)

@@ -92,5 +92,14 @@ class FencedUpdateCLITests(unittest.TestCase):
                         uterctl.main(argv)
                     load.assert_not_called()
 
+    def test_finish_routes_sealed_cleanup_even_if_journal_already_unlinked(self):
+        self.destination.mkdir(mode=0o700)
+        (self.fx.home/journal.CLEANUP_INTENT).write_text('fixture')
+        with patch.object(update,'finish_sealed_cleanup',return_value=self.new) as finish, \
+             patch.object(journal,'read',side_effect=AssertionError('journal is absent')), \
+             contextlib.redirect_stdout(io.StringIO()):
+            uterctl.finish_compose_fenced_update(self.fx.home,self.target,self.fx.pub,self.fx.pub,self.key,self.destination)
+        finish.assert_called_once();self.assertFalse((self.fx.home/'operation.lock').exists())
+
 
 if __name__=='__main__':unittest.main()

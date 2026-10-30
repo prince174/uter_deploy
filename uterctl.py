@@ -307,7 +307,7 @@ def _fence_secret_inputs(home, backup_key_path):
 def _fence_current_record(home, bundle, publisher_key, allowed_phases):
     """Caller holds lock; bind journal to the exact signed installation."""
     from scripts import backup_installation, redis_fence_journal
-    if any(os.path.lexists(home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT,redis_fence_journal.UPDATE_START,redis_fence_journal.UPDATE_RESULT)):
+    if any(os.path.lexists(home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT,redis_fence_journal.UPDATE_START,redis_fence_journal.UPDATE_RESULT,redis_fence_journal.CLEANUP_INTENT)):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
     state=backup_installation.safe_json(home/'state.json')
     if (state.get('adopted_installer') is not True or state.get('pending') is not None
@@ -513,6 +513,10 @@ def finish_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_k
         raise ValueError('FENCED_UPDATE_DESTINATION_INVALID')
     with locked(home):
         if os.path.lexists(home/redis_fence_journal.FINALIZE_ANCHOR):raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+        if os.path.lexists(home/redis_fence_journal.CLEANUP_INTENT):
+            result=compose_fenced_update.finish_sealed_cleanup(home,bundle,publisher_key,executor_key,secret,destination)
+            print('Verified Compose fenced update to '+result['version']+' finalized; backup retained.')
+            return
         record=redis_fence_journal.read(home)
         if record['phase'] not in ('target_running','update_finalizing'):
             raise ValueError('FENCED_UPDATE_RECOVERY_REQUIRES_INSPECTION')
@@ -563,7 +567,7 @@ def main(argv=None):
             raise ValueError('FENCE_RECOVERY_PATH_NOT_ABSOLUTE')
         _load_signed_fence_executor(args.executor_key)
         from scripts import redis_fence_journal
-        if any(os.path.lexists(args.home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT,redis_fence_journal.UPDATE_START,redis_fence_journal.UPDATE_RESULT)):
+        if any(os.path.lexists(args.home/name) for name in (redis_fence_journal.FINALIZE_ANCHOR,redis_fence_journal.UPDATE_INTENT,redis_fence_journal.UPDATE_START,redis_fence_journal.UPDATE_RESULT,redis_fence_journal.CLEANUP_INTENT)):
             raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         if args.command == "fence-recover-redis":
             recover_compose_redis_before_snapshot(args.home, args.bundle, args.key, args.backup_key)
@@ -600,6 +604,7 @@ def main(argv=None):
         result['update_intent'] = ('present' if os.path.lexists(home / redis_fence_journal.UPDATE_INTENT) else 'absent')
         result['target_start'] = ('present' if os.path.lexists(home / redis_fence_journal.UPDATE_START) else 'absent')
         result['target_result'] = ('present' if os.path.lexists(home / redis_fence_journal.UPDATE_RESULT) else 'absent')
+        result['cleanup_intent'] = ('present' if os.path.lexists(home / redis_fence_journal.CLEANUP_INTENT) else 'absent')
         print(json.dumps(result, sort_keys=True))
         print('Journal observation only; Redis and workloads were not inspected.')
         return
@@ -648,7 +653,7 @@ def main(argv=None):
         # A fence operation can have changed Redis connectivity without
         # reaching a recoverable state. Never let a later managed mutation
         # proceed merely because the controller lock has been released.
-        if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json')):
+        if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json')):
             raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         # Re-read after acquiring the lock to reject stale concurrent operations.
         current_state = read(state_path) if state_path.exists() else {"current": None, "previous": None, "pending": None}

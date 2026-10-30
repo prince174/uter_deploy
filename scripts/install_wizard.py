@@ -379,7 +379,7 @@ def smoke(bundle, home, port):
 
 def mark_acceptance(home):
     """Record success only after authenticated smoke; never alter a pending install."""
-    if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json')):
+    if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json')):
         raise WizardError('REDIS_FENCE_REQUIRES_INSPECTION')
     try:
         workload_preflight.secure_directory(home)
@@ -408,7 +408,7 @@ def accept_with_operation_lock(bundle, home, port):
     try:
         workload_preflight.secure_directory(home)
         with uterctl.locked(home):
-            if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json')):
+            if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json')):
                 raise WizardError('REDIS_FENCE_REQUIRES_INSPECTION')
             # An adoption or update that completed after install but before this
             # lock makes the earlier install identity unsuitable for acceptance.

@@ -89,7 +89,7 @@ class AdoptionTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'posix', 'POSIX fence and locking')
     def test_adoption_refuses_fence_created_before_lock_without_smoke_or_writes(self):
-        for managed,marker_name in itertools.product((False, True),('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json')):
+        for managed,marker_name in itertools.product((False, True),('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json')):
             with self.subTest(managed=managed,marker_name=marker_name), tempfile.TemporaryDirectory() as folder:
                 original=self.root; self.root=Path(folder)
                 try:

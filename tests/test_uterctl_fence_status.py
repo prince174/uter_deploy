@@ -25,7 +25,7 @@ class FenceStatusTests(unittest.TestCase):
         return json.loads(out.getvalue().splitlines()[0])
 
     def test_no_journal_is_only_an_observation(self):
-        self.assertEqual(self.status(), {'journal': 'absent', 'finalize_anchor':'absent', 'update_intent':'absent','target_start':'absent','target_result':'absent','live_fence_verified': False})
+        self.assertEqual(self.status(), {'journal': 'absent', 'finalize_anchor':'absent', 'update_intent':'absent','target_start':'absent','target_result':'absent','cleanup_intent':'absent','live_fence_verified': False})
         self.assertEqual(list(self.home.iterdir()), [])
 
     def test_existing_valid_journal_reports_phase_without_claiming_fence(self):
@@ -33,7 +33,7 @@ class FenceStatusTests(unittest.TestCase):
                                 plan_sha256='b'*64)
         result = self.status()
         self.assertEqual(result, {'journal': 'present', 'backend': 'compose', 'phase': 'prepared',
-                                  'operation': record['operation'], 'finalize_anchor':'absent','update_intent':'absent','target_start':'absent','target_result':'absent','live_fence_verified': False})
+                                  'operation': record['operation'], 'finalize_anchor':'absent','update_intent':'absent','target_start':'absent','target_result':'absent','cleanup_intent':'absent','live_fence_verified': False})
         self.assertEqual(journal.read(self.home), record)
 
     def test_invalid_or_dangling_journal_is_never_reported_absent(self):
@@ -55,19 +55,19 @@ class FenceStatusTests(unittest.TestCase):
 
     def test_dangling_anchor_is_never_reported_as_unconditionally_absent(self):
         anchor=self.home/journal.FINALIZE_ANCHOR;anchor.symlink_to(self.home/'missing')
-        self.assertEqual(self.status(),{'journal':'absent','finalize_anchor':'present','update_intent':'absent','target_start':'absent','target_result':'absent','live_fence_verified':False})
+        self.assertEqual(self.status(),{'journal':'absent','finalize_anchor':'present','update_intent':'absent','target_start':'absent','target_result':'absent','cleanup_intent':'absent','live_fence_verified':False})
         self.assertTrue(anchor.is_symlink())
 
     def test_linked_anchor_reports_both_without_reading_two_link_journal(self):
         journal.create(self.home,backend='compose',site='uter',resource='a'*64,plan_sha256='b'*64)
         os.link(self.home/journal.NAME,self.home/journal.FINALIZE_ANCHOR)
-        self.assertEqual(self.status(),{'journal':'present','finalize_anchor':'present','update_intent':'absent','target_start':'absent','target_result':'absent','live_fence_verified':False})
+        self.assertEqual(self.status(),{'journal':'present','finalize_anchor':'present','update_intent':'absent','target_start':'absent','target_result':'absent','cleanup_intent':'absent','live_fence_verified':False})
 
     def test_dangling_update_intent_is_reported(self):
         (self.home/journal.UPDATE_INTENT).symlink_to(self.home/'missing')
-        self.assertEqual(self.status(),{'journal':'absent','finalize_anchor':'absent','update_intent':'present','target_start':'absent','target_result':'absent','live_fence_verified':False})
+        self.assertEqual(self.status(),{'journal':'absent','finalize_anchor':'absent','update_intent':'present','target_start':'absent','target_result':'absent','cleanup_intent':'absent','live_fence_verified':False})
 
     def test_dangling_target_evidence_is_reported(self):
-        for name,field in ((journal.UPDATE_START,'target_start'),(journal.UPDATE_RESULT,'target_result')):
+        for name,field in ((journal.UPDATE_START,'target_start'),(journal.UPDATE_RESULT,'target_result'),(journal.CLEANUP_INTENT,'cleanup_intent')):
             path=self.home/name;path.symlink_to(self.home/'missing')
             self.assertEqual(self.status()[field],'present');path.unlink()

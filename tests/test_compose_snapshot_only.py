@@ -56,7 +56,7 @@ class SnapshotOnlyTests(unittest.TestCase):
 
     def test_snapshot_only_recovery_rejects_dangling_update_intent(self):
         receipts.write_decision(self.home,self.key,'release')
-        for name in (journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT):
+        for name in (journal.UPDATE_INTENT,journal.UPDATE_START,journal.UPDATE_RESULT,journal.CLEANUP_INTENT):
             marker=self.home/name;marker.symlink_to(self.home/'missing')
             with self.assertRaisesRegex(subject.SnapshotOnlyError,'RECOVERY_INCOMPLETE'):self.recover()
             self.adapter._attach_snapshot_recovery.assert_not_called()
