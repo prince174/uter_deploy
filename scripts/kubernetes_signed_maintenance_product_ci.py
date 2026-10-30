@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
+import shutil
 import subprocess
 import sys
 
@@ -15,7 +17,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import yaml
 
-from scripts import bundle, kubernetes_fence_profile_store
+import uterctl
+from scripts import (bundle, kubernetes_fence_finalizer, kubernetes_fence_profile_store,
+                     redis_fence_journal)
 
 
 class FixtureError(ValueError):
@@ -64,6 +68,13 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
               'maintenance_protocol':{'version':1,'services':['agent','guardrail']}}
     manifest_file=private/'manifest.json';manifest_file.write_text(json.dumps(manifest))
     executor=private/'executor'; bundle.build(manifest_file,executor,secret,source_root=root)
+    # Only this self-signed fixture gains these unpublished experimental files.
+    for name in ('kubernetes_redis_readonly_transport.py','redis_acl_operation_inspection.py',
+                 'redis_acl_experiment.py','kubernetes_redis_readonly_ci_child.py'):
+        shutil.copy2(Path(root)/'scripts'/name,executor/'scripts'/name)
+    inventory=json.dumps(uterctl.inventory(executor),sort_keys=True,indent=2).encode()
+    (executor/'checksums.json').write_bytes(inventory)
+    (executor/'checksums.sig').write_bytes(base64.b64encode(signer.sign(inventory)))
     # The local CI launcher and isolated Python are part of the test trust
     # boundary. No application output or generated secret is logged.
     chown_attempted=False
@@ -121,9 +132,62 @@ def exercise(*, root, work, home, kubeconfig, kube, site, context, images):
         if value != {'application_endpoint_checked':False,'backend':'kubernetes','ingress_fenced':False,
                      'redis_isolated':False,'restart_fenced':False,'safe_to_update':False,'writers_observed':2}:
             raise FixtureError('KUBE_SIGNED_CI_RESULT_INVALID')
+        # Provision a synthetic separate admin entirely inside the disposable
+        # Pod. The password travels only over stdin, never argv or output.
+        labels='app.kubernetes.io/instance='+site+',app.kubernetes.io/name=redis'
+        pods=query('-n',site,'get','pods','-l',labels)['items']
+        if len(pods)!=1: raise FixtureError('KUBE_SIGNED_CI_REDIS_UNVERIFIED')
+        pod=pods[0];meta=pod['metadata'];status=pod['status']['containerStatuses'][0]
+        password=secrets.token_hex(32)
+        admin_key=private/'redis-admin'
+        fd=os.open(admin_key,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'w',encoding='ascii') as stream: stream.write(password)
+        command=[*map(str,kube),'-n',site,'exec','-i','pod/'+meta['name'],'-c','redis','--',
+                 'sh','-ec','REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --raw']
+        commands=('ACL SETUSER uter-maint-test on >'+password+' ~* &* +@all\nINFO SERVER\n').encode('ascii')
+        response=subprocess.run(command,input=commands,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=True,timeout=30).stdout.decode()
+        run_id=next(line.split(':',1)[1].strip() for line in response.splitlines() if line.startswith('run_id:'))
+        plan={'schema':1,'context':context,'namespace':site,'pod':meta['name'],'uid':meta['uid'],
+              'resource_version':meta['resourceVersion'],'container_id':status['containerID'],
+              'spec_sha256':kubernetes_fence_finalizer._digest(pod['spec'])}
+        kubernetes_fence_finalizer.persist_plan(home,plan)
+        operation=secrets.token_hex(16)
+        redis_fence_journal.create(home,backend='kubernetes',site=site,resource=meta['uid'],
+            plan_sha256=kubernetes_fence_finalizer.plan_hash(plan),operation=operation)
+        child=[sys.executable,'-I','-B',str(executor/'scripts/kubernetes_redis_readonly_ci_child.py'),
+            str(home),str(executor),str(public),str(config),str(profile),str(backup_key),str(binary),
+            operation,str(admin_key)]
+        for expected,redis_run in (('READONLY_TRANSPORT_VERIFIED',run_id),('READONLY_TRANSPORT_REFUSED','0'*40)):
+            result=subprocess.run(child+[redis_run],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=240)
+            if result.stdout.strip().decode('ascii') != expected or (result.returncode == 0) != (expected.endswith('VERIFIED')):
+                raise FixtureError('KUBE_SIGNED_CI_READONLY_TRANSPORT_UNVERIFIED')
+        # Caller uses these fixture paths only for a later test of Pod replacement.
+        return {'child':child,'run_id':run_id,'pod_uid':meta['uid'],'pod_name':meta['name']}
     finally:
         if chown_attempted:
             if executor.resolve(strict=True) != private.resolve(strict=True)/'executor':
                 raise FixtureError('KUBE_SIGNED_CI_CLEANUP_UNCERTAIN')
+            subprocess.run(['sudo','chown','-R',str(os.getuid())+':'+str(os.getgid()),str(executor)],check=True,
+                           stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+
+
+def verify_replacement(state, *, work):
+    """Reject the old operation plan after a real fixture Pod replacement."""
+    expected=Path(__file__).resolve().parents[1]/'work/maintenance-kubernetes/signed-cli-private/executor'
+    executor=Path(state['child'][3]).resolve(strict=True).parents[1]
+    if (Path(work).resolve()!=expected.parents[1] or executor!=expected
+            or state['child'][3]!=str(expected/'scripts/kubernetes_redis_readonly_ci_child.py')):
+        raise FixtureError('KUBE_SIGNED_CI_BOUNDARY')
+    attempted=False
+    try:
+        attempted=True
+        subprocess.run(['sudo','chown','-R','0:0',str(executor)],check=True,
+                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+        result=subprocess.run(state['child']+[state['run_id']],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=240)
+        if result.returncode!=2 or result.stdout.strip()!=b'READONLY_TRANSPORT_REFUSED_POD':
+            raise FixtureError('KUBE_SIGNED_CI_REPLACEMENT_UNVERIFIED')
+    finally:
+        if attempted:
+            if executor.resolve(strict=True)!=expected: raise FixtureError('KUBE_SIGNED_CI_CLEANUP_UNCERTAIN')
             subprocess.run(['sudo','chown','-R',str(os.getuid())+':'+str(os.getgid()),str(executor)],check=True,
                            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)

@@ -288,7 +288,7 @@ containerdConfigPatches:
         with patch.object(maintenance_protocol, 'verify_capability', return_value=session.manifest):
             preflight_initial = kubernetes_maintenance_preflight.observe(session)
         PHASE = 'SIGNED_KUBE_CLI_CHECK'
-        kubernetes_signed_maintenance_product_ci.exercise(root=ROOT,work=work,home=home,kubeconfig=kubeconfig,
+        signed_fixture=kubernetes_signed_maintenance_product_ci.exercise(root=ROOT,work=work,home=home,kubeconfig=kubeconfig,
             kube=kube,site=SITE,context=CONTEXT,images=images)
         PHASE = 'TRUSTED_JOURNAL_CREATE'
         proof = work/'proof'; proof.mkdir(mode=0o700); operation = secrets.token_hex(16); plan = secrets.token_hex(32)
@@ -352,12 +352,27 @@ containerdConfigPatches:
             invalidated = True
         if not invalidated:
             raise ProbeError('MAINTENANCE_KUBE_RESTART_NOT_DETECTED')
+        PHASE = 'REDIS_REPLACEMENT_TEST'
+        run(kube+['-n', SITE, 'delete', 'pod', signed_fixture['pod_name'], '--wait=false'])
+        deadline=time.monotonic()+180
+        while True:
+            selector='app.kubernetes.io/instance='+SITE+',app.kubernetes.io/name=redis'
+            items=json.loads(run(kube+['-n',SITE,'get','pods','-l',selector,'-o','json']))['items']
+            ready=[p for p in items if p.get('metadata',{}).get('uid')!=signed_fixture['pod_uid']
+                   and p.get('status',{}).get('phase')=='Running'
+                   and len(p.get('status',{}).get('containerStatuses',[]))==1
+                   and p['status']['containerStatuses'][0].get('ready') is True]
+            if len(ready)==1: break
+            if time.monotonic()>=deadline: raise ProbeError('MAINTENANCE_KUBE_REDIS_REPLACEMENT_UNVERIFIED')
+            time.sleep(2)
+        kubernetes_signed_maintenance_product_ci.verify_replacement(signed_fixture,work=work)
         evidence = ROOT/'work/maintenance-kubernetes-evidence'; evidence.mkdir(mode=0o700)
         (evidence/'maintenance.txt').write_text('Agent and Guardrail receipts verified on exact kind Pods.\n'
             'Read-only preflight checked real Pod identity before and after quiescence using a fixture signing shim.\n'
             'The signed isolated CLI checked the same Pod using fixture-generated profile and trust roots.\n'
             'A fixture Secret metadata change invalidated the durable inventory.\n'
             'Deleting a receipted Agent Pod invalidated the inventory.\n'
+            'Signed read-only Redis transport rejected a different run_id and a replaced Redis Pod.\n'
             'Redis fence, backup, update and recovery were not tested by this probe.\n', encoding='utf-8')
     finally:
         for fd in fds: os.close(fd)
