@@ -33,6 +33,10 @@ DEFAULT_TAG = 'deploy-2026.10.29-signed-4'
 DEFAULT_VERSION = '0.1.6'
 FINGERPRINT = re.compile(r'[0-9a-fA-F]{64}\Z')
 NAME = re.compile(r'[a-z][a-z0-9-]{0,38}[a-z0-9]\Z')
+IMAGE_SERVICES = ('guardrail', 'agent', 'redis')
+IMAGE_DIGEST = re.compile(r'sha256:[0-9a-f]{64}\Z')
+IMAGE_COMPONENT = re.compile(r'[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*\Z')
+REGISTRY_HOST = re.compile(r'[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?)*\Z')
 
 
 class WizardError(Exception):
@@ -43,6 +47,75 @@ def ask(label, default=None):
     suffix = f' [{default}]' if default is not None else ''
     value = input(label + suffix + ': ').strip()
     return value or default or ''
+
+
+def image_repositories(args):
+    """Read the optional all-or-nothing, operator-specified repository mapping."""
+    values = {name: getattr(args, 'image_'+name+'_repository', None) for name in IMAGE_SERVICES}
+    if not any(value is not None for value in values.values()):
+        return None
+    if not all(isinstance(value, str) and value for value in values.values()):
+        raise WizardError('IMAGE_REPOSITORIES_REQUIRED')
+    for value in values.values():
+        if len(value) > 512 or value != value.strip() or value.startswith('-'):
+            raise WizardError('IMAGE_REPOSITORY_INVALID')
+        parts = value.split('/')
+        if len(parts) < 2 or any(not IMAGE_COMPONENT.fullmatch(part) for part in parts[1:]):
+            raise WizardError('IMAGE_REPOSITORY_INVALID')
+        hostport = parts[0].split(':')
+        if (len(hostport) not in (1, 2) or not REGISTRY_HOST.fullmatch(hostport[0])
+                or (len(hostport) == 1 and '.' not in hostport[0] and hostport[0] != 'localhost')
+                or (len(hostport) == 2 and (not hostport[1].isascii() or not hostport[1].isdigit()
+                    or not 1 <= int(hostport[1]) <= 65535))):
+            raise WizardError('IMAGE_REPOSITORY_INVALID')
+    return values
+
+
+def mapped_images(manifest, repositories):
+    """Change only repository names; the authenticated digest is immutable."""
+    try:
+        images = manifest['images']
+        if set(images) != set(IMAGE_SERVICES) or set(repositories) != set(IMAGE_SERVICES):
+            raise ValueError
+        result = {}
+        for name in IMAGE_SERVICES:
+            ref = images[name]
+            if not isinstance(ref, str) or not uterctl.IMAGE.fullmatch(ref) or ref.count('@') != 1:
+                raise ValueError
+            digest = ref.rsplit('@', 1)[1]
+            if not IMAGE_DIGEST.fullmatch(digest):
+                raise ValueError
+            result[name] = repositories[name] + '@' + digest
+        return result
+    except (KeyError, TypeError, ValueError):
+        raise WizardError('SIGNED_IMAGES_INVALID') from None
+
+
+def read_registry_config(path, required_hosts=None):
+    """Copy only trusted inline Docker credentials; never print their values."""
+    try:
+        raw = workload_preflight.read_trusted_file(path, 65536, secret=True, error='REGISTRY_CONFIG_INVALID')
+        def pairs(items):
+            out = {}
+            for key, value in items:
+                if key in out: raise ValueError
+                out[key] = value
+            return out
+        data = json.loads(raw, object_pairs_hook=pairs)
+        if not isinstance(data, dict) or set(data) != {'auths'} or not isinstance(data['auths'], dict) or not data['auths']:
+            raise ValueError
+        for host, auth in data['auths'].items():
+            if (not isinstance(host, str) or not isinstance(auth, dict)
+                    or set(auth) - {'auth', 'identitytoken'}
+                    or not any(isinstance(auth.get(key), str) and auth[key] for key in ('auth', 'identitytoken'))):
+                raise ValueError
+        # Avoid copying unrelated registry credentials into the installation
+        # or a Kubernetes Secret. Hosts are explicit operator-selected refs.
+        if required_hosts is not None and not set(data['auths']).issubset(required_hosts):
+            raise ValueError
+        return raw
+    except (OSError, ValueError, TypeError, UnicodeError, workload_preflight.ProbeError):
+        raise WizardError('REGISTRY_CONFIG_INVALID') from None
 
 
 def default_workspace():
@@ -156,6 +229,17 @@ def collect(args):
             args.allow_http_llm = ask('HTTP не шифруется. Разрешить для доверенной тестовой сети? Введите да').casefold() in ('да', 'yes')
         if not args.skip_llm_preflight:
             args.skip_llm_preflight = ask('Пропустить проверку LLM с хоста, если она доступна только из кластера? Введите да').casefold() in ('да', 'yes')
+        supplied = [getattr(args, 'image_'+name+'_repository', None) for name in IMAGE_SERVICES]
+        if not any(value is not None for value in supplied):
+            nexus = ask('Загружать образы из других репозиториев, например Nexus? Введите да', 'нет').casefold()
+            if nexus in ('да', 'yes'):
+                for name in IMAGE_SERVICES:
+                    setattr(args, 'image_'+name+'_repository',
+                            ask('Полный адрес репозитория образа '+name+' без @sha256'))
+            elif nexus not in ('нет', 'no'):
+                raise WizardError('IMAGE_REPOSITORY_CHOICE_INVALID')
+        if image_repositories(args) and not getattr(args, 'registry_config', None):
+            args.registry_config = ask('Путь к защищённому Docker config.json для приватного registry; Enter — без авторизации') or None
     return args
 
 
@@ -182,6 +266,7 @@ def validate(args):
         raise WizardError('LLM_MAX_TOKENS_INVALID')
     if args.offline and args.backend != 'compose':
         raise WizardError('OFFLINE_COMPOSE_ONLY')
+    image_repositories(args)
     try:
         preflight.check_url(args.llm_url, args.allow_http_llm)
         if args.health_url and not preflight.same_origin(preflight.check_url(args.llm_url, args.allow_http_llm),
@@ -196,6 +281,8 @@ def validate(args):
             value = args._interactive_key
             if len(value.encode('utf-8')) > preflight.MAX_KEY or any(not 32 <= ord(c) <= 126 for c in value):
                 raise WizardError('LLM_KEY_INVALID')
+        if getattr(args, 'registry_config', None):
+            read_registry_config(Path(args.registry_config))
         release = Path(args.release_dir).absolute()
         home = Path(args.home).absolute()
         if '..' in Path(args.release_dir).parts or '..' in Path(args.home).parts:
@@ -275,7 +362,7 @@ def port_is_free(port):
         return False
 
 
-def run_install(bundle, stage, home, args, inputs=None, key_file=None):
+def run_install(bundle, stage, home, args, inputs=None, key_file=None, mapped_path=None, registry_path=None):
     script = bundle / 'scripts/install.py'
     # Isolate signed installer imports from caller PYTHONPATH/PYTHONHOME and
     # prevent bytecode writes inside the immutable signed bundle.
@@ -285,6 +372,8 @@ def run_install(bundle, stage, home, args, inputs=None, key_file=None):
                     '--llm-url', args.llm_url, '--llm-model', args.llm_model,
                     '--llm-key-file', str(key_file), '--port', str(args.port),
                     '--guardrail-cpus', str(args.guardrail_cpus)]
+        if mapped_path: command += ['--images', str(mapped_path)]
+        if registry_path and args.backend == 'kubernetes': command += ['--registry-config', str(registry_path)]
         if args.context: command += ['--context', args.context]
         if args.llm_max_tokens is not None: command += ['--llm-max-tokens', str(args.llm_max_tokens)]
         if args.allow_http_llm: command += ['--allow-http-llm']
@@ -292,8 +381,12 @@ def run_install(bundle, stage, home, args, inputs=None, key_file=None):
         if args.storage_class: command += ['--storage-class', args.storage_class]
     if stage == 'install' and args.offline: command += ['--offline']
     try:
+        environment = None
+        if registry_path and args.backend == 'compose':
+            environment = os.environ.copy()
+            environment['DOCKER_CONFIG'] = str(Path(registry_path).parent)
         result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, timeout=900, check=False)
+                                stderr=subprocess.DEVNULL, timeout=900, check=False, env=environment)
     except (OSError, subprocess.TimeoutExpired):
         raise WizardError(stage.upper() + '_FAILED_OR_TIMED_OUT') from None
     if result.returncode:
@@ -430,6 +523,7 @@ def accept_with_operation_lock(bundle, home, port):
 
 def execute(args):
     release, home = validate(args)
+    repositories = image_repositories(args)
     if not port_is_free(args.port):
         raise WizardError('LOCAL_PORT_UNAVAILABLE')
     if args.reuse_release:
@@ -444,6 +538,29 @@ def execute(args):
     with tempfile.TemporaryDirectory(prefix='.uter-install-wizard-', dir=release.parent) as tmp:
         stage = Path(tmp)
         authenticated_inputs(release, bundle, key, manifest, stage/'inputs')
+        mapped_path = None
+        effective = manifest['images']
+        if repositories:
+            effective = mapped_images(manifest, repositories)
+            mapped_path = stage/'mapped-images.json'
+            fd = os.open(mapped_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                json.dump(effective, stream, sort_keys=True)
+            print('Адреса образов изменены с сохранением подписанных digest. '
+                  'Managed backup и обновление с этими адресами пока не поддерживаются. '
+                  'Не используйте прежние команды восстановления: они не учитывают эти адреса.', flush=True)
+        registry_path = None
+        if getattr(args, 'registry_config', None):
+            hosts = {ref.split('/', 1)[0] for ref in effective.values()}
+            raw = read_registry_config(Path(args.registry_config), hosts)
+            registry_dir = stage/'registry'; registry_dir.mkdir(mode=0o700)
+            registry_path = registry_dir/'config.json'
+            fd = os.open(registry_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'wb') as stream: stream.write(raw)
+            del raw
+            if args.backend == 'compose':
+                print('Docker config используется только при установке; для последующего pull или recreate '
+                      'нужен отдельно настроенный доверенный Docker config или login.', flush=True)
         # Use a private bounded snapshot; credentials never appear in argv or logs.
         try:
             if args.llm_key_file:
@@ -480,7 +597,16 @@ def execute(args):
         for name in ('prepare', 'check', 'install'):
             verify_release(release, args.fingerprint, args.version)
             print('Этап: '+{'prepare':'подготовка','check':'проверка конфигурации','install':'установка'}[name], flush=True)
-            run_install(bundle, name, home, args, stage/'inputs', stage/'llm-key')
+            run_install(bundle, name, home, args, stage/'inputs', stage/'llm-key', mapped_path, registry_path)
+            if name == 'prepare' and repositories:
+                # This file is an operator-readable record, not a replacement
+                # for the signed release and not authorization for adoption.
+                workload_preflight.secure_directory(home)
+                provenance = {'schema': 1, 'version': manifest['version'],
+                              'source_images': manifest['images'], 'installed_images': effective}
+                fd = os.open(home/'image-provenance.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                    json.dump(provenance, stream, sort_keys=True)
         verify_release(release, args.fingerprint, args.version)
         print('Этап: авторизованная проверка работающего сервиса', flush=True)
         forward = None
@@ -499,7 +625,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--non-interactive', action='store_true', help='Require explicit values; never prompt')
     for flag in ('release', 'version', 'fingerprint', 'release-dir', 'backend', 'home', 'name',
-                 'context', 'llm-url', 'llm-model', 'llm-key-file', 'llm-ca-bundle', 'health-url', 'storage-class'):
+                 'context', 'llm-url', 'llm-model', 'llm-key-file', 'llm-ca-bundle', 'health-url', 'storage-class',
+                 'image-guardrail-repository', 'image-agent-repository', 'image-redis-repository', 'registry-config'):
         p.add_argument('--'+flag)
     p.add_argument('--port', type=int, default=18000)
     p.add_argument('--llm-max-tokens', type=int, help='Optional upstream generation token setting, 1..65536')

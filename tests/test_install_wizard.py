@@ -181,7 +181,7 @@ class InstallWizardTests(unittest.TestCase):
     def test_interactive_llm_max_tokens_choice_and_validation(self):
         data=args(non_interactive=False,skip_llm_preflight=True)
         with mock.patch.object(wizard.sys.stdin,'isatty',return_value=True), \
-             mock.patch.object(wizard,'ask',side_effect=['18000','64','','']):
+             mock.patch.object(wizard,'ask',side_effect=['18000','64','','','нет']):
             wizard.collect(data)
         self.assertEqual(data.llm_max_tokens,64)
         data=args(non_interactive=False,skip_llm_preflight=True)
@@ -347,7 +347,7 @@ class InstallWizardTests(unittest.TestCase):
     def test_interactive_secret_is_hidden_and_empty_requires_explicit_choice(self):
         data=args(non_interactive=False,llm_key_file=None,skip_llm_preflight=True)
         with mock.patch.object(wizard.sys.stdin,'isatty',return_value=True), \
-             mock.patch.object(wizard,'ask',side_effect=['18000','','enter','','']), \
+             mock.patch.object(wizard,'ask',side_effect=['18000','','enter','','','нет']), \
              mock.patch.object(wizard.getpass,'getpass',return_value='hidden-secret'), \
              contextlib.redirect_stdout(io.StringIO()) as output:
             wizard.collect(data)
