@@ -61,3 +61,16 @@ class ProfileStoreTests(unittest.TestCase):
             with self.assertRaises(store.ProfileError):store.create(self.path,self.key,self.record)
         self.assertTrue(self.path.exists())
         with self.assertRaises(store.ProfileError):store.create(self.path,self.key,self.record)
+
+    def test_schema_two_requires_independent_audit_pvc_uid(self):
+        record=copy.deepcopy(self.record);record['schema']=2;record['kubectl_sha256']='f'*64
+        for uid in (None,'bad',record['api']['redis_pvc_uid'],record['writer_uids']['agent']):
+            record['audit_pvc_uid']=uid
+            with self.subTest(uid=uid),self.assertRaises(store.ProfileError):store.create(self.path,self.key,record)
+            self.assertFalse(self.path.exists())
+        record['audit_pvc_uid']='7a1ae129-82a8-490f-86e3-84dfd735d336'
+        record['kubectl_sha256']='bad'
+        with self.assertRaises(store.ProfileError):store.create(self.path,self.key,record)
+        record['kubectl_sha256']='f'*64
+        store.create(self.path,self.key,record)
+        self.assertEqual(store.read(self.path,self.key)[0],record)

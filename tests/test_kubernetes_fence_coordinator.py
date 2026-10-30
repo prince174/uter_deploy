@@ -47,6 +47,10 @@ class OperatorSessionTests(unittest.TestCase):
                       r.site:{'kind':'Namespace','metadata':{'name':r.site,'uid':self.api_profile['namespace_uid']}},
                       'pvc':r.pvc,'deployment':r.deployment}
         self.calls=[]
+        self.pod='uter-test-redis-abc123-pod'
+        self.patch=[{'op':'test','path':'/metadata/uid','value':'77777777-7777-7777-7777-777777777777'},
+                    {'op':'test','path':'/metadata/resourceVersion','value':'42'},
+                    {'op':'add','path':'/metadata/finalizers','value':['uter.io/redis-fence-'+'a'*32]}]
         class API:
             context='test';namespace=r.site
             def patch(inner,*args):self.calls.append(args);return None
@@ -74,20 +78,20 @@ class OperatorSessionTests(unittest.TestCase):
     def test_profile_change_blocks_before_mutating_request(self):
         with self.open() as session:
             self.profile.write_text('{"changed":true}')
-            with self.assertRaises(coordinator.CoordinatorError):session.api.patch('x',[])
+            with self.assertRaises(coordinator.CoordinatorError):session.api.patch(self.pod,self.patch)
             self.assertEqual(self.calls,[])
 
     def test_profile_change_after_request_makes_outcome_uncertain(self):
         with self.open() as session:
             def mutate(*args):self.calls.append(args);self.profile.write_text('{"changed":true}')
             session.api._api.patch=mutate
-            with self.assertRaises(coordinator.CoordinatorError):session.api.patch('x',[])
+            with patch.object(session,'_authorize'),self.assertRaises(coordinator.CoordinatorError):session.api.patch(self.pod,self.patch)
             self.assertEqual(len(self.calls),1)
 
     def test_pinned_pvc_change_blocks_before_request(self):
         with self.open() as session:
             self.objects['pvc']['metadata']['uid']='99999999-9999-9999-9999-999999999999'
-            with self.assertRaises(coordinator.CoordinatorError):session.api.patch('x',[])
+            with self.assertRaises(coordinator.CoordinatorError):session.api.patch(self.pod,self.patch)
             self.assertEqual(self.calls,[])
 
     def test_missing_profile_never_reaches_preflight(self):
@@ -96,3 +100,36 @@ class OperatorSessionTests(unittest.TestCase):
             with self.assertRaises(coordinator.CoordinatorError):
                 with coordinator.checked_session(self.home,self.bundle,self.pub,self.config,self.profile,self.key):pass
             preflight.assert_not_called()
+
+    def test_arbitrary_resources_commands_or_patches_are_rejected_without_api(self):
+        with self.open() as session:
+            for args in (['--request-timeout=20s','delete','pod/other'],
+                         ['--request-timeout=20s','get','secret','credentials','-o','json'],
+                         ['--request-timeout=20s','exec','pod/'+self.pod,'--','sh'],
+                         ['--request-timeout=20s','patch','deployment/other','--type=json','-p','[]']):
+                with self.subTest(args=args),self.assertRaises(coordinator.CoordinatorError):session.api._call(args)
+            with self.assertRaises(coordinator.CoordinatorError):session.api.patch('other',self.patch)
+            dangerous=self.patch[:-1]+[{'op':'remove','path':'/metadata/finalizers'}]
+            with self.assertRaises(coordinator.CoordinatorError):session.api.patch(self.pod,dangerous)
+            with self.assertRaises(coordinator.CoordinatorError):session._query(['get','secrets'])
+            self.assertEqual(self.calls,[])
+
+    def test_valid_shape_is_not_authorized_without_durable_operation(self):
+        with self.open() as session:
+            with self.assertRaisesRegex(coordinator.CoordinatorError,'KUBE_OPERATOR_MUTATION_UNAUTHORIZED'):
+                session.api.patch(self.pod,self.patch)
+            self.assertEqual(self.calls,[])
+
+    def test_executor_required_even_if_operation_is_valid(self):
+        with self.open() as session:
+            state={'operation':'a'*32,'backend':'kubernetes','site':session.site,'phase':'isolating'}
+            with patch.object(coordinator.journal,'read',return_value=state) as read:
+                with self.assertRaisesRegex(coordinator.CoordinatorError,'KUBE_OPERATOR_MUTATION_UNAUTHORIZED'):
+                    session.api.patch(self.pod,self.patch)
+                read.assert_not_called()
+            self.assertEqual(self.calls,[])
+
+    def test_unsigned_executor_cannot_be_selected(self):
+        with self.assertRaises(coordinator.CoordinatorError):
+            with coordinator.checked_session(self.home,self.bundle,self.pub,self.config,self.profile,self.key,
+                                             executor_bundle=self.bundle,executor_key=self.pub):pass

@@ -19,6 +19,7 @@ from scripts import snapshot_only_receipts as records
 
 LIMIT=16384
 FIELDS=frozenset(('schema','site','api','writer_uids','release_version','inventory_sha256','publisher_sha256'))
+FIELDS_V2=FIELDS|{'audit_pvc_uid','kubectl_sha256'}
 
 
 class ProfileError(ValueError):pass
@@ -34,7 +35,10 @@ def _key(key):
 
 def _validate(record):
     try:
-        if (not isinstance(record,dict) or set(record)!=FIELDS or type(record['schema']) is not int or record['schema']!=1
+        if (not isinstance(record,dict) or type(record.get('schema')) is not int
+                or (record['schema']==1 and set(record)!=FIELDS)
+                or (record['schema']==2 and set(record)!=FIELDS_V2)
+                or record['schema'] not in (1,2)
                 or not isinstance(record['site'],str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,40}',record['site'])
                 or not isinstance(record['release_version'],str)
                 or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?',record['release_version'])
@@ -46,6 +50,11 @@ def _validate(record):
                 or any(not isinstance(x,str) or not identity.UUID.fullmatch(x) for x in writers.values())):raise ValueError
         ids=[record['api'][key] for key in ('kube_system_uid','namespace_uid','redis_pvc_uid','redis_deployment_uid')]
         if len(set(ids+list(writers.values())))!=6:raise ValueError
+        if record['schema']==2:
+            uid=record['audit_pvc_uid']
+            binary=record['kubectl_sha256']
+            if (not isinstance(uid,str) or not identity.UUID.fullmatch(uid) or uid in ids+list(writers.values())
+                    or not isinstance(binary,str) or not re.fullmatch(r'[0-9a-f]{64}',binary)):raise ValueError
         return record
     except (ValueError,KeyError,TypeError):raise ProfileError('KUBE_PROFILE_INVALID') from None
 
