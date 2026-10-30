@@ -1,0 +1,17 @@
+name: Experimental controller lock SIGKILL evidence
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Exercise process death and reclaim in a private fixture
+        env:
+          UTER_CI_STRICT_RUNNER: 'true'
+        run: >-
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS,UTER_CI_STRICT_RUNNER
+          python3 -m scripts.experimental_operation_lock_ci
