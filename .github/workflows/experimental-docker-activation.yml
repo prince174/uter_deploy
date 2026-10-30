@@ -1,0 +1,15 @@
+name: Experimental Docker socket activation evidence
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only activation probe on disposable runner
+        env:
+          UTER_CI_STRICT_RUNNER: 'true'
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS,UTER_CI_STRICT_RUNNER python3 scripts/experimental_docker_activation_ci.py
