@@ -1,0 +1,124 @@
+name: Verify session gate blocks unsafe upgrade
+on:
+  workflow_dispatch:
+    inputs:
+      old_tag:
+        description: Published, signed currently installed release tag
+        required: true
+        type: string
+      new_tag:
+        description: Published, signed target release tag
+        required: true
+        type: string
+      old_version:
+        description: Signed current version, e.g. 0.1.4
+        required: true
+        type: string
+      new_version:
+        description: Signed target version
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [compose, kubernetes]
+    env:
+      OLD_TAG: ${{ inputs.old_tag }}
+      NEW_TAG: ${{ inputs.new_tag }}
+      OLD_VERSION: ${{ inputs.old_version }}
+      NEW_VERSION: ${{ inputs.new_version }}
+    steps:
+      - name: Validate explicit release selection
+        shell: bash
+        run: |
+          for value in "$OLD_TAG" "$NEW_TAG"; do
+            [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || exit 1
+          done
+          for value in "$OLD_VERSION" "$NEW_VERSION"; do
+            [[ "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || exit 1
+          done
+          [[ "$OLD_TAG" != "$NEW_TAG" && "$OLD_VERSION" != "$NEW_VERSION" ]]
+      - name: Fetch public deployment repository anonymously
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_GLOBAL: /dev/null
+        run: |
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test ! -e "$GITHUB_WORKSPACE/.git"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git -C "$GITHUB_WORKSPACE" -c credential.helper= fetch --no-recurse-submodules --tags origin '+refs/heads/*:refs/remotes/origin/*'
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$GITHUB_SHA"
+      - name: Download public release assets without credentials
+        shell: bash
+        run: |
+          for side in old new; do
+            mkdir -p "work/pair/$side"
+            if [ "$side" = old ]; then tag="$OLD_TAG"; else tag="$NEW_TAG"; fi
+            for file in signed-bundle.tar.gz publisher-public.pem installation-inputs.tar.gz installation-inputs.tar.gz.sha256; do
+              curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+                --connect-timeout 20 --max-time 180 --max-filesize 134217728 \
+                -o "work/pair/$side/$file" "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$file"
+            done
+          done
+      - name: Install tooling
+        run: |
+          # The root-owned isolated stage uses the distro interpreter, not the
+          # runner-owned virtual environment. Ensure distro venv/ensurepip exists.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-venv > /dev/null
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+          curl -fsSLO https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz
+          # Pinned digest, not a checksum obtained alongside the download.
+          echo 'ee88b3c851ae6466a3de507f7be73fe94d54cbf2987cbaa3d1a3832ea331f2cd  helm-v3.17.3-linux-amd64.tar.gz' | sha256sum -c -
+          tar -xzf helm-v3.17.3-linux-amd64.tar.gz
+          sudo install linux-amd64/helm /usr/local/bin/helm
+      - name: Verify signatures, input hashes, tags and transition
+        shell: bash
+        run: |
+          .venv/bin/python scripts/release_upgrade_preflight_ci.py \
+            --old-tag "$OLD_TAG" --new-tag "$NEW_TAG" \
+            --old-version "$OLD_VERSION" --new-version "$NEW_VERSION"
+      - name: Install pinned kind
+        if: matrix.backend == 'kubernetes'
+        run: |
+          curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o kind-bin
+          echo 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind-bin' | sha256sum -c -
+          sudo install kind-bin /usr/local/bin/kind
+      - name: Install, update and restore in an isolated runner
+        env:
+          BACKEND: ${{ matrix.backend }}
+          UTER_CI_RELEASE_MODE: published
+          UTER_CI_STRICT_RUNNER: 'true'
+          UTER_CI_OLD_VERSION: ${{ inputs.old_version }}
+          UTER_CI_NEW_VERSION: ${{ inputs.new_version }}
+          UTER_CI_OLD_TAG: ${{ inputs.old_tag }}
+          UTER_CI_NEW_TAG: ${{ inputs.new_tag }}
+          OLD_SIGNED_BUNDLE_PATH: ${{ github.workspace }}/work/pair/old/bundle
+          NEW_SIGNED_BUNDLE_PATH: ${{ github.workspace }}/work/pair/new/bundle
+          PUBLISHER_KEY_PATH: ${{ github.workspace }}/work/pair/old/publisher-public.pem
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = Linux
+          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_SHA,RUNNER_ENVIRONMENT,RUNNER_OS,GITHUB_WORKSPACE,BACKEND,UTER_CI_RELEASE_MODE,UTER_CI_STRICT_RUNNER,UTER_CI_OLD_VERSION,UTER_CI_NEW_VERSION,UTER_CI_OLD_TAG,UTER_CI_NEW_TAG,OLD_SIGNED_BUNDLE_PATH,NEW_SIGNED_BUNDLE_PATH,PUBLISHER_KEY_PATH \
+            "$PWD/.venv/bin/python" scripts/session_gate_e2e_ci.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: session-gate-${{ matrix.backend }}-evidence
+          path: |
+            work/release-upgrade-preflight.json
+            work/session-gate-e2e-evidence.json
+          retention-days: 30
+          if-no-files-found: warn
