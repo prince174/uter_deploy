@@ -1,0 +1,27 @@
+name: Synthetic Kubernetes Redis fence experiment
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  synthetic-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Unit tests without Kubernetes or Docker
+        run: python3 -m unittest discover -s tests -p test_experimental_kube_fence_ci.py -v
+      - name: Install pinned kind
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o "$RUNNER_TEMP/kind"
+          echo 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  '"$RUNNER_TEMP/kind" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/kind"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Run disposable synthetic-only cluster lifecycle
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          python3 -m scripts.experimental_kube_fence_ci
