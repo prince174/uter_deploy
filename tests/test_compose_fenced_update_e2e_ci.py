@@ -59,11 +59,19 @@ class SyntheticUpdateCITests(unittest.TestCase):
             self.assertEqual(ci.install_failure_category(self.root,dict(cfg,name='wrong')),'INSTALL_INSPECTION_UNCERTAIN')
             docker.assert_not_called()
 
+    def test_staged_fixtures_are_required_before_exercise(self):
+        folder=self.root/'scripts';folder.mkdir()
+        with self.assertRaisesRegex(ci.Failure,'STAGED_FIXTURES_MISSING'):ci.staged_fixtures(self.root)
+        (folder/'ci_upstream_fixture.py').write_text('fixture')
+        with self.assertRaisesRegex(ci.Failure,'STAGED_FIXTURES_MISSING'):ci.staged_fixtures(self.root)
+        (folder/'ci_fault_before_state_replace.c').write_text('fixture')
+        self.assertEqual(ci.staged_fixtures(self.root),(folder/'ci_upstream_fixture.py',folder/'ci_fault_before_state_replace.c'))
+
     @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('cc'), 'LD_PRELOAD fault requires Linux and C compiler')
     def test_fault_injection_is_scoped_to_state_in_selected_directory(self):
         shim=self.root/'fault.so'
         subprocess.run(['cc','-shared','-fPIC','-o',str(shim),
-                        str(ci.ROOT/'tests/fixtures/ci_fault_before_state_replace.c'),'-ldl'],check=True)
+                        str(ci.ROOT/'scripts/ci_fault_before_state_replace.c'),'-ldl'],check=True)
         home=self.root/'home';home.mkdir();other=self.root/'other';other.mkdir()
         child='import os,sys; d=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY); os.replace("tmp",sys.argv[2],src_dir_fd=d,dst_dir_fd=d)'
         env=dict(os.environ,LD_PRELOAD=str(shim),UTER_CI_FAULT_HOME=str(home))

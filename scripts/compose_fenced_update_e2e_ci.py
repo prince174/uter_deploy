@@ -52,6 +52,15 @@ def sign(bundle,key):
     (bundle/'checksums.sig').write_bytes(base64.b64encode(key.sign(raw)))
 
 
+def staged_fixtures(root):
+    """Require both CI-only fixtures in the verified private Git snapshot."""
+    directory=Path(root)/'scripts'
+    paths=(directory/'ci_upstream_fixture.py',directory/'ci_fault_before_state_replace.c')
+    if any(path.is_symlink() or not path.is_file() for path in paths):
+        raise Failure('STAGED_FIXTURES_MISSING')
+    return paths
+
+
 def synthetic_pair(source,directory):
     """Re-sign the verified public source; target only changes version/upgrade_from.
 
@@ -139,6 +148,7 @@ def exercise(mode):
     original=uterctl.verify(source,public)
     if original['version']!=os.environ['UTER_CI_OLD_VERSION']:raise Failure('RELEASE_INVALID')
     work=ROOT/'work';private=work/'synthetic-fixture';private.mkdir(mode=0o700)
+    upstream_fixture,fault_fixture=staged_fixtures(ROOT)
     PHASE='PAIR';old,target,product_key,before,after=synthetic_pair(source,private)
     executor,executor_key=compose_nsfirewall_signed_ci._ci_signed_executor(source,private)
     if executor_key.read_bytes()==product_key.read_bytes():raise Failure('KEYS_INVALID')
@@ -149,9 +159,17 @@ def exercise(mode):
     os.environ.update({'DOCKER_CONTEXT':'default','DOCKER_CONFIG':str(registry),'GUARDRAIL_PORT':'18000','GUARDRAIL_CPUS':'2'})
     name='uter-fenced-synthetic-ci';installer=old/'scripts/install.py'
     gateway=json.loads(run(['docker','network','inspect','bridge']))[0]['IPAM']['Config'][0]['Gateway']
-    fixture=subprocess.Popen([sys.executable,str(ROOT/'tests/fixtures/upstream.py')],
+    fixture=subprocess.Popen([sys.executable,str(upstream_fixture)],
                              stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     try:
+        for attempt in range(30):
+            if fixture.poll() is not None:raise Failure('UPSTREAM_EXITED')
+            try:
+                with urllib.request.urlopen('http://127.0.0.1:8080/v1/models',timeout=2) as response:
+                    if response.status==200:break
+            except OSError:pass
+            time.sleep(1)
+        else:raise Failure('UPSTREAM_NOT_READY')
         args=[sys.executable,installer,'prepare','--home',home,'--backend','compose','--name',name,
               '--inputs',work/'input/published-old','--llm-url',f'http://{gateway}:8080',
               '--llm-model','test-model','--llm-key-file',llm_key,'--allow-http-llm','--guardrail-cpus','2']
@@ -174,7 +192,7 @@ def exercise(mode):
         if mode in ('normal','fail-state'):
             if mode=='fail-state':
                 shim=private/'fault.so'
-                run(['cc','-shared','-fPIC','-o',shim,ROOT/'tests/fixtures/ci_fault_before_state_replace.c','-ldl'])
+                run(['cc','-shared','-fPIC','-o',shim,fault_fixture,'-ldl'])
                 injected=dict(os.environ,LD_PRELOAD=str(shim),UTER_CI_FAULT_HOME=str(home))
                 process=subprocess.Popen([str(x) for x in command],env=injected,
                                          stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
