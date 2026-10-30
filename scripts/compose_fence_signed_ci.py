@@ -155,14 +155,32 @@ def _verify(home, bundle, publisher, manifest):
             if current.get('networks'): raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CLEANUP')
             args=['network','connect']
             for alias in plan['endpoint_aliases']:args += ['--alias',alias]
+            PHASE='CI_CONNECT_COMMAND'
             docker(*args,netid,redis_id)
+            PHASE='CI_VERIFY_ENDPOINT'
+            observed=diagnostic._redis_inspect(redis_id)
+            networks=observed.get('networks')
+            if not isinstance(networks,dict) or set(networks)!={netname}:
+                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_ENDPOINT_NETWORK')
+            observed=networks[netname]
+            if observed.get('NetworkID')!=netid:
+                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_ENDPOINT_NETWORK')
+            if observed.get('IPAddress')!=plan['endpoint_ipv4']:
+                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_ENDPOINT_IP')
+            if set(observed.get('Aliases') or [])!=set(plan['endpoint_aliases']):
+                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_ENDPOINT_ALIASES')
+            if (observed.get('MacAddress') or '').lower()!=plan['endpoint_mac']:
+                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_ENDPOINT_MAC')
             adapter._state(plan,detached=False,restart='no')
+            PHASE='CI_SOCKET'
             client.stdin.write('check\n');client.stdin.flush()
             if not selector.select(15) or client.stdout.readline().strip()!='CLOSED' or client.wait(timeout=5):
                 raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_OLD_SOCKET')
             client=None
+            PHASE='CI_DATA'
             if adapter._redis(plan,'GET',KEY)!=VALUE:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_DATA')
             if adapter._redis(plan,'DEL',KEY)!='1':raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CLEANUP')
+            PHASE='CI_RESTART'
             docker('update','--restart=unless-stopped',redis_id)
             adapter._state(plan,detached=False,restart='unless-stopped')
             # These files were created by this exact disposable CI operation.
@@ -171,6 +189,7 @@ def _verify(home, bundle, publisher, manifest):
             if current['phase']!='captured' or current['operation']!=operation:
                 raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CLEANUP')
             (home/journal.NAME).unlink();(home/plans.NAME).unlink()
+            PHASE='CI_RESUME'
             backup_snapshot.resume_writers(home,cfg,site,manifest);stopped=False
     finally:
         if client is not None:

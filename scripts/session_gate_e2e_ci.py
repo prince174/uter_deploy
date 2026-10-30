@@ -274,13 +274,16 @@ def run_scenario():
                 compose_fence_signed_ci.verify(Path(home), source, public, old)
             except compose_fence_signed_ci.SignedComposeFenceCheckFailure as error:
                 stages={'GUARD','PATH_CHECK','CONFIG_READ','SITE_READ','SIGNED_IDENTITY','DOCKER_SCOPE',
-                        'INSPECTION','STOP_WRITERS','WRITER','ISOLATE','SNAPSHOT','CI_RECONNECT'}
+                        'INSPECTION','STOP_WRITERS','WRITER','ISOLATE','SNAPSHOT','CI_RECONNECT',
+                        'CI_CONNECT_COMMAND','CI_VERIFY_ENDPOINT','CI_SOCKET','CI_DATA','CI_RESTART','CI_RESUME'}
                 stage=compose_fence_signed_ci.PHASE
                 if str(error) in {'COMPOSE_SIGNED_CI_GUARD','COMPOSE_SIGNED_CI_PATH','COMPOSE_SIGNED_CI_IDENTITY',
                                   'COMPOSE_SIGNED_CI_ACTIONS_GUARD','COMPOSE_SIGNED_CI_HOSTED_GUARD',
                                   'COMPOSE_SIGNED_CI_OS_GUARD','COMPOSE_SIGNED_CI_STRICT_GUARD',
                                   'COMPOSE_SIGNED_CI_BACKEND_GUARD','COMPOSE_SIGNED_CI_HOST_GUARD',
-                                  'COMPOSE_SIGNED_CI_CONTEXT_GUARD'}:
+                                  'COMPOSE_SIGNED_CI_CONTEXT_GUARD','COMPOSE_SIGNED_CI_ENDPOINT_NETWORK',
+                                  'COMPOSE_SIGNED_CI_ENDPOINT_IP','COMPOSE_SIGNED_CI_ENDPOINT_ALIASES',
+                                  'COMPOSE_SIGNED_CI_ENDPOINT_MAC'}:
                     raise CheckFailure(str(error)) from None
                 raise CheckFailure('COMPOSE_SIGNED_CI_'+stage if stage in stages else 'COMPOSE_SIGNED_CI_UNVERIFIED') from None
         baseline = fixture(cmd, env, 'seed')
@@ -382,6 +385,11 @@ def main():
                            'COMPOSE_SIGNED_CI_BACKEND_GUARD','COMPOSE_SIGNED_CI_HOST_GUARD',
                            'COMPOSE_SIGNED_CI_CONTEXT_GUARD','COMPOSE_SIGNED_CI_PATH_CHECK',
                            'COMPOSE_SIGNED_CI_CONFIG_READ','COMPOSE_SIGNED_CI_SITE_READ','COMPOSE_SIGNED_CI_SIGNED_IDENTITY',
+                           'COMPOSE_SIGNED_CI_ENDPOINT_NETWORK','COMPOSE_SIGNED_CI_ENDPOINT_IP',
+                           'COMPOSE_SIGNED_CI_ENDPOINT_ALIASES','COMPOSE_SIGNED_CI_ENDPOINT_MAC',
+                           'COMPOSE_SIGNED_CI_CI_CONNECT_COMMAND','COMPOSE_SIGNED_CI_CI_VERIFY_ENDPOINT',
+                           'COMPOSE_SIGNED_CI_CI_SOCKET','COMPOSE_SIGNED_CI_CI_DATA','COMPOSE_SIGNED_CI_CI_RESTART',
+                           'COMPOSE_SIGNED_CI_CI_RESUME',
                            'COMPOSE_SIGNED_CI_DOCKER_SCOPE','COMPOSE_SIGNED_CI_INSPECTION','COMPOSE_SIGNED_CI_STOP_WRITERS',
                            'COMPOSE_SIGNED_CI_WRITER','COMPOSE_SIGNED_CI_ISOLATE','COMPOSE_SIGNED_CI_SNAPSHOT',
                            'COMPOSE_SIGNED_CI_CI_RECONNECT','KUBE_IDENTITY_CI_UNVERIFIED','KUBE_IDENTITY_CI_INPUT',
