@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import stat
 import tempfile
@@ -36,7 +37,7 @@ class HelmCheckConcurrencyTests(unittest.TestCase):
                     self.assertEqual(record, {'images': check_manifest['images'], 'productVersion': '2.0.0'})
                     self.assertNotEqual(path, home / 'release-values.json')
                     self.assertTrue(path.is_file())
-                    if os_name_is_posix():
+                    if os.name == 'posix':
                         self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
                     temporary_paths.append(path)
                     check_entered.set()
@@ -89,12 +90,6 @@ class HelmCheckConcurrencyTests(unittest.TestCase):
                                    {'backend': 'helm', 'name': 'uter-test', 'namespace': 'uter-test'}, check=True)
             self.assertEqual(shared.read_text(encoding='utf-8'), 'original')
             self.assertFalse(generated[0].exists())
-
-
-def os_name_is_posix():
-    import os
-    return os.name == 'posix'
-
 
 if __name__ == '__main__':
     unittest.main()
