@@ -107,6 +107,19 @@ class FencedUpdateCLITests(unittest.TestCase):
             uterctl.finish_compose_fenced_update(self.fx.home,self.target,self.fx.pub,self.fx.pub,self.key,self.destination)
         finish.assert_called_once();self.assertFalse((self.fx.home/'operation.lock').exists())
 
+    def test_finish_never_prints_success_when_lease_release_fails(self):
+        self.destination.mkdir(mode=0o700);(self.fx.home/journal.CLEANUP_INTENT).write_text('fixture')
+        @contextlib.contextmanager
+        def broken_lease(*args,**kwargs):
+            yield
+            raise ValueError('lease release uncertain')
+        output=io.StringIO()
+        with patch.object(uterctl,'fenced_locked',side_effect=broken_lease), \
+             patch.object(update,'finish_sealed_cleanup',return_value=self.new),contextlib.redirect_stdout(output):
+            with self.assertRaisesRegex(ValueError,'lease release uncertain'):
+                uterctl.finish_compose_fenced_update(self.fx.home,self.target,self.fx.pub,self.fx.pub,self.key,self.destination)
+        self.assertNotIn('finalized',output.getvalue())
+
     def test_finish_reclaims_real_dead_managed_owner_only_after_double_proof(self):
         self.destination.mkdir(mode=0o700);(self.fx.home/journal.CLEANUP_INTENT).write_text('fixture')
         code=('import sys,time;from scripts import managed_operation_lock as m;'

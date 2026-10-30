@@ -528,18 +528,17 @@ def finish_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_k
         if os.path.lexists(home/redis_fence_journal.FINALIZE_ANCHOR):raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         if os.path.lexists(home/redis_fence_journal.CLEANUP_INTENT):
             result=compose_fenced_update.finish_sealed_cleanup(home,bundle,publisher_key,executor_key,secret,destination)
-            print('Verified Compose fenced update to '+result['version']+' finalized; backup retained.')
-            return
-        record=redis_fence_journal.read(home)
-        if record['phase'] not in ('target_running','update_finalizing'):
-            raise ValueError('FENCED_UPDATE_RECOVERY_REQUIRES_INSPECTION')
-        state=backup_installation.safe_json(home/'state.json')
-        new=verify(bundle,publisher_key);current=state.get('current')
-        old=state.get('previous') if current==new else current
-        if not isinstance(old,dict) or not VERSION.fullmatch(old.get('version','')):
-            raise ValueError('FENCED_UPDATE_RECOVERY_REQUIRES_INSPECTION')
-        source=home/'releases'/old['version']
-        result=compose_fenced_update.finalize_target(home,source,bundle,publisher_key,executor_key,secret,destination)
+        else:
+            record=redis_fence_journal.read(home)
+            if record['phase'] not in ('target_running','update_finalizing'):
+                raise ValueError('FENCED_UPDATE_RECOVERY_REQUIRES_INSPECTION')
+            state=backup_installation.safe_json(home/'state.json')
+            new=verify(bundle,publisher_key);current=state.get('current')
+            old=state.get('previous') if current==new else current
+            if not isinstance(old,dict) or not VERSION.fullmatch(old.get('version','')):
+                raise ValueError('FENCED_UPDATE_RECOVERY_REQUIRES_INSPECTION')
+            source=home/'releases'/old['version']
+            result=compose_fenced_update.finalize_target(home,source,bundle,publisher_key,executor_key,secret,destination)
     print('Verified Compose fenced update to '+result['version']+' finalized; backup retained.')
 
 
