@@ -15,7 +15,7 @@ from pathlib import Path
 import stat
 
 import uterctl
-from scripts import (backup_snapshot, backup_store, compose_fence_recovery_plan as plans,
+from scripts import (backup_snapshot, backup_store, compose_nsfirewall_adapter as fence,
                      compose_nsfirewall_checkpoint as checkpoint, redis_fence_journal as journal,
                      snapshot_only_receipts as receipts)
 
@@ -26,6 +26,12 @@ class SnapshotOnlyError(ValueError): pass
 
 
 def _hash(raw): return hashlib.sha256(raw).hexdigest()
+
+
+def _assert_adapter(adapter):
+    # No public callback, subclass or caller-supplied backend can establish a
+    # snapshot-only proof. Trusted signed controller creates this exact class.
+    if type(adapter) is not fence.Adapter:raise SnapshotOnlyError('SNAPSHOT_ADAPTER_UNVERIFIED')
 
 
 def _file(path, limit=16*1024*1024):
@@ -78,6 +84,7 @@ def _bound(adapter,record,executor_bundle,executor_publisher,destination):
 def capture(adapter,record,executor_bundle,executor_publisher,destination):
     """Capture only; leave Redis fenced and writers stopped on any outcome."""
     try:
+        _assert_adapter(adapter)
         if journal.read(adapter.home)!=record or record['phase']!='isolated':raise ValueError
         binding=_bound(adapter,record,executor_bundle,executor_publisher,destination)
         if adapter.verify_fenced(record) is not True:raise ValueError
@@ -119,6 +126,7 @@ def capture(adapter,record,executor_bundle,executor_publisher,destination):
 def recover(adapter,executor_bundle,executor_publisher,destination):
     """Only restore original Redis after proven snapshot-only decision; no writers."""
     try:
+        _assert_adapter(adapter)
         record=journal.read(adapter.home)
         if record['backend']!='compose' or record['phase'] not in ('captured','snapshot_releasing'):raise ValueError
         binding=_bound(adapter,record,executor_bundle,executor_publisher,destination)

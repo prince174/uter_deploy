@@ -37,8 +37,13 @@ class SnapshotOnlyTests(unittest.TestCase):
         self.adapter._recover_snapshot_only.return_value=True
 
     def recover(self):
-        with patch.object(subject,'_bound',return_value=self.binding):
+        with patch.object(subject,'_bound',return_value=self.binding),patch.object(subject,'_assert_adapter'):
             return subject.recover(self.adapter,'executor','key',self.dest)
+
+    def test_caller_supplied_adapter_is_not_accepted(self):
+        with self.assertRaisesRegex(subject.SnapshotOnlyError,'RECOVERY_INCOMPLETE'):
+            subject.recover(self.adapter,'executor','key',self.dest)
+        self.adapter._attach_snapshot_recovery.assert_not_called()
 
     def test_releases_only_original_redis_after_verified_complete_backup(self):
         receipts.write_decision(self.home,self.key,'release')

@@ -16,6 +16,7 @@ import tempfile
 import time
 import base64
 import shutil
+import sys
 
 import uterctl
 from scripts import (backup_snapshot, backup_store, compose_nsfirewall_adapter as fence,
@@ -354,13 +355,26 @@ def _verify(home, bundle, publisher, manifest):
         raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_CRASH_JOURNAL')
     _ci_clear_killed_child_lock(home,pid)
     PHASE='CRASH_RECOVERY'
+    fd,keyfile=tempfile.mkstemp(prefix='fence-recovery-key-',dir=ROOT/'work')
+    with os.fdopen(fd,'wb') as output:
+        os.fchmod(output.fileno(),0o600);output.write(crash_key);output.flush();os.fsync(output.fileno())
+    pre_executor_dir=tempfile.mkdtemp(prefix='fence-executor-',dir=ROOT/'work')
+    pre_executor,pre_executor_public=_ci_signed_executor(bundle,pre_executor_dir)
     recovery_pid=os.fork()
     if recovery_pid==0:
         recovery=None
         try:
+            # Call the real controller entry point. It must obtain the normal
+            # operation lock itself and must never resume application writers.
+            process=subprocess.run([sys.executable,'-I','-B',str(pre_executor/'uterctl.py'),'fence-recover-redis',
+                                    '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
+                                    '--backup-key',keyfile,'--executor-key',str(pre_executor_public)],
+                                   cwd=pre_executor,env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                                                        'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=240)
+            if process.returncode:raise ValueError
             with uterctl.locked(home):
                 recovery=fence.Adapter(home,bundle,publisher,crash_key)
-                protocol.recover_before_capture(home,crash_operation,recovery)
                 record=journal.read(home)
                 if record['phase']!='redis_released':raise ValueError
                 # _signed verifies both application writers remain stopped.
@@ -376,7 +390,10 @@ def _verify(home, bundle, publisher, manifest):
         except BaseException:
             if recovery is not None:recovery.close()
             os._exit(13)
-    _ci_wait_recovery_child(recovery_pid)
+    try:_ci_wait_recovery_child(recovery_pid)
+    finally:
+        Path(keyfile).unlink(missing_ok=True)
+        shutil.rmtree(pre_executor_dir)
     PHASE='CRASH_RESUME'
     with uterctl.locked(home):backup_snapshot.resume_writers(home,cfg,site,manifest)
     # Snapshot-only transaction: signed current executor, actual encrypted

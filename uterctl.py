@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 
 sys.dont_write_bytecode = True  # Do not alter a verified bundle during controller execution.
 
@@ -223,18 +224,138 @@ def deploy(home, bundle, m, site, *, check=False, offline=False):
         run(helm + ["upgrade", "--install", site["name"], chart, "--namespace", site["namespace"], "--create-namespace", "--wait", "--timeout", "5m"] + args)
 
 
+_FENCE_EXECUTOR_MODULES = (
+    'backup_installation', 'backup_crypto', 'backup_store', 'backup_snapshot',
+    'archive_safety', 'restore_backup', 'recovery_preflight', 'recovery_volume',
+    'recovery_aof', 'recover_compose', 'recover_kubernetes', 'recovery_kube_volumes',
+    'extract_signed_bundle', 'managed_smoke', 'adopt_managed', 'update_installation',
+    'smoke_http', 'extract_release_inputs', 'preflight', 'fetch_release',
+    'install_recovery', 'workload_preflight', 'install', 'adopt_installation',
+    'redis_fence_journal', 'compose_nsfirewall_adapter', 'compose_nsfirewall_protocol',
+    'compose_nsfirewall_checkpoint', 'compose_fence_adapter', 'compose_fence_recovery_plan',
+    'compose_redis_diagnostic', 'compose_systemd_activation', 'experimental_docker_activation_ci',
+)
+
+
+def _load_signed_fence_executor(executor_key):
+    """Validate signed executor and constrain its Python namespace.
+
+    Run only as a fresh Python -I process from a trusted, protected bundle.
+    Self-checking cannot authenticate code before it has already begun running:
+    the launcher and Python interpreter/dependencies remain trusted.
+    """
+    if not sys.flags.isolated:
+        raise ValueError('FENCE_EXECUTOR_ISOLATED_PYTHON_REQUIRED')
+    if any(name in ('scripts','uterctl') or name.startswith('scripts.') for name in sys.modules):
+        raise ValueError('FENCE_EXECUTOR_IMPORT_STATE_UNSAFE')
+    verify(ROOT,executor_key)
+    for name in _FENCE_EXECUTOR_MODULES:
+        if not (ROOT/'scripts'/(name+'.py')).is_file():
+            raise ValueError('FENCE_EXECUTOR_COMPONENT_MISSING')
+    # Build a package confined to this verified bundle; do not resolve a
+    # package named scripts through unrelated installed packages or PYTHONPATH.
+    import importlib
+    import importlib.machinery
+    package=types.ModuleType('scripts')
+    package.__path__=[str(ROOT/'scripts')]
+    package.__package__='scripts'
+    package.__spec__=importlib.machinery.ModuleSpec('scripts',loader=None,is_package=True)
+    package.__spec__.submodule_search_locations=package.__path__
+    sys.modules['scripts']=package
+    sys.path.insert(0,str(ROOT))
+    for name in ('backup_installation','compose_nsfirewall_adapter','compose_nsfirewall_protocol','redis_fence_journal'):
+        importlib.import_module('scripts.'+name)
+    for name,module in tuple(sys.modules.items()):
+        if name.startswith('scripts.'):
+            filename=getattr(module,'__file__',None)
+            expected=ROOT/'scripts'/(name.split('.',1)[1].replace('.','/')+'.py')
+            if not filename or Path(filename).resolve()!=expected or not expected.is_file():
+                raise ValueError('FENCE_EXECUTOR_IMPORT_UNSAFE')
+        if name=='uterctl':
+            filename=getattr(module,'__file__',None)
+            if not filename or Path(filename).resolve()!=ROOT/'uterctl.py':
+                raise ValueError('FENCE_EXECUTOR_IMPORT_UNSAFE')
+
+
+def recover_compose_redis_before_snapshot(home, bundle, publisher_key, backup_key_path):
+    """Recover Redis only for an authenticated pre-snapshot fence operation.
+
+    This does not recover the installation or resume writers. Existing stale
+    operation locks are never deleted. Unknown results preserve the journals.
+    """
+    from scripts import backup_installation, compose_nsfirewall_adapter, compose_nsfirewall_protocol, redis_fence_journal
+    if backup_key_path is None:
+        raise ValueError('FENCE_RECOVERY_BACKUP_KEY_REQUIRED')
+    # Verify the original paths, not resolved paths, so a symlink or an unsafe
+    # ancestor cannot silently redirect the operation or protected backup key.
+    try:
+        home=backup_installation.private_directory(home)
+        key_path=backup_installation.checked_existing_path(backup_key_path)
+    except backup_installation.BackupError:
+        raise ValueError('FENCE_RECOVERY_PATH_UNSAFE') from None
+    if key_path == home or key_path.is_relative_to(home):
+        raise ValueError('FENCE_RECOVERY_KEY_LOCATION_INVALID')
+    try:
+        secret=backup_installation.safe_file(key_path,private=True,limit=32)
+    except backup_installation.BackupError:
+        raise ValueError('FENCE_RECOVERY_BACKUP_KEY_INVALID') from None
+    if len(secret)!=32:
+        raise ValueError('FENCE_RECOVERY_BACKUP_KEY_INVALID')
+    with locked(home):
+        # Re-read under the lock. Never act on a pending deployment or an
+        # unadopted installation; the adapter verifies its identities again.
+        state=backup_installation.safe_json(home/'state.json')
+        if (state.get('adopted_installer') is not True or state.get('pending') is not None
+                or not isinstance(state.get('current'),dict)):
+            raise ValueError('FENCE_RECOVERY_INSTALLATION_UNSUPPORTED')
+        current=state['current']
+        signed=verify(bundle,publisher_key)
+        if signed != current:
+            raise ValueError('FENCE_RECOVERY_SIGNED_VERSION_MISMATCH')
+        installed=home/'releases'/signed['version']
+        if (verify(installed,publisher_key) != signed or
+                (installed/'checksums.json').read_bytes() != (Path(bundle)/'checksums.json').read_bytes()):
+            raise ValueError('FENCE_RECOVERY_SIGNED_VERSION_MISMATCH')
+        site=site_config(home)
+        cfg=backup_installation.safe_json(home/'install.json')
+        record=redis_fence_journal.read(home)
+        if (cfg.get('backend')!='compose' or cfg.get('context')!='default'
+                or cfg.get('name')!=site.get('name') or site.get('backend')!='compose'
+                or site.get('context')!='default' or site.get('namespace')!=site.get('name')
+                or record['backend']!='compose' or record['site']!=site['name']
+                or record['phase'] not in ('prepared','isolating','isolated','pre_capture_aborting')):
+            raise ValueError('FENCE_RECOVERY_STATE_UNSUPPORTED')
+        adapter=compose_nsfirewall_adapter.Adapter(home,bundle,publisher_key,secret)
+        try:
+            compose_nsfirewall_protocol.recover_before_capture(home,record['operation'],adapter)
+        finally:
+            # close() only closes descriptors; it does not change Redis/firewall.
+            adapter.close()
+        final=redis_fence_journal.read(home)
+        if final['operation']!=record['operation'] or final['phase']!='redis_released':
+            raise ValueError('FENCE_RECOVERY_RESULT_UNVERIFIED')
+    print('Redis released before snapshot; writers remain stopped and the fence journal is retained.')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
     parser.add_argument("--backup-receipt", type=Path)
     parser.add_argument("--backup-dir", type=Path, help="New, external directory for an encrypted backup")
     parser.add_argument("--backup-key", type=Path, help="Protected 32-byte backup encryption key")
+    parser.add_argument("--executor-key", type=Path, help="Pre-trusted public key for the signed executor")
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args(argv)
     home = args.home.resolve()
+    if args.command == "fence-recover-redis":
+        if args.key is None or args.bundle is None or args.executor_key is None:
+            raise ValueError('FENCE_RECOVERY_SIGNED_BUNDLE_REQUIRED')
+        _load_signed_fence_executor(args.executor_key)
+        recover_compose_redis_before_snapshot(args.home, args.bundle, args.key, args.backup_key)
+        return
     if args.command == "fence-status":
         # A journal is a recovery aid, never proof that a fence currently
         # exists. Do not create the installation directory for inspection.

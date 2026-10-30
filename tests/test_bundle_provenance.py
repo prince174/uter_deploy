@@ -73,4 +73,11 @@ class BundleProvenanceTests(unittest.TestCase):
         self.assertFalse((result / 'scripts/session_migration_guard.py').exists())
         self.assertEqual((result / 'scripts/redis_fence_journal.py').read_bytes(),
                          (uterctl.ROOT / 'scripts/redis_fence_journal.py').read_bytes())
+        for name in ('compose_nsfirewall_adapter.py','compose_nsfirewall_protocol.py',
+                     'compose_nsfirewall_checkpoint.py','compose_fence_adapter.py','compose_fence_recovery_plan.py',
+                     'compose_redis_diagnostic.py','compose_systemd_activation.py','experimental_docker_activation_ci.py'):
+            with self.subTest(name=name):
+                path=result/'scripts'/name
+                self.assertEqual(path.read_bytes(),(uterctl.ROOT/'scripts'/name).read_bytes())
+                self.assertIn('scripts/'+name,json.loads((result/'checksums.json').read_text()))
         self.assertEqual(uterctl.verify(result, self.public)['data_epoch'], 1)
