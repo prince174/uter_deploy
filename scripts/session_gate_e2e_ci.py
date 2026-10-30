@@ -248,6 +248,14 @@ def run_scenario():
         if len(saved) != 1 or Path(new_bundle) != target or Path(old_bundle) != source:
             raise CheckFailure('SIGNED_FIXTURE_INVALID')
         cmd, env, before_audit = saved[0]
+        if os.environ.get('UTER_CI_VERIFY_KUBE_LOOPBACK') == 'true':
+            from scripts import kubernetes_loopback_signed_ci
+            try:
+                kubernetes_loopback_signed_ci.verify(Path(home), source, public, old)
+            except kubernetes_loopback_signed_ci.KubernetesLoopbackCIError:
+                stages={'GUARD','FIXTURE','STOP_WRITERS','HOLD','PATCH','TERMINATION','POD','SNAPSHOT','RECONNECT','START_WRITERS'}
+                phase=kubernetes_loopback_signed_ci.PHASE
+                raise CheckFailure('KUBE_LOOPBACK_CI_'+phase if phase in stages else 'KUBE_LOOPBACK_CI_UNVERIFIED') from None
         if os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true':
             from scripts import compose_fence_signed_ci
             try:
@@ -333,7 +341,8 @@ def main():
         python = stage_tools.prepare_private_python(stage)
         keep = ('GITHUB_ACTIONS','GITHUB_SHA','RUNNER_ENVIRONMENT','RUNNER_OS','BACKEND',
                 'UTER_CI_RELEASE_MODE','UTER_CI_STRICT_RUNNER','UTER_CI_OLD_VERSION','UTER_CI_NEW_VERSION',
-                'UTER_CI_OLD_TAG','UTER_CI_NEW_TAG','UTER_CI_VERIFY_REDIS_IDENTITY','UTER_CI_VERIFY_COMPOSE_FENCE','LANG','HOME')
+                'UTER_CI_OLD_TAG','UTER_CI_NEW_TAG','UTER_CI_VERIFY_REDIS_IDENTITY','UTER_CI_VERIFY_COMPOSE_FENCE',
+                'UTER_CI_VERIFY_KUBE_LOOPBACK','LANG','HOME')
         env = {name:os.environ[name] for name in keep if name in os.environ}
         env.update({'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                     'GITHUB_WORKSPACE':str(stage), 'SOURCE_GIT_WORKSPACE':str(ROOT),
@@ -344,7 +353,11 @@ def main():
             status, output = run_checked([str(python), '-I', '-B', str(stage/'scripts/session_gate_e2e_ci.py'),
                                           '--staged'], env=env, timeout=3300, limit=1024*1024)
             if status:
-                allowed = {'EXPECTED_SIGNED_GATE_MISSING','COMPOSE_SIGNED_CI_UNVERIFIED','COMPOSE_SIGNED_CI_GUARD',
+                allowed = {'EXPECTED_SIGNED_GATE_MISSING','KUBE_LOOPBACK_CI_UNVERIFIED','KUBE_LOOPBACK_CI_GUARD',
+                           'KUBE_LOOPBACK_CI_FIXTURE','KUBE_LOOPBACK_CI_STOP_WRITERS','KUBE_LOOPBACK_CI_HOLD',
+                           'KUBE_LOOPBACK_CI_PATCH','KUBE_LOOPBACK_CI_TERMINATION','KUBE_LOOPBACK_CI_POD',
+                           'KUBE_LOOPBACK_CI_SNAPSHOT','KUBE_LOOPBACK_CI_RECONNECT','KUBE_LOOPBACK_CI_START_WRITERS',
+                           'COMPOSE_SIGNED_CI_UNVERIFIED','COMPOSE_SIGNED_CI_GUARD',
                            'COMPOSE_SIGNED_CI_PATH','COMPOSE_SIGNED_CI_IDENTITY',
                            'COMPOSE_SIGNED_CI_ACTIONS_GUARD','COMPOSE_SIGNED_CI_HOSTED_GUARD',
                            'COMPOSE_SIGNED_CI_OS_GUARD','COMPOSE_SIGNED_CI_STRICT_GUARD',
