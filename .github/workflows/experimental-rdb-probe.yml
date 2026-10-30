@@ -1,0 +1,37 @@
+name: Experimental synthetic RDB probe
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/experimental-rdb-probe.yml
+      - scripts/experimental_rdb_probe.c
+      - scripts/experimental_rdb_probe.py
+      - tests/test_experimental_rdb_probe.py
+permissions:
+  contents: read
+jobs:
+  synthetic-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -p test_experimental_rdb_probe.py -v
+      - name: Build pinned MIT-licensed librdb for the experiment
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/librdb"
+          git -C "$RUNNER_TEMP/librdb" remote add origin https://github.com/redis/librdb.git
+          git -C "$RUNNER_TEMP/librdb" fetch --depth 1 origin bc5f295c98b40c2c33099d9d72ab30ce9e595dc7
+          git -C "$RUNNER_TEMP/librdb" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/librdb" rev-parse HEAD)" = bc5f295c98b40c2c33099d9d72ab30ce9e595dc7
+          git -C "$RUNNER_TEMP/librdb" submodule update --init --depth 1
+          make -C "$RUNNER_TEMP/librdb" -j2
+          cc -std=c99 -Wall -Wextra -Werror -I"$RUNNER_TEMP/librdb/api" scripts/experimental_rdb_probe.c "$RUNNER_TEMP/librdb/lib/librdb.a" -lm -o "$RUNNER_TEMP/rdb-probe"
+      - name: Verify expired key and damaged RDB (Redis 7.4.2 only, not the product image)
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          python3 scripts/experimental_rdb_probe.py "$RUNNER_TEMP/rdb-probe"
