@@ -8,10 +8,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts import redis_acl_experiment
+from scripts import (maintenance_evidence, redis_acl_experiment, redis_acl_operation_inspection,
+                     redis_fence_journal)
 
 IMAGE = 'ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc'
 PHASE = 'INITIAL'
@@ -70,6 +72,43 @@ def cleanup_container(name, nonce, container_id):
     if label != nonce: raise ValueError
     docker('rm','-f','-v',target)
     if container_id and docker('ps','-aq','--no-trunc','--filter','id='+container_id): raise ValueError
+
+
+def fixture_operation_inspection(admin, run_id, admin_id, stages):
+    """Real Redis, HMAC journal and fixture-only bound session/plan."""
+    class Session:
+        def __init__(self,home,key_path):
+            self.home=home;self.site='uter-ci';self._key_path=key_path;self._executor=object()
+        def _guard(self): pass
+        def reverify(self): pass
+        def _query(self,args):
+            if args[1]=='pods': return {'items':[self.pod]}
+            return self.pod
+    with tempfile.TemporaryDirectory(prefix='uter-acl-journal-') as directory:
+        root=Path(directory);home=root/'home';home.mkdir(mode=0o700)
+        key=secrets.token_bytes(32);key_path=root/'key';key_path.write_bytes(key);key_path.chmod(0o600)
+        operation=secrets.token_hex(16);plan_sha=secrets.token_hex(32)
+        uid='11111111-1111-1111-1111-111111111111';spec={'containers':[{'name':'redis'}]}
+        plan={'uid':uid,'namespace':'uter-ci','pod':'uter-ci-redis-abcd-xyz',
+              'container_id':'containerd://'+'a'*64,'spec_sha256':redis_acl_operation_inspection.finalizer._digest(spec)}
+        session=Session(home,key_path)
+        session.pod={'metadata':{'uid':uid,'name':plan['pod'],'namespace':'uter-ci'},'spec':spec,
+            'status':{'phase':'Running','containerStatuses':[{'name':'redis','containerID':plan['container_id'],
+                'restartCount':0,'state':{'running':{}}}]}}
+        redis_fence_journal.create(home,backend='kubernetes',site='uter-ci',resource=uid,
+                                   plan_sha256=plan_sha,operation=operation)
+        recorder=maintenance_evidence.Recorder(home,key,operation=operation,backend='kubernetes',
+                                                plan_sha256=plan_sha,lock_guard=lambda:True)
+        base={'schema':1,'operation':operation,'backend':'kubernetes','site':'uter-ci','resource':uid,
+              'plan_sha256':plan_sha,'admin_user':'uter-maint-test','run_id':run_id,
+              'client_id':admin_id,'profile':'minimal-ci'}
+        for stage in sorted(stages):
+            recorder._write('redis-acl-intent-'+stage+'.json',{**base,'stage':stage})
+        with patch.object(redis_acl_operation_inspection.coordinator,'BoundSession',Session), \
+             patch.object(redis_acl_operation_inspection.finalizer,'read_plan',return_value=plan), \
+             patch.object(redis_acl_operation_inspection.finalizer,'plan_hash',return_value=plan_sha):
+            return redis_acl_operation_inspection.inspect(session,operation,key,admin.call,
+                admin_user='uter-maint-test',expected_run_id=run_id,expected_client_id=admin_id)
 
 
 def main():
@@ -173,6 +212,8 @@ def main():
                 if (observation['observation'] != expected or observation['retry_allowed'] is not False
                         or observation['safe_to_backup'] is not False or observation['safe_to_update'] is not False):
                     raise ValueError
+                journal_observation=fixture_operation_inspection(admin,run_id,admin_id,recorded)
+                if journal_observation != observation: raise ValueError
                 if 'off' not in admin.call('ACL','GETUSER','default')['flags']: raise ValueError
                 if stage == 'disable':
                     if uncertain_writer.call('SET','ci-uncertain','still-connected') != 'OK': raise ValueError
@@ -197,6 +238,7 @@ def main():
                     or selected['safe_to_update'] is not False): raise ValueError
             print('Redis ACL experiment observed a writer after disable, then disconnection and denied new AUTH.')
             print('Unknown command outcomes refused completion without retry; recovery was not tested.')
+            print('HMAC journal inspection used real Redis with a fixture-only Kubernetes session and pins.')
             print('Selected test ACL with Lua also denied backup and update authorization.')
             print('Fixture-only in-memory intents; isolation, persistence, backup and recovery not proven.')
         finally:
