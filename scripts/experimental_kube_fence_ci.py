@@ -15,6 +15,7 @@ from pathlib import Path
 
 from scripts import experimental_netns_probe as safe
 from scripts import kubernetes_fence_finalizer as finalizer_step
+from scripts import kubernetes_redis_shutdown as shutdown_observer
 from scripts import redis_fence_journal as fence_journal
 
 REDIS = 'ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc'
@@ -350,19 +351,34 @@ def main():
                 if fence_journal.read(operation_home)['phase']!='aborting':
                     raise RuntimeError('synthetic journal incorrectly asserted restored')
             original=original_pod()
-            PHASE='original-finalizer'
-            finalizer(original,'add');protected.append(original)
-            PHASE='original-loopback-rollout'
-            patch_original_loopback()
-            if not await_termination(original):
-                raise RuntimeError('original synthetic termination was not observed as clean')
+            PHASE='original-journaled-shutdown-observation'
+            observation_home=Path(tmp)/'shutdown-observation';observation_home.mkdir(mode=0o700)
+            with uterctl.locked(observation_home):
+                plan=finalizer_step.plan_from_pod('kind-'+cluster,namespace,original_name,original)
+                finalizer_step.persist_plan(observation_home,plan)
+                record=fence_journal.create(observation_home,backend='kubernetes',site=namespace,
+                                            resource=original_uid,plan_sha256=finalizer_step.plan_hash(plan))
+                owned_finalizer=finalizer_step._token(record['operation'])
+                finalizer_step.hold(observation_home,plan,record['operation'],adapter)
+                protected.append(original)
+                patch_original_loopback()
+                if not await_termination(original):
+                    raise RuntimeError('original synthetic termination was not observed as clean')
+                observed=shutdown_observer.observe(observation_home,plan,record['operation'],adapter)
+                if observed!={'result':'termination_observed','redis_isolated':False,
+                              'unforced_deletion_verified':False,'aof_durable':False,'safe_to_upgrade':False}:
+                    raise RuntimeError('shutdown observation returned unexpected result')
+                if fence_journal.read(observation_home)['phase']!='isolating':
+                    raise RuntimeError('observation incorrectly changed the journal')
+                # This removal is test-only, not production recovery. The
+                # released primitive intentionally refuses terminating Pods.
+                finalizer(original,'remove');protected.remove(original)
             proc.stdin.write(b'check\n');proc.stdin.flush()
             if not selector.select(20) or proc.stdout.readline().strip()!=b'CLOSED' or proc.wait(timeout=5):
                 raise RuntimeError('original synthetic connection did not close')
             proc=None
             # Observation of exit status is only an experiment; no production
             # conclusion about fsync or the authority of AOF is inferred.
-            finalizer(original,'remove');protected.remove(original)
             original_ready();replacement=original_pod();replacement_name=replacement['metadata']['name']
             if replacement['metadata']['uid']==original_uid:
                 raise RuntimeError('original synthetic pod did not change')

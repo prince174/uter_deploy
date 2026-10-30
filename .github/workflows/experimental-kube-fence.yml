@@ -19,6 +19,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/uter-venv/bin/python" -m unittest discover -s tests -p test_experimental_kube_fence_ci.py -v
           "$RUNNER_TEMP/uter-venv/bin/python" -m unittest discover -s tests -p test_kubernetes_fence_finalizer.py -v
+          "$RUNNER_TEMP/uter-venv/bin/python" -m unittest discover -s tests -p test_kubernetes_redis_shutdown.py -v
       - name: Install pinned kind
         run: |
           set -euo pipefail
