@@ -18,6 +18,8 @@ class ActivationProbeTests(unittest.TestCase):
         prefix='Num RefCount Protocol Flags Type St Inode Path\n'
         row='000: 00000002 00000000 00010000 0001 01 42 /run/docker.sock\n'
         self.assertEqual(probe.listening_inode(prefix+row,'/run/docker.sock'),'42')
+        connected='001: 00000002 00000000 00000000 0001 03 99 /run/docker.sock\n'
+        self.assertEqual(probe.listening_inode(prefix+connected+row,'/run/docker.sock'),'42')
         for bad in (prefix+row+row,prefix+row.replace('00010000','00000000'),prefix+row.replace(' 01 ',' 03 ')):
             with self.subTest(bad=bad),self.assertRaises(probe.ProbeError):
                 probe.listening_inode(bad,'/run/docker.sock')

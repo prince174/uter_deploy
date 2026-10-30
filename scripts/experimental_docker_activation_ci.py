@@ -50,10 +50,17 @@ def listening_inode(raw, path):
     for line in raw.splitlines()[1:]:
         parts=line.split(maxsplit=7)
         if len(parts)!=8 or os.path.realpath(parts[7])!=path:continue
-        if parts[3]!='00010000' or parts[4]!='0001' or parts[5]!='01' or not parts[6].isdigit():
-            raise ProbeError('LISTENER')
+        # Linux unix_seq_show reports __SO_ACCEPTCON only for TCP_LISTEN.
+        # An accepted/connecting/disconnecting stream can carry the same
+        # pathname. It is not a second listener and must not hide one.
+        if parts[3]=='00000000' and parts[4]=='0001' and parts[5] in ('02','03','04'):continue
+        if parts[3]!='00010000':raise ProbeError('LISTENER_FLAGS')
+        if parts[4]!='0001':raise ProbeError('LISTENER_TYPE')
+        if parts[5]!='01':raise ProbeError('LISTENER_STATE')
+        if not parts[6].isdigit():raise ProbeError('LISTENER_INODE')
         found.append(parts[6])
-    if len(found)!=1:raise ProbeError('LISTENER')
+    if not found:raise ProbeError('LISTENER_ABSENT')
+    if len(found)!=1:raise ProbeError('LISTENER_AMBIGUOUS')
     return found[0]
 
 
@@ -138,7 +145,8 @@ if __name__=='__main__':
                  'PROPERTY_MISSING_TRIGGERS','PROPERTY_MISSING_TRIGGEREDBY',
                  'SYSTEMCTL_UNAVAILABLE','SYSTEMCTL_TIMEOUT','SYSTEMCTL_FAILED','PROPERTIES_ENCODING','SYSTEMCTL_EXECUTION',
                  'SOCKET_UNIT','SERVICE_STATE','SERVICE_PID','PROCESS_NAME','NAMESPACES',
-                 'SOCKET_FILE','SOCKET_PEER','SERVICE_EXITED','LISTENER','LISTENER_HOLDERS','PROC_VISIBILITY',
+                 'SOCKET_FILE','SOCKET_PEER','SERVICE_EXITED','LISTENER_ABSENT','LISTENER_AMBIGUOUS',
+                 'LISTENER_FLAGS','LISTENER_TYPE','LISTENER_STATE','LISTENER_INODE','LISTENER_HOLDERS','PROC_VISIBILITY',
                  'SOCKET_REPLACED','UNIT_CHANGED','SOCKET_CHANGED'}
         code=str(error) if str(error) in allowed else 'UNVERIFIED'
         print('ACTIVATION_PROBE_'+code);sys.exit(1)
