@@ -141,6 +141,16 @@ def transition(old, new):
             raise ValueError("Data migration required; this controller refuses automatic migration")
 
 
+def require_live_update_support():
+    """Refuse new updates until application drain and writer isolation are proven."""
+    raise ValueError('LIVE_UPDATE_MAINTENANCE_ISOLATION_UNAVAILABLE')
+
+
+def require_fresh_controller_install_support():
+    """Legacy apply has no atomic reservation for the target runtime identity."""
+    raise ValueError('FRESH_CONTROLLER_INSTALL_UNAVAILABLE_USE_INSTALL_PY')
+
+
 def run(argv, **kw):
     # argv only; never evaluate user config through a shell.
     subprocess.run([str(x) for x in argv], check=True, **kw)
@@ -664,7 +674,20 @@ def main(argv=None):
             active = state.get("pending") or state["current"]
             if active["data_epoch"] != m["data_epoch"]:
                 raise ValueError("Rollback requires data restoration; refused")
+            # Rolling back a completed release is a new live operation, not
+            # recovery of an already pending deployment. It has the same
+            # unproven drain and writer-isolation preconditions as an update.
+            if not state.get('pending'):
+                require_live_update_support()
         adopted = state.get("adopted_installer") is True
+        # install.py may have started or completed an installation before it
+        # was adopted by uterctl. Missing controller state is not evidence that
+        # this is a clean initial deployment.
+        if args.command == 'apply':
+            if state.get('current') or os.path.lexists(home/'install-state.json'):
+                require_live_update_support()
+            else:
+                require_fresh_controller_install_support()
         if identity_transition and (not adopted or args.command != 'apply' or state.get('pending')):
             raise ValueError('SESSION_MIGRATION_REQUIRES_ADOPTED_IDLE_INSTALLATION')
         if identity_transition and os.path.lexists(home/'session-migration-block.json'):

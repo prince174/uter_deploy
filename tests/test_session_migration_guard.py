@@ -83,6 +83,9 @@ class RedisGuardTests(unittest.TestCase):
 
 class ControllerSessionGateTests(unittest.TestCase):
     def setUp(self):
+        # Isolated legacy scanner tests do not enable live updates in production.
+        gate=patch.object(uterctl,'require_live_update_support',lambda: None)
+        gate.start();self.addCleanup(gate.stop)
         self.fx = fixtures.ControllerTests(methodName='runTest')
         self.fx.setUp()
         self.addCleanup(self.fx.doCleanups)

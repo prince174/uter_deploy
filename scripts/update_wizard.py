@@ -368,6 +368,12 @@ def run_updater(argv, *, timeout=None, max_output=8 * 1024 * 1024):
 
 def execute(plan):
     """Revalidate protected signed content immediately before invoking its updater."""
+    # Do not delegate safety to the target bundle: an older signed updater may
+    # predate this gate. No backup directories or subprocesses are created.
+    try:
+        uterctl.require_live_update_support()
+    except ValueError:
+        raise WizardError('LIVE_UPDATE_MAINTENANCE_ISOLATION_UNAVAILABLE') from None
     refreshed = prepare_plan(plan['home'], plan['bundle'], plan['publisher_key'], plan['fingerprint'],
                              current_bundle=plan['current_bundle'], backup_root=plan['backup_root'],
                              backup_key=plan['backup_key'], offline=plan['offline'])

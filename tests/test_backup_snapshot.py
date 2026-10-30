@@ -16,6 +16,9 @@ import uterctl
 @unittest.skipUnless(os.name=='posix' and hasattr(os,'O_NOFOLLOW'), 'requires POSIX operation lock')
 class SnapshotTests(unittest.TestCase):
     def setUp(self):
+        # Exercise the historical snapshot branches with the gate mocked.
+        gate=patch.object(backup_snapshot,'require_live_backup_support',lambda: None)
+        gate.start();self.addCleanup(gate.stop)
         self.t=tempfile.TemporaryDirectory();self.addCleanup(self.t.cleanup);self.root=Path(self.t.name)
         self.home=self.root/'home';(self.home/'runtime/policies').mkdir(parents=True);(self.home/'runtime/profiles').mkdir()
         (self.home/'runtime/policies/runtime.toml').write_text('[policy]')

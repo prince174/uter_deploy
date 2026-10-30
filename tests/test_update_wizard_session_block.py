@@ -13,6 +13,9 @@ from scripts import backup_store, update_wizard as wizard
 @unittest.skipUnless(os.name == 'posix', 'Protected paths require Linux')
 class SessionBlockWizardTests(unittest.TestCase):
     def setUp(self):
+        # Retain unit coverage of the dormant result-classification branch.
+        gate=patch.object(wizard.uterctl,'require_live_update_support',lambda: None)
+        gate.start();self.addCleanup(gate.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)

@@ -126,6 +126,7 @@ class ControllerTests(unittest.TestCase):
                 with u.locked(self.home): pass
         self.assertFalse((self.home / "operation.lock").exists())
 
+    @patch.object(u, 'require_fresh_controller_install_support', lambda: None)
     def test_success_commits_state_after_smoke(self):
         b = self.bundle()
         with patch.object(u, "deploy") as deploy, patch.object(u, "run") as run:
@@ -136,6 +137,7 @@ class ControllerTests(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual(deploy.call_count, 2)
 
+    @patch.object(u, 'require_fresh_controller_install_support', lambda: None)
     def test_failed_smoke_does_not_report_success(self):
         b = self.bundle()
         with patch.object(u, "deploy"), patch.object(u, "run", side_effect=RuntimeError("smoke failed")):
@@ -144,6 +146,9 @@ class ControllerTests(unittest.TestCase):
         self.assertIsNone(state["current"])
         self.assertEqual(state["pending"]["version"], "1.0.0")
 
+    # Historical branch tests deliberately bypass the live-update gate; the
+    # real refusal is tested separately without mocks in test_live_update_gate.
+    @patch.object(u, 'require_live_update_support', lambda: None)
     def test_upgrade_requires_backup_receipt(self):
         u.write(self.home / "state.json", {"current": manifest(), "previous": None, "pending": None})
         with self.assertRaisesRegex(ValueError, "backup-receipt"):
@@ -162,6 +167,8 @@ class ControllerTests(unittest.TestCase):
             self.call("resume", b, ["--backup-receipt", str(receipt)])
         self.assertIsNone(u.read(self.home / "state.json")["pending"])
 
+    @patch.object(u, 'require_live_update_support', lambda: None)
+    @patch.object(u, 'require_fresh_controller_install_support', lambda: None)
     def test_failed_upgrade_can_rollback(self):
         old = self.bundle()
         with patch.object(u, "deploy"), patch.object(u, "run"):
@@ -189,6 +196,7 @@ class ControllerTests(unittest.TestCase):
         if __import__('os').name == 'posix': key.chmod(0o600)
         return key
 
+    @patch.object(u, 'require_live_update_support', lambda: None)
     def test_adopted_update_requires_actual_backup_not_receipt(self):
         key=self.prepare_adopted();new=self.bundle(manifest('1.1.0',['1.0.0']),'new')
         receipt=self.root/'receipt';u.write(receipt,{'version':'1.0.0','backup_id':'fake'})
@@ -197,6 +205,7 @@ class ControllerTests(unittest.TestCase):
                 self.call('apply',new,['--backup-receipt',str(receipt)])
         self.assertIsNone(u.read(self.home/'state.json')['pending'])
 
+    @patch.object(u, 'require_live_update_support', lambda: None)
     def test_adopted_backup_failure_never_changes_pending_state(self):
         key=self.prepare_adopted();new=self.bundle(manifest('1.1.0',['1.0.0']),'new')
         with patch.object(u,'deploy'), patch('scripts.backup_snapshot.capture',side_effect=RuntimeError('snapshot failed')):
@@ -205,6 +214,7 @@ class ControllerTests(unittest.TestCase):
         state=u.read(self.home/'state.json')
         self.assertEqual(state['current']['version'],'1.0.0');self.assertIsNone(state['pending'])
 
+    @patch.object(u, 'require_live_update_support', lambda: None)
     def test_adopted_update_records_backup_and_preserves_marker(self):
         key=self.prepare_adopted();new=self.bundle(manifest('1.1.0',['1.0.0']),'new')
         info={'id':'d'*32,'version':'1.0.0'}
@@ -215,6 +225,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(state['last_backup']['id'],info['id']);self.assertTrue(capture.call_args.kwargs['leave_stopped'])
         self.assertEqual(deploy.call_count,2)
 
+    @patch.object(u, 'require_live_update_support', lambda: None)
     def test_adopted_backup_cannot_use_key_inside_installation(self):
         self.prepare_adopted();new=self.bundle(manifest('1.1.0',['1.0.0']),'new')
         key=self.home/'runtime/backup.key';key.write_bytes(b'k'*32)

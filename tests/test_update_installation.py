@@ -18,6 +18,9 @@ from scripts.bundle import build
 @unittest.skipUnless(os.name=='posix','Managed update requires POSIX')
 class ManagedUpdateTests(unittest.TestCase):
     def setUp(self):
+        # Exercise legacy validation branches independently of the new gate.
+        gate=patch.object(uterctl,'require_live_update_support',lambda: None)
+        gate.start();self.addCleanup(gate.stop)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         self.home=self.root/'home';(self.home/'runtime').mkdir(parents=True)
         self.backups=self.root/'backups';self.backups.mkdir(mode=0o700)

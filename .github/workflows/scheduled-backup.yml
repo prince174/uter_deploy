@@ -19,6 +19,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
+      - name: Refuse historical unsafe live-backup experiment
+        run: |
+          echo 'This scenario assumes live backup without proven maintenance and external-writer isolation.' >&2
+          echo 'It is intentionally disabled; it is not evidence for the current backup gate.' >&2
+          exit 1
       - name: Checkout candidate deployment tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:

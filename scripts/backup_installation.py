@@ -424,6 +424,10 @@ def register(home, identity_file, publisher_key, backend, name, context):
 def backup(home, backup_root, backup_key, publisher_key, identity_file, backend, name, context):
     if os.name != 'posix':
         raise BackupError('POSIX_REQUIRED')
+    try:
+        backup_snapshot.require_live_backup_support()
+    except ValueError:
+        raise BackupError('LIVE_BACKUP_MAINTENANCE_ISOLATION_UNAVAILABLE') from None
     home = private_directory(home)
     backup_root = private_directory(backup_root)
     backup_key = checked_existing_path(backup_key)

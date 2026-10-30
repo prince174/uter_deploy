@@ -262,6 +262,11 @@ def resume_writers(home, cfg, site, current):
             checked(kube+['rollout','status','deployment/'+site['name']+'-'+svc,'--timeout=300s'])
 
 
+def require_live_backup_support():
+    """Refuse a new live snapshot without verified drain and writer isolation."""
+    raise ValueError('LIVE_BACKUP_MAINTENANCE_ISOLATION_UNAVAILABLE')
+
+
 def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
     """Capture while Uter writers are stopped; caller must already hold controller lock.
 
@@ -272,6 +277,7 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
     home=Path(home);journal=home/'backup-operation.json'
     if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json')):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+    require_live_backup_support()
     _require_legacy_operation_lock(home)
     if journal.exists(): raise ValueError('Previous backup operation requires inspection')
     cfg = dict(cfg, images=current['images'])

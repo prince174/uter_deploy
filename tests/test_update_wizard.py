@@ -21,6 +21,9 @@ from scripts import bundle, update_wizard as wizard
 @unittest.skipUnless(os.name == 'posix', 'Wizard requires Linux')
 class SignedUpdateWizardTests(unittest.TestCase):
     def setUp(self):
+        # Historical execution branch tests; unmocked refusal has separate tests.
+        gate=patch.object(wizard.uterctl,'require_live_update_support',lambda: None)
+        gate.start();self.addCleanup(gate.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

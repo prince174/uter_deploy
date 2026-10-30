@@ -63,6 +63,9 @@ def update(home,bundle,publisher_key,backup_root,backup_key,*,current_bundle=Non
     home=Path(home).resolve(strict=True);bundle=Path(bundle).resolve(strict=True)
     if any(os.path.lexists(home/name) for name in ('redis-fence-operation.json','compose-fence-finalize-anchor.json','compose-fenced-update-intent.json','compose-fenced-target-start.json','compose-fenced-target-result.json','compose-fenced-cleanup.json')):
         raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
+    # This entry point always targets an existing installation, including one
+    # awaiting adoption. Reject before creating keys or changing local state.
+    uterctl.require_live_update_support()
     backup_root_path=Path(backup_root).absolute();backup_key_path=Path(backup_key).absolute()
     if backup_root_path.is_symlink() or backup_key_path.is_symlink():
         raise ValueError('Backup paths must not be symlinks')

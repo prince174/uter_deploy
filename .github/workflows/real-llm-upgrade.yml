@@ -13,6 +13,11 @@ jobs:
       matrix:
         backend: [compose, kubernetes]
     steps:
+      - name: Refuse historical unsafe live-update experiment
+        run: |
+          echo 'This historical scenario assumes live update without proven maintenance and external-writer isolation.' >&2
+          echo 'It is intentionally disabled; it is not evidence for the current update gate.' >&2
+          exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false

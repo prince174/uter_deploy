@@ -17,6 +17,9 @@ from scripts.bundle import build
 @unittest.skipUnless(os.name == 'posix', 'Managed update requires POSIX')
 class OfflineManagedUpdateTests(unittest.TestCase):
     def setUp(self):
+        # Exercise dormant offline validations with the live-update gate mocked.
+        gate=patch.object(uterctl,'require_live_update_support',lambda: None)
+        gate.start();self.addCleanup(gate.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
