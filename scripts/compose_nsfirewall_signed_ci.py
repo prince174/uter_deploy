@@ -14,12 +14,15 @@ import stat
 import subprocess
 import tempfile
 import time
+import base64
+import shutil
 
 import uterctl
 from scripts import (backup_snapshot, backup_store, compose_nsfirewall_adapter as fence,
                      compose_nsfirewall_protocol as protocol, compose_fence_recovery_plan as plans,
                      compose_redis_diagnostic as diagnostic, install, install_recovery,
-                     redis_fence_journal as journal, compose_nsfirewall_checkpoint as checkpoint)
+                     redis_fence_journal as journal, compose_nsfirewall_checkpoint as checkpoint,
+                     compose_snapshot_only as snapshot_only, snapshot_only_receipts as snapshot_receipts)
 
 ROOT=Path(__file__).resolve().parents[1]
 KEY='uter:ci-fence-check'
@@ -40,6 +43,26 @@ DIAGNOSTICS={name:'COMPOSE_NSFENCE_CAUSE_'+name for name in (
 
 
 class SignedComposeFenceCheckFailure(ValueError): pass
+
+
+def _ci_signed_executor(source,root):
+    """Fresh local CI key, never published; sign current checked-out scripts."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    bundle=Path(root)/'executor-bundle'
+    shutil.copytree(source,bundle)
+    for path in (ROOT/'scripts').glob('*.py'):
+        shutil.copy2(path,bundle/'scripts'/path.name)
+    shutil.copy2(ROOT/'uterctl.py',bundle/'uterctl.py')
+    private=Ed25519PrivateKey.generate()
+    public=Path(root)/'executor-publisher.pem'
+    public.write_bytes(private.public_key().public_bytes(serialization.Encoding.PEM,
+                       serialization.PublicFormat.SubjectPublicKeyInfo))
+    raw=json.dumps(uterctl.inventory(bundle),sort_keys=True,indent=2).encode()
+    (bundle/'checksums.json').write_bytes(raw)
+    (bundle/'checksums.sig').write_bytes(base64.b64encode(private.sign(raw)))
+    uterctl.verify(bundle,public)
+    return bundle,public
 
 
 def _ci_clear_killed_child_lock(home,pid):
@@ -356,10 +379,84 @@ def _verify(home, bundle, publisher, manifest):
     _ci_wait_recovery_child(recovery_pid)
     PHASE='CRASH_RESUME'
     with uterctl.locked(home):backup_snapshot.resume_writers(home,cfg,site,manifest)
+    # Snapshot-only transaction: signed current executor, actual encrypted
+    # runtime/Redis/audit backup, real process death after durable receipt,
+    # then a fresh process verifies the complete backup before Redis release.
+    # Stale-lock cleanup remains exclusively for this disposable fixture.
+    PHASE='SNAPSHOT_CRASH_SETUP'
+    with tempfile.TemporaryDirectory(prefix='snapshot-only-ci-',dir=ROOT/'work') as temp:
+        executor,executor_public=_ci_signed_executor(bundle,temp)
+        destination=Path(temp)/'backup';snap_key=os.urandom(32);snap_operation=plans.new_operation()
+        snap_plan=dict(plan,operation=snap_operation)
+        with uterctl.locked(home):checked(cmd+['stop','guardrail','agent'],supplied_env=runenv)
+        readfd,writefd=os.pipe();pid=os.fork()
+        if pid==0:
+            os.close(readfd);owned=None
+            try:
+                with uterctl.locked(home):
+                    digest=plans.create(home,snap_plan,snap_key)
+                    entry=journal.create(home,backend='compose',site=cfg['name'],resource=redis_id,
+                                         plan_sha256=digest,operation=snap_operation)
+                    owned=fence.Adapter(home,bundle,publisher,snap_key)
+                    if owned._redis(snap_plan,'SET',KEY,VALUE)!='OK':raise ValueError
+                    protocol.isolate(home,snap_operation,owned)
+                    entry=journal.read(home)
+                    snapshot_only.capture(owned,entry,executor,executor_public,destination)
+                    os.write(writefd,b'R')
+                    while True:signal.pause()
+            except BaseException:os._exit(21)
+        os.close(writefd);reaped=False
+        try:
+            PHASE='SNAPSHOT_CRASH_WAIT'
+            import select
+            if not select.select([readfd],[],[],600)[0] or os.read(readfd,1)!=b'R':
+                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_SNAPSHOT_NOT_READY')
+            os.kill(pid,signal.SIGKILL);waited,status=os.waitpid(pid,0);reaped=True
+            if waited!=pid or not os.WIFSIGNALED(status) or os.WTERMSIG(status)!=signal.SIGKILL:
+                raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_SNAPSHOT_NOT_KILLED')
+        finally:
+            os.close(readfd)
+            if not reaped:
+                try:os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError:pass
+                try:os.waitpid(pid,0)
+                except ChildProcessError:pass
+        PHASE='SNAPSHOT_CRASH_LOCK'
+        entry=journal.read(home)
+        if entry['operation']!=snap_operation or entry['phase']!='captured':raise ValueError
+        _ci_clear_killed_child_lock(home,pid)
+        PHASE='SNAPSHOT_CRASH_RECOVERY'
+        recovery_pid=os.fork()
+        if recovery_pid==0:
+            owned=None
+            try:
+                with uterctl.locked(home):
+                    owned=fence.Adapter(home,bundle,publisher,snap_key)
+                    snapshot_only.recover(owned,executor,executor_public,destination)
+                    entry=journal.read(home)
+                    if entry['phase']!='redis_released':raise ValueError
+                    owned._signed(snap_plan)
+                    if owned._redis(snap_plan,'GET',KEY)!=VALUE:raise ValueError
+                    if docker_json('inspect','--format','{{json .NetworkSettings.Networks}}',redis_id)!=endpoint_before:raise ValueError
+                    if owned._redis(snap_plan,'DEL',KEY)!='1':raise ValueError
+                    plans.read(home,snap_key,entry['plan_sha256'],operation=snap_operation,site=cfg['name'],resource=redis_id)
+                    checkpoint.read(home,entry,snap_key)
+                    snapshot_receipts.read_decision(home,snap_key)
+                    for name in (journal.NAME,plans.NAME,checkpoint.NAME,snapshot_receipts.DECISION,
+                                 snapshot_receipts.RECEIPT,snapshot_receipts.DESCRIPTOR):(home/name).unlink()
+                    owned.close();owned=None
+                os._exit(0)
+            except BaseException:
+                if owned is not None:owned.close()
+                os._exit(23)
+        _ci_wait_recovery_child(recovery_pid)
+        PHASE='SNAPSHOT_CRASH_RESUME'
+        with uterctl.locked(home):backup_snapshot.resume_writers(home,cfg,site,manifest)
     return {'signed_016_firewall_fence':'pass','no_capture_release':'pass',
             'snapshot_under_firewall':'pass','release_after_capture_blocked':'pass',
             'unchanged_endpoint':'pass','ci_only_cleanup':'pass',
-            'pre_capture_sigkill_recovery':'pass','production_recovery_available':False}
+            'pre_capture_sigkill_recovery':'pass','snapshot_sigkill_recovery':'pass',
+            'production_recovery_available':False}
 
 
 def verify(home,bundle,publisher,manifest):

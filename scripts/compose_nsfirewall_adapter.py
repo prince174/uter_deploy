@@ -316,13 +316,19 @@ class Adapter(compose.Adapter):
         self.installed=False
 
     def attach_before_capture_recovery(self,record):
+        return self._attach_recovery(record,('prepared','isolating','isolated','pre_capture_aborting'))
+
+    def _attach_snapshot_recovery(self,record):
+        return self._attach_recovery(record,('captured','snapshot_releasing'))
+
+    def _attach_recovery(self,record,phases):
         """Reopen and verify the original live namespace; perform no mutation.
 
         This intentionally rejects a restarted Redis, different host boot,
         changed endpoint, unknown firewall state or missing authentication.
         Call only while the installation operation lock is held.
         """
-        self._journal(record,('prepared','isolating','isolated','pre_capture_aborting'))
+        self._journal(record,phases)
         if self.fd is not None:raise NamespaceFenceError('NS_RECOVERY_ALREADY_ATTACHED')
         plan=self._plan(record)
         try:
@@ -361,7 +367,14 @@ class Adapter(compose.Adapter):
         Journal must already have committed pre_capture_aborting. Application
         writers stay stopped; this is not full installation recovery.
         """
-        self._journal(record,('pre_capture_aborting',))
+        return self._recover_original_redis(record,('pre_capture_aborting',))
+
+    def _recover_snapshot_only(self,record):
+        """Release Redis only after the separate snapshot proof has been checked."""
+        return self._recover_original_redis(record,('snapshot_releasing',))
+
+    def _recover_original_redis(self,record,phases):
+        self._journal(record,phases)
         plan=self._plan(record)
         restart=self._inspect_redis(plan['container_id']).get('restart')
         if restart not in ('no','unless-stopped'):raise NamespaceFenceError('NS_RECOVERY_RESTART_CHANGED')
