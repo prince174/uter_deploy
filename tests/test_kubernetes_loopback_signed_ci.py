@@ -10,6 +10,29 @@ from scripts import kubernetes_loopback_signed_ci as experiment
 
 
 class KubernetesLoopbackTests(unittest.TestCase):
+    def test_ci_health_rejects_changed_identity_or_unhealthy_redis(self):
+        cluster='7a1ae129-82a8-490f-86e3-84dfd735d330'
+        pvc='099ae129-82a8-490f-86e3-84dfd735d330'
+        def query(args):
+            return {'metadata':{'uid':cluster if 'namespace' in args else pvc}}
+        def healthy(command):
+            return 'PONG' if command=='ping' else 'aof_enabled:1\naof_last_write_status:ok\n'
+        with patch.object(experiment.snapshot,'_query',side_effect=query), \
+             patch.object(experiment.snapshot,'verify') as verify:
+            experiment._ci_confirm_identity_health(cluster,pvc,{},healthy)
+            verify.assert_called_once()
+        for case in ('cluster','pvc','ping','aof'):
+            def altered_query(args):
+                value=query(args)
+                if (case=='cluster' and 'namespace' in args) or (case=='pvc' and 'persistentvolumeclaim' in args):
+                    value['metadata']['uid']='00000000-0000-0000-0000-000000000000'
+                return value
+            def altered_redis(command):
+                return 'bad' if case==command else healthy(command)
+            with self.subTest(case=case),patch.object(experiment.snapshot,'_query',side_effect=altered_query), \
+                 patch.object(experiment.snapshot,'verify'):
+                with self.assertRaises(experiment.KubernetesLoopbackCIError):
+                    experiment._ci_confirm_identity_health(cluster,pvc,{},altered_redis)
     def setUp(self):
         self.uid='11111111-1111-1111-1111-111111111111'
         self.operation='a'*32

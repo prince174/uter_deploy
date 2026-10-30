@@ -214,6 +214,20 @@ def _ci_crash_recovery_after_patch(home,plan,operation,api):
     _ci_clear_killed_child_lock(home,pid)
 
 
+def _ci_confirm_identity_health(cluster_uid,pvc_uid,manifest,redis):
+    """CI-only consistency and Redis health observation; no resume authority."""
+    try:
+        if (snapshot._query(['get','namespace','kube-system'])['metadata']['uid']!=cluster_uid
+                or snapshot._query(['-n',SITE,'get','persistentvolumeclaim',SITE+'-redis'])['metadata']['uid']!=pvc_uid):
+            raise ValueError
+        snapshot.verify(manifest)
+        if redis('ping')!='PONG':raise ValueError
+        persistence={line.strip() for line in redis('aof').splitlines()}
+        if 'aof_enabled:1' not in persistence or 'aof_last_write_status:ok' not in persistence:
+            raise ValueError
+    except Exception:raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_IDENTITY') from None
+
+
 def _ci_probe_policy(operation_label):
     if not isinstance(operation_label,str) or not re.fullmatch(r'[0-9a-f]{32}',operation_label):
         raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_ARGUMENT')
@@ -362,10 +376,11 @@ def _verify(home,bundle,key,manifest):
     def k(*args,timeout=30):
         return _ci_kube_command(list(args),timeout=timeout)
     def redis(command):
-        if command not in ('exists','write','read','delete','bind','aof'):
+        if command not in ('exists','write','read','delete','bind','aof','ping'):
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_ARGUMENT')
         commands={'exists':'EXISTS '+CI_KEY, 'write':'SET '+CI_KEY+' '+CI_VALUE,
-                  'read':'GET '+CI_KEY, 'delete':'DEL '+CI_KEY,'bind':'CONFIG GET bind','aof':'INFO persistence'}
+                  'read':'GET '+CI_KEY, 'delete':'DEL '+CI_KEY,'bind':'CONFIG GET bind',
+                  'aof':'INFO persistence','ping':'PING'}
         return k('exec','deployment/'+DEPLOYMENT,'-c','redis','--','sh','-ec',
                  'export REDISCLI_AUTH="$REDIS_PASSWORD"; exec redis-cli --raw '+commands[command])
     def pods(service):
@@ -380,6 +395,13 @@ def _verify(home,bundle,key,manifest):
     def rollout():
         k('rollout','status','deployment/'+DEPLOYMENT,'--timeout=180s',timeout=210)
     with uterctl.locked(home):
+        # CI-only baseline observed in the same cluster; this is not an
+        # independently authenticated identity for a production installation.
+        PHASE='BASELINE_IDENTITY'
+        cluster_uid=snapshot._query(['get','namespace','kube-system'])['metadata']['uid']
+        pvc_uid=snapshot._query(['-n',SITE,'get','persistentvolumeclaim',SITE+'-redis'])['metadata']['uid']
+        if not identity.UUID.fullmatch(cluster_uid) or not identity.UUID.fullmatch(pvc_uid):
+            raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_IDENTITY')
         PHASE='FIXTURE'
         if redis('exists')!='0': raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_FIXTURE_EXISTS')
         if redis('write')!='OK': raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_WRITE')
@@ -527,6 +549,8 @@ def _verify(home,bundle,key,manifest):
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_RECONNECT')
         PHASE='RECONNECT_ROLLOUT'
         rollout()
+        PHASE='RECONNECT_IDENTITY'
+        _ci_confirm_identity_health(cluster_uid,pvc_uid,manifest,redis)
         PHASE='RECONNECT_DATA'
         if redis('read')!=CI_VALUE or redis('delete')!='1':
             raise KubernetesLoopbackCIError('KUBE_LOOPBACK_CI_DATA')
