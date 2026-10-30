@@ -62,6 +62,16 @@ class SignedNamespaceCITests(unittest.TestCase):
                 line=('uterctl: StartError: '+combined+'\n').encode('ascii')
                 self.assertEqual(ci._start_diagnostic(line),ci.START_DIAGNOSTICS[combined])
 
+    def test_writer_stop_codes_are_strict_and_expose_only_fixed_categories(self):
+        categories=('RESPONSE','IDENTITY','RUNNING','EXIT_TYPE','EXIT_NONZERO','OOM','ENGINE_ERROR',
+                    'STARTED','RESTART_COUNT','PROJECT','SERVICE','IMAGE_REF','IMAGE_ID','FINISHED')
+        for service in ('GUARDRAIL','AGENT'):
+            for category in categories:
+                code='FENCE_START_WRITER_STOP_'+service+'_'+category
+                line=('uterctl: StartError: '+code+'\n').encode('ascii')
+                self.assertEqual(ci._start_diagnostic(line),'COMPOSE_START_CI_'+code)
+        self.assertIsNone(ci._start_diagnostic(b'uterctl: StartError: FENCE_START_WRITER_STOP_AGENT_SECRET\n'))
+
     def test_recovery_diagnostic_only_exposes_fixed_category(self):
         raw=b'uterctl: NamespaceProtocolError: NS_RECOVERY_INCOMPLETE\n'
         self.assertEqual(ci._recovery_diagnostic(raw),ci.CRASH_DIAGNOSTICS['NS_RECOVERY_INCOMPLETE'])

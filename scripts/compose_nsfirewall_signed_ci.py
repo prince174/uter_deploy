@@ -66,6 +66,11 @@ for _prefix,_suffixes in (
     for _suffix in _suffixes:
         _name=_prefix+'_'+_suffix
         START_DIAGNOSTICS[_name]='COMPOSE_START_CI_'+_name
+for _service in ('GUARDRAIL','AGENT'):
+    for _category in ('RESPONSE','IDENTITY','RUNNING','EXIT_TYPE','EXIT_NONZERO','OOM','ENGINE_ERROR',
+                      'STARTED','RESTART_COUNT','PROJECT','SERVICE','IMAGE_REF','IMAGE_ID','FINISHED'):
+        _name='FENCE_START_WRITER_STOP_'+_service+'_'+_category
+        START_DIAGNOSTICS[_name]='COMPOSE_START_CI_'+_name
 for _stage in ('SIGNED_LIVE','WRITER_IDENTITIES','REDIS_INSPECT','PLAN_VALIDATE','CONFIG',
                'STATE','NETWORK','PEERS','REINSPECT','BUNDLE_HASH'):
     for _code in ('ERROR','KEY_ERROR','TYPE_ERROR',*compose_fence_start._OBSERVE_DIAGNOSTIC_CODES,
