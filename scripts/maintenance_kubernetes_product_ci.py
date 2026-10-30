@@ -22,7 +22,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts import (kubernetes_maintenance_preflight, kubernetes_sealed_config, kubernetes_trusted_kubectl,
+from scripts import (kubernetes_fence_finalizer, kubernetes_maintenance_preflight, kubernetes_maintenance_runtime,
+                     kubernetes_sealed_config, kubernetes_trusted_kubectl,
                      maintenance_evidence, maintenance_protocol, maintenance_transport, redis_fence_journal)
 
 NODE = 'kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0'
@@ -291,8 +292,18 @@ containerdConfigPatches:
         redis_fence_journal.create(proof, backend='kubernetes', site=SITE, resource=pinned['redis']['uid'],
                                    plan_sha256=plan, operation=operation)
         PHASE = 'TRUSTED_RECORDER_CREATE'
-        recorder = maintenance_evidence.Recorder(proof, secrets.token_bytes(32), operation=operation,
+        evidence_key = secrets.token_bytes(32)
+        recorder = maintenance_evidence.Recorder(proof, evidence_key, operation=operation,
             backend='kubernetes', plan_sha256=plan, lock_guard=lambda: True)
+        session.home = proof
+        session._guard = lambda: None
+        fixture_plan = {'uid':pinned['redis']['uid'], 'namespace':SITE}
+        PHASE = 'DURABLE_INVENTORY_INITIAL'
+        with patch.object(maintenance_protocol, 'verify_capability', return_value=session.manifest), \
+             patch.object(kubernetes_fence_finalizer, 'read_plan', return_value=fixture_plan), \
+             patch.object(kubernetes_fence_finalizer, 'plan_hash', return_value=plan):
+            if kubernetes_maintenance_runtime.prepare(session, operation, evidence_key)['safe_to_backup'] is not False:
+                raise ProbeError('MAINTENANCE_KUBE_INVENTORY_UNVERIFIED')
         def request(service, instance, method, timeout):
             if instance != identities[service][0]: raise ProbeError('MAINTENANCE_KUBE_IDENTITY_CHANGED')
             return maintenance_transport.request(service=service, method=method, session=session,
@@ -307,6 +318,25 @@ containerdConfigPatches:
             preflight_final = kubernetes_maintenance_preflight.observe(session, require_ready=False)
         if preflight_final != preflight_initial:
             raise ProbeError('MAINTENANCE_KUBE_PREFLIGHT_CHANGED')
+        PHASE = 'SECRET_VERSION_TEST'
+        # Mutate only fixture metadata, never key data, and require the same
+        # Secret UID with a changed resourceVersion to invalidate the record.
+        run(kube+['-n', SITE, 'annotate', 'secret', secret_name, 'uter.io/fixture-change=true'])
+        with patch.object(maintenance_protocol, 'verify_capability', return_value=session.manifest):
+            changed = kubernetes_maintenance_preflight.observe(session, require_ready=False)
+        for service in ('agent', 'guardrail'):
+            if (changed['writers'][service]['secret_uid'] != preflight_initial['writers'][service]['secret_uid']
+                    or changed['writers'][service]['secret_rv'] == preflight_initial['writers'][service]['secret_rv']):
+                raise ProbeError('MAINTENANCE_KUBE_SECRET_CHANGE_NOT_DETECTED')
+        with patch.object(maintenance_protocol, 'verify_capability', return_value=session.manifest), \
+             patch.object(kubernetes_fence_finalizer, 'read_plan', return_value=fixture_plan), \
+             patch.object(kubernetes_fence_finalizer, 'plan_hash', return_value=plan):
+            try:
+                kubernetes_maintenance_runtime.collect(session, operation, evidence_key)
+            except kubernetes_maintenance_runtime.RuntimeError as error:
+                if str(error) != 'KUBE_MAINTENANCE_INVENTORY_CHANGED': raise
+            else:
+                raise ProbeError('MAINTENANCE_KUBE_SECRET_CHANGE_NOT_DETECTED')
         PHASE = 'RESTART_IDENTITY_TEST'
         # Fault injection only in this disposable kind cluster: replacement of a
         # receipted writer must invalidate the entire inventory before any next
@@ -322,6 +352,7 @@ containerdConfigPatches:
         evidence = ROOT/'work/maintenance-kubernetes-evidence'; evidence.mkdir(mode=0o700)
         (evidence/'maintenance.txt').write_text('Agent and Guardrail receipts verified on exact kind Pods.\n'
             'Read-only preflight checked real Pod identity before and after quiescence using a fixture signing shim.\n'
+            'A fixture Secret metadata change invalidated the durable inventory.\n'
             'Deleting a receipted Agent Pod invalidated the inventory.\n'
             'Redis fence, backup, update and recovery were not tested by this probe.\n', encoding='utf-8')
     finally:
