@@ -106,7 +106,8 @@ def sign(bundle,key):
 def staged_fixtures(root):
     """Require both CI-only fixtures in the verified private Git snapshot."""
     directory=Path(root)/'scripts'
-    paths=(directory/'ci_upstream_fixture.py',directory/'ci_fault_before_state_replace.c')
+    paths=(directory/'ci_upstream_fixture.py',directory/'ci_fault_before_state_replace.c',
+           directory/'ci_fault_after_cleanup_unlink.c')
     if any(path.is_symlink() or not path.is_file() for path in paths):
         raise Failure('STAGED_FIXTURES_MISSING')
     return paths
@@ -219,8 +220,9 @@ def exercise(mode):
     global PHASE
     fake_writers=mode.startswith('fake-')
     if fake_writers:mode=mode[len('fake-'):]
-    if mode not in ('normal','kill-target','kill-prepared','fail-state','shutdown'):raise Failure('MODE_INVALID')
-    if fake_writers and mode not in ('normal','kill-target','fail-state'):raise Failure('MODE_INVALID')
+    if mode not in ('normal','kill-target','kill-prepared','fail-state','shutdown','clean-first','clean-last','clean-journal'):raise Failure('MODE_INVALID')
+    if fake_writers and mode not in ('normal','kill-target','fail-state','clean-first','clean-last','clean-journal'):raise Failure('MODE_INVALID')
+    if not fake_writers and mode in ('clean-first','clean-last','clean-journal'):raise Failure('MODE_INVALID')
     PHASE='ASSETS'
     source=ROOT/'work/pair/old/bundle';public=ROOT/'work/pair/old/publisher-public.pem'
     workspace=Path(os.environ['SOURCE_GIT_WORKSPACE'])
@@ -231,7 +233,7 @@ def exercise(mode):
     original=uterctl.verify(source,public)
     if original['version']!=os.environ['UTER_CI_OLD_VERSION']:raise Failure('RELEASE_INVALID')
     work=ROOT/'work';private=work/'synthetic-fixture';private.mkdir(mode=0o700)
-    upstream_fixture,fault_fixture=staged_fixtures(ROOT)
+    upstream_fixture,fault_fixture,cleanup_fault_fixture=staged_fixtures(ROOT)
     registry=private/'registry';registry.mkdir(mode=0o700)
     os.environ.update({'DOCKER_CONTEXT':'default','DOCKER_CONFIG':str(registry),'GUARDRAIL_PORT':'18000','GUARDRAIL_CPUS':'2'})
     PHASE='PAIR';inputs=work/'input/published-old'
@@ -289,22 +291,36 @@ def exercise(mode):
                  '--bundle',target,'--key',product_key,'--executor-key',executor_key,
                  '--backup-key',key,'--backup-dir',backup,'--offline']
         PHASE='APPLY'
-        if mode in ('normal','fail-state'):
-            if mode=='fail-state':
+        if mode in ('normal','fail-state','clean-first','clean-last','clean-journal'):
+            if mode!='normal':
                 shim=private/'fault.so'
-                run(['cc','-shared','-fPIC','-o',shim,fault_fixture,'-ldl'])
+                injected_fixture=fault_fixture if mode=='fail-state' else cleanup_fault_fixture
+                run(['cc','-shared','-fPIC','-o',shim,injected_fixture,'-ldl'])
                 injected=dict(os.environ,LD_PRELOAD=str(shim),UTER_CI_FAULT_HOME=str(home))
+                selected={'clean-first':'compose-fence-plan.json','clean-last':'compose-fenced-target-result.json',
+                          'clean-journal':'redis-fence-operation.json'}
+                if mode!='fail-state':injected['UTER_CI_FAULT_ENTRY']=selected[mode]
                 with tempfile.TemporaryFile() as errors:
                     process=subprocess.Popen([str(x) for x in command],env=injected,
                                              stdout=subprocess.DEVNULL,stderr=errors)
                     try:status=process.wait(timeout=1200)
                     except subprocess.TimeoutExpired:
                         process.kill();process.wait(timeout=30);raise Failure('FAULT_TIMEOUT') from None
-                    if status!=88:
+                    if status!=(88 if mode=='fail-state' else -signal.SIGKILL):
                         errors.seek(0);PHASE=apply_error(errors.read(4097),home)
                         raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
-                if journal.read(home)['phase']!='update_finalizing':raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
-                if uterctl.read(home/'state.json').get('current')!=before or not journal.blocks_mutation(home):
+                if mode=='fail-state':
+                    if journal.read(home)['phase']!='update_finalizing' or uterctl.read(home/'state.json').get('current')!=before:
+                        raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
+                else:
+                    if (not os.path.lexists(home/journal.CLEANUP_INTENT) or os.path.lexists(home/selected[mode])
+                            or uterctl.read(home/'state.json').get('current')!=after):raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
+                    evidence=compose_fenced_update._evidence_names()
+                    present={name for name in evidence if os.path.lexists(home/name)}
+                    expected=set(evidence)-{selected[mode]} if mode=='clean-first' else set()
+                    if present!=expected:raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
+                    if mode!='clean-journal' and journal.read(home)['phase']!='update_finalizing':raise Failure('FAULT_BOUNDARY_NOT_OBSERVED')
+                if not journal.blocks_mutation(home):
                     raise Failure('FAULT_STATE_INVALID')
                 # The real signed command must reclaim its authenticated dead
                 # managed owner; do not remove or edit its sentinel in CI.

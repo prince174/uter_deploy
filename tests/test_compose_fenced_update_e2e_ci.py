@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -89,7 +90,10 @@ class SyntheticUpdateCITests(unittest.TestCase):
         (folder/'ci_upstream_fixture.py').write_text('fixture')
         with self.assertRaisesRegex(ci.Failure,'STAGED_FIXTURES_MISSING'):ci.staged_fixtures(self.root)
         (folder/'ci_fault_before_state_replace.c').write_text('fixture')
-        self.assertEqual(ci.staged_fixtures(self.root),(folder/'ci_upstream_fixture.py',folder/'ci_fault_before_state_replace.c'))
+        with self.assertRaisesRegex(ci.Failure,'STAGED_FIXTURES_MISSING'):ci.staged_fixtures(self.root)
+        (folder/'ci_fault_after_cleanup_unlink.c').write_text('fixture')
+        self.assertEqual(ci.staged_fixtures(self.root),(folder/'ci_upstream_fixture.py',folder/'ci_fault_before_state_replace.c',
+                                                        folder/'ci_fault_after_cleanup_unlink.c'))
 
     def test_synthetic_image_stage_does_not_expose_error_text(self):
         from scripts import compose_synthetic_writer_images_ci as images
@@ -151,6 +155,25 @@ class SyntheticUpdateCITests(unittest.TestCase):
             result=subprocess.run([sys.executable,'-I','-c',child,str(folder),name],env=env)
             self.assertEqual(result.returncode,expected)
             if expected==88:self.assertTrue((folder/'tmp').exists())
+
+    @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('cc'), 'LD_PRELOAD fault requires Linux and C compiler')
+    def test_cleanup_fault_only_triggers_after_exact_selected_unlink(self):
+        shim=self.root/'cleanup-fault.so'
+        subprocess.run(['cc','-shared','-fPIC','-o',str(shim),
+                        str(ci.ROOT/'scripts/ci_fault_after_cleanup_unlink.c'),'-ldl'],check=True)
+        home=self.root/'home';home.mkdir();other=self.root/'other';other.mkdir()
+        child='import os,sys; d=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY); os.unlink(sys.argv[2],dir_fd=d)'
+        cases=((other,'compose-fence-plan.json','compose-fence-plan.json',0),
+               (home,'unrelated','unrelated',0),
+               (home,'compose-fence-plan.json','compose-fence-plan.json',-signal.SIGKILL),
+               (home,'compose-fenced-target-result.json','compose-fenced-target-result.json',-signal.SIGKILL),
+               (home,'redis-fence-operation.json','redis-fence-operation.json',-signal.SIGKILL))
+        for folder,name,selected,expected in cases:
+            (folder/name).write_text('fixture')
+            env=dict(os.environ,LD_PRELOAD=str(shim),UTER_CI_FAULT_HOME=str(home),UTER_CI_FAULT_ENTRY=selected)
+            result=subprocess.run([sys.executable,'-I','-c',child,str(folder),name],env=env)
+            self.assertEqual(result.returncode,expected)
+            self.assertFalse((folder/name).exists())
 
 
 if __name__=='__main__':unittest.main()
