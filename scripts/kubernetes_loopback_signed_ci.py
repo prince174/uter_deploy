@@ -139,6 +139,8 @@ def _ci_delete_uid(kind,name,uid):
                     and current.get('kind')=='List' and current.get('items')==[]):
                 PHASE=prefix+'_EMPTY_LIST'
                 raise ValueError
+            if not isinstance(current,dict) or current.get('kind')!=('Pod' if kind=='pod' else 'NetworkPolicy'):
+                raise ValueError
             meta=current.get('metadata') if isinstance(current,dict) else None
             if (not isinstance(meta,dict) or meta.get('name')!=name or meta.get('namespace')!=SITE
                     or not isinstance(meta.get('uid'),str) or not identity.UUID.fullmatch(meta['uid'])):

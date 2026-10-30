@@ -238,7 +238,10 @@ class KubernetesLoopbackTests(unittest.TestCase):
             success='{"kind":"Status","status":"Success"}'
             for result,category in ((ValueError('sensitive detail'),'DELETE_POD_VERIFY_GET'),
                                     ('not json','DELETE_POD_VERIFY_FORMAT'),
-                                    ('{"metadata":{"name":"other"}}','DELETE_POD_VERIFY_FORMAT')):
+                                    ('{"metadata":{"name":"other"}}','DELETE_POD_VERIFY_FORMAT'),
+                                    (json.dumps({'kind':'ConfigMap','metadata':{'name':'uter-ci-loopback-probe',
+                                      'namespace':experiment.SITE,'uid':'099ae129-82a8-490f-86e3-84dfd735d330'}}),
+                                     'DELETE_POD_VERIFY_FORMAT')):
                 with self.subTest(category=category),patch.object(experiment,'ROOT',root), \
                      patch.object(experiment,'_ci_kube_command',side_effect=[success,result]):
                     with self.assertRaises(experiment.KubernetesLoopbackCIError) as error:
