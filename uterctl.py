@@ -234,7 +234,7 @@ _FENCE_EXECUTOR_MODULES = (
     'redis_fence_journal', 'compose_nsfirewall_adapter', 'compose_nsfirewall_protocol',
     'compose_nsfirewall_checkpoint', 'compose_fence_adapter', 'compose_fence_recovery_plan',
     'compose_redis_diagnostic', 'compose_systemd_activation', 'experimental_docker_activation_ci',
-    'compose_snapshot_only', 'snapshot_only_receipts',
+    'compose_snapshot_only', 'snapshot_only_receipts', 'compose_fence_start',
 )
 
 
@@ -265,7 +265,7 @@ def _load_signed_fence_executor(executor_key):
     sys.modules['scripts']=package
     sys.path.insert(0,str(ROOT))
     for name in ('backup_installation','compose_nsfirewall_adapter','compose_nsfirewall_protocol',
-                 'redis_fence_journal','compose_snapshot_only'):
+                 'redis_fence_journal','compose_snapshot_only','compose_fence_start'):
         importlib.import_module('scripts.'+name)
     for name,module in tuple(sys.modules.items()):
         if name.startswith('scripts.'):
@@ -379,9 +379,20 @@ def capture_compose_fenced_backup(home,bundle,publisher_key,executor_key,backup_
     print('Fenced backup '+backup_id+' created; Redis remains isolated and writers remain stopped.')
 
 
+def start_compose_fence(home,bundle,publisher_key,backup_key_path):
+    """Start the signed local Compose fence; ambiguous failures stay stopped."""
+    from scripts import compose_fence_start
+    home,_,secret=_fence_secret_inputs(home,backup_key_path)
+    with locked(home):
+        operation=compose_fence_start.start(home,bundle,publisher_key,secret)
+    print('Compose Redis fence '+operation+' established; writers stopped. '
+          'Experimental profile trusts host root, Docker daemon and administrators; '
+          'no update or session migration is authorized.')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
@@ -392,7 +403,7 @@ def main(argv=None):
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args(argv)
     home = args.home.resolve()
-    if args.command in ("fence-recover-redis", "fence-backup-redis"):
+    if args.command in ("fence-recover-redis", "fence-backup-redis", "fence-start-redis"):
         if args.key is None or args.bundle is None or args.executor_key is None:
             raise ValueError('FENCE_RECOVERY_SIGNED_BUNDLE_REQUIRED')
         if any(not path.is_absolute() for path in (args.home,args.bundle,args.key,args.executor_key)):
@@ -400,8 +411,10 @@ def main(argv=None):
         _load_signed_fence_executor(args.executor_key)
         if args.command == "fence-recover-redis":
             recover_compose_redis_before_snapshot(args.home, args.bundle, args.key, args.backup_key)
-        else:
+        elif args.command == "fence-backup-redis":
             capture_compose_fenced_backup(args.home,args.bundle,args.key,args.executor_key,args.backup_key,args.backup_dir)
+        else:
+            start_compose_fence(args.home,args.bundle,args.key,args.backup_key)
         return
     if args.command == "fence-status":
         # A journal is a recovery aid, never proof that a fence currently
