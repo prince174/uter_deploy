@@ -53,5 +53,13 @@ class DurableInventoryTests(unittest.TestCase):
         with self.assertRaises(runtime.RuntimeError): runtime.prepare(self.session,self.operation,self.key)
         self.assertEqual(before,(self.home/'maintenance-kubernetes-inventory.json').read_bytes())
 
+    def test_secret_rotation_and_manifest_change_invalidate_inventory(self):
+        runtime.prepare(self.session,self.operation,self.key)
+        self.snapshot['writers']['agent']['secret_rv']='43'
+        with self.assertRaises(runtime.RuntimeError): runtime.collect(self.session,self.operation,self.key)
+        self.snapshot['writers']['agent']['secret_rv']='42'
+        self.session.manifest={'image':'changed'}
+        with self.assertRaises(runtime.RuntimeError): runtime.collect(self.session,self.operation,self.key)
+
 
 if __name__ == '__main__': unittest.main()
