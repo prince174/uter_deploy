@@ -227,6 +227,8 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
     from scripts import install as installer
     import uterctl
     home=Path(home);journal=home/'backup-operation.json'
+    if os.path.lexists(home/'redis-fence-operation.json'):
+        raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
     if journal.exists(): raise ValueError('Previous backup operation requires inspection')
     cfg = dict(cfg, images=current['images'])
     adopt_installation.verify_live(home,cfg,current)

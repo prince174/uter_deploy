@@ -107,6 +107,25 @@ class ControllerSessionGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Data migration required'):
             uterctl.transition(fixtures.manifest(), unchanged_version)
 
+    @unittest.skipUnless(os.name == 'posix', 'requires POSIX symlink handling')
+    def test_existing_fence_journal_blocks_controller_before_backup_or_deploy(self):
+        marker = self.fx.home/'redis-fence-operation.json'
+        before = (self.fx.home/'state.json').read_bytes()
+        for dangling in (False, True):
+            with self.subTest(dangling=dangling):
+                if dangling:
+                    marker.symlink_to(self.fx.home/'missing-target')
+                else:
+                    marker.write_text('{}')
+                try:
+                    with patch.object(uterctl, 'deploy') as deploy, patch('scripts.backup_snapshot.capture') as capture:
+                        with self.assertRaisesRegex(ValueError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                            self.execute()
+                    deploy.assert_not_called(); capture.assert_not_called()
+                    self.assertEqual((self.fx.home/'state.json').read_bytes(), before)
+                finally:
+                    marker.unlink()
+
     def test_historical_old_controller_refuses_epoch_change(self):
         # This exact Git commit is the public signed 0.1.6 tooling snapshot.
         # Shallow checkout may omit it; the isolated integration test exercises

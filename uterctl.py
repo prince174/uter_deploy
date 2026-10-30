@@ -270,6 +270,11 @@ def main(argv=None):
         print("Bundle and configuration checked; workloads unchanged.")
         return
     with locked(home):
+        # A fence operation can have changed Redis connectivity without
+        # reaching a recoverable state. Never let a later managed mutation
+        # proceed merely because the controller lock has been released.
+        if os.path.lexists(home / 'redis-fence-operation.json'):
+            raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
         # Re-read after acquiring the lock to reject stale concurrent operations.
         current_state = read(state_path) if state_path.exists() else {"current": None, "previous": None, "pending": None}
         if current_state != state:

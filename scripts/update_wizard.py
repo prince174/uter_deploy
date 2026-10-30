@@ -56,6 +56,7 @@ MESSAGES = {
     'SESSION_MIGRATION_AMBIGUOUS': 'Обновление остановлено: найдены сессии, владельца которых нельзя надёжно определить.',
     'SESSION_MIGRATION_SCAN_FAILED': 'Обновление остановлено: не удалось безопасно проверить старые сессии.',
     'SESSION_MIGRATION_FENCE_UNVERIFIED': 'Обновление остановлено: нельзя подтвердить отсутствие внешних записей в хранилище сессий.',
+    'REDIS_FENCE_REQUIRES_INSPECTION': 'Обновление остановлено: необходимо проверить незавершённую операцию изоляции Redis.',
     'UPDATER_TIMEOUT_INSPECT_STATE': 'Прервано ожидание обновления. Проверьте состояние и журналы перед любыми действиями; операции Docker/Kubernetes могут продолжаться.',
     'UPDATER_OUTPUT_LIMIT_INSPECT_STATE': 'Обновление завершилось, но его вывод превысил предел. Проверьте состояние и журналы; не запускайте обновление повторно без проверки.',
     'UPDATER_OUTPUT_UNAVAILABLE_INSPECT_STATE': 'Не удалось безопасно получить результат обновления. Проверьте состояние и журналы.',
@@ -226,6 +227,8 @@ def prepare_plan(home, bundle, publisher_key, fingerprint, *, current_bundle=Non
         raise WizardError('RECOVERY_INCOMPLETE')
     if security.present(home / 'backup-operation.json'):
         raise WizardError('BACKUP_REQUIRES_INSPECTION')
+    if security.present(home / 'redis-fence-operation.json'):
+        raise WizardError('REDIS_FENCE_REQUIRES_INSPECTION')
     state_file = home / 'state.json'
     adopted = security.present(state_file)
     if adopted:

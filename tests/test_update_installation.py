@@ -45,6 +45,16 @@ class ManagedUpdateTests(unittest.TestCase):
         self.assertEqual(len(backup_crypto.read_key(self.backup_key)),32)
         self.assertFalse((self.home/'state.json').exists())
 
+    def test_incomplete_redis_fence_blocks_before_key_creation(self):
+        marker=self.home/'redis-fence-operation.json'
+        marker.symlink_to(self.home/'missing')
+        with patch('scripts.update_installation.adopt_managed.adopt') as adopt:
+            with self.assertRaisesRegex(ValueError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                update_installation.update(self.home, self.root/'new', self.public,
+                                           self.backups, self.backup_key, create_backup_key=True)
+        adopt.assert_not_called()
+        self.assertFalse(self.backup_key.exists())
+
     def test_backup_key_cannot_be_inside_backup_directory(self):
         with self.assertRaisesRegex(ValueError,'stored separately'):
             update_installation.update(self.home,self.root/'new',self.public,self.backups,self.backups/'key',current_bundle=self.root/'old')

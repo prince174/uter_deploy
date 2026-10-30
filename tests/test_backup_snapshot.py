@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import tarfile
@@ -52,6 +53,17 @@ class SnapshotTests(unittest.TestCase):
         self.assertFalse((self.home/'backup-operation.json').exists())
         self.assertTrue(any('stop' in c.args[0] for c in cmd.call_args_list))
         self.assertTrue(any('up' in c.args[0] for c in cmd.call_args_list))
+
+    @unittest.skipUnless(os.name == 'posix', 'requires POSIX symlink handling')
+    def test_fence_journal_refuses_snapshot_before_workloads_change(self):
+        marker=self.home/'redis-fence-operation.json'
+        marker.symlink_to(self.home/'missing')
+        with patch.object(backup_snapshot.adopt_installation,'verify_live') as live, \
+             patch.object(backup_snapshot,'checked') as checked:
+            with self.assertRaisesRegex(ValueError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key)
+        live.assert_not_called(); checked.assert_not_called()
+        self.assertFalse((self.root/'backup').exists())
 
     def test_optional_ca_bundle_is_preserved_in_encrypted_runtime(self):
         ca = b'example CA bundle content'

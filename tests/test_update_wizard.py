@@ -62,6 +62,14 @@ class SignedUpdateWizardTests(unittest.TestCase):
                                    current_bundle=self.current, backup_root=self.backups,
                                    backup_key=self.keyfile, **kwargs)
 
+    def test_incomplete_fence_blocks_plan_before_new_paths(self):
+        marker=self.home/'redis-fence-operation.json'
+        marker.write_text('{}')
+        with self.assertRaisesRegex(wizard.WizardError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
+            self.plan()
+        self.assertFalse(self.backups.exists())
+        self.assertFalse(self.keydir.exists())
+
     def test_new_paths_are_only_created_after_confirmation_and_key_is_new(self):
         plan = self.plan()
         self.assertTrue(plan['create_key'])

@@ -67,6 +67,12 @@ class BackupInstallationTests(unittest.TestCase):
                          'volumes': {'redis': 'uter-test_redis-data', 'audit': 'uter-test_audit-data'}}
         self.register_identity('compose', 'default')
 
+    def test_incomplete_fence_blocks_scheduled_backup_metadata(self):
+        marker=self.home/'redis-fence-operation.json'
+        marker.symlink_to(self.home/'missing')
+        with self.assertRaisesRegex(m.BackupError, '^REDIS_FENCE_REQUIRES_INSPECTION$'):
+            m.installation_metadata(self.home)
+
     def write_state(self):
         (self.home / 'state.json').write_text(json.dumps(self.state))
 
