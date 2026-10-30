@@ -332,7 +332,13 @@ class BoundedUpdaterTests(unittest.TestCase):
             pid = int(pid_file.read_text())
             for _ in range(30):
                 status = Path('/proc') / str(pid) / 'stat'
-                if not status.exists() or status.read_text().split()[2] == 'Z':
+                try:
+                    state = status.read_text().split()[2]
+                except FileNotFoundError:
+                    # A killed child can disappear between a path check and
+                    # open; absence itself confirms the process has exited.
+                    break
+                if state == 'Z':
                     break
                 time.sleep(.1)
             else:
