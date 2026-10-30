@@ -14,6 +14,6 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r requirements.txt > /dev/null
       - name: Check bounded preparation and fail-closed cases
-        run: python -m unittest tests.test_redis_recovery_experiment tests.test_redis_digest_resp -q
-      - name: Restore synthetic backup into a separate Redis
+        run: python -m unittest tests.test_redis_recovery_experiment tests.test_redis_digest_resp tests.test_recovery_evidence_experiment -q
+      - name: Restore fixture backup and bind evidence (mocked audit oracle)
         run: python scripts/redis_recovery_experiment_ci.py
