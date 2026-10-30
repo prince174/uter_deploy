@@ -96,4 +96,3 @@ if __name__ == '__main__':
         raise SystemExit('Synthetic stdin test failed: ' + str(exc))
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         raise SystemExit('Synthetic stdin test failed: ' + type(exc).__name__)
-
