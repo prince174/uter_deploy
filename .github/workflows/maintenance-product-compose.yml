@@ -67,6 +67,8 @@ jobs:
         if: always()
         with:
           name: maintenance-compose-product-evidence
-          path: work/integration-evidence/maintenance.txt
+          path: |
+            work/integration-evidence/maintenance.txt
+            work/integration-evidence/maintenance-failure.txt
           retention-days: 7
           if-no-files-found: warn

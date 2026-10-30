@@ -78,7 +78,20 @@ def main():
         if maintenance:
             sys.path.insert(0, str(ROOT))
             from scripts import maintenance_compose_product_ci
-            maintenance_compose_product_ci.exercise(home)
+            try:
+                maintenance_compose_product_ci.exercise(home)
+            except Exception as exc:
+                allowed = {'MAINTENANCE_CI_ENVIRONMENT_UNVERIFIED', 'MAINTENANCE_CI_PATH_UNVERIFIED',
+                           'MAINTENANCE_CI_IDENTITY_UNVERIFIED', 'MAINTENANCE_CI_IDENTITY_CHANGED',
+                           'MAINTENANCE_CI_IMAGE_UNVERIFIED', 'MAINTENANCE_CI_RECEIPTS_UNVERIFIED',
+                           'MAINTENANCE_RESPONSE_UNVERIFIED', 'MAINTENANCE_INVENTORY_CHANGED',
+                           'MAINTENANCE_INITIAL_STATE_UNVERIFIED', 'MAINTENANCE_BOOT_ID_DUPLICATE',
+                           'MAINTENANCE_DEADLINE_EXCEEDED', 'MAINTENANCE_INTENT_UNVERIFIED',
+                           'MAINTENANCE_POST_UNVERIFIED', 'MAINTENANCE_STATE_UNVERIFIED',
+                           'MAINTENANCE_RECEIPT_PERSISTENCE_UNVERIFIED', 'MAINTENANCE_OPERATION_UNCERTAIN'}
+                code = str(exc) if str(exc) in allowed else 'MAINTENANCE_CI_UNCLASSIFIED'
+                (evidence/'maintenance-failure.txt').write_text(code+'\n', encoding='ascii')
+                raise
     finally:
         logs = subprocess.run(cmd + ["logs", "--no-color", "--tail", "150"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.decode(errors="replace")
         for secret in [admin, service, shared, redis_password, jwt, hmac, admin_hash, service_hash]:

@@ -221,5 +221,6 @@ jobs:
           path: |
             work/integration-evidence/restart.txt
             work/integration-evidence/maintenance.txt
+            work/integration-evidence/maintenance-failure.txt
           retention-days: 7
           if-no-files-found: warn
