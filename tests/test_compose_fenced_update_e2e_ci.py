@@ -70,6 +70,8 @@ class SyntheticUpdateCITests(unittest.TestCase):
     def test_apply_error_reports_only_exact_allowlisted_code(self):
         self.assertEqual(ci.apply_error(b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_INCOMPLETE\n',self.root),
                          'APPLY_FENCED_UPDATE_CAPTURE_INCOMPLETE_PHASE_NONE')
+        self.assertEqual(ci.apply_error(b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_FENCE_START_WRITER_STOP_GUARDRAIL_EXIT_TERM_LIKE_OOM_FALSE\n',self.root),
+                         'APPLY_FENCED_UPDATE_CAPTURE_FENCE_START_WRITER_STOP_GUARDRAIL_EXIT_TERM_LIKE_OOM_FALSE_PHASE_NONE')
         for bad in (b'uterctl: FencedUpdateError: FENCED_UPDATE_CAPTURE_INCOMPLETE secret\n',
                     b'uterctl: ValueError: FENCED_UPDATE_CAPTURE_INCOMPLETE\n',
                     b'uterctl: FencedUpdateError: FENCED_UPDATE_SECRET\n',

@@ -37,6 +37,9 @@ APPLY_CODES=frozenset('FENCED_UPDATE_'+suffix for suffix in (
     'PREFLIGHT_UNVERIFIED','TARGET_STAGE_UNCERTAIN','PULL_UNCERTAIN','PRIOR_OPERATION',
     'DESTINATION_INVALID','CAPTURE_INCOMPLETE','BINDING_UNVERIFIED','RELEASE_INCOMPLETE',
     'START_STATE_UNVERIFIED','START_INCOMPLETE','FINALIZE_STATE_UNVERIFIED','FINALIZE_INCOMPLETE'))
+APPLY_CODES=APPLY_CODES | frozenset('FENCED_UPDATE_CAPTURE_'+code
+                                   for code in compose_nsfirewall_signed_ci.START_DIAGNOSTICS
+                                   if code.startswith('FENCE_START_'))
 JOURNAL_PHASES=frozenset(('NONE','INVALID','PREPARED','ISOLATING','ISOLATED','CAPTURING','CAPTURED',
                           'SNAPSHOT_RELEASING','REDIS_RELEASED','TARGET_STARTING','TARGET_RUNNING','UPDATE_FINALIZING'))
 APPLY_PHASES=frozenset('APPLY_'+code+'_PHASE_'+phase for code in APPLY_CODES|{'UNKNOWN'} for phase in JOURNAL_PHASES)
@@ -168,7 +171,7 @@ def install_failure_category(home,cfg):
 
 def exercise(mode):
     global PHASE
-    if mode not in ('normal','kill-target','fail-state'):raise Failure('MODE_INVALID')
+    if mode not in ('normal','kill-target','fail-state','shutdown'):raise Failure('MODE_INVALID')
     PHASE='ASSETS'
     source=ROOT/'work/pair/old/bundle';public=ROOT/'work/pair/old/publisher-public.pem'
     workspace=Path(os.environ['SOURCE_GIT_WORKSPACE'])
@@ -216,6 +219,13 @@ def exercise(mode):
         if not redis:raise Failure('REDIS_MISSING')
         identity=redis_identity(redis)
         if redis_command(redis,'SET','uter:ci:synthetic-update','retained')!=b'OK':raise Failure('REDIS_SEED_FAILED')
+        if mode=='shutdown':
+            from scripts import compose_writer_stop_probe_ci
+            PHASE='VERIFY'
+            outcome=compose_writer_stop_probe_ci.probe(home,old,product_key,before,redis,redis_command,run)
+            if outcome['stop_exit_class'] not in ('ZERO','TERM_LIKE','OTHER'):raise Failure('STOP_INVALID')
+            print('SHUTDOWN_PROBE_'+outcome['stop_exit_class'],flush=True)
+            return
         command=[sys.executable,'-I','-B',executor/'uterctl.py','apply','--fenced-update','--home',home,
                  '--bundle',target,'--key',product_key,'--executor-key',executor_key,
                  '--backup-key',key,'--backup-dir',backup,'--offline']
@@ -311,12 +321,16 @@ def main():
                     'NEW_SIGNED_BUNDLE_PATH':str(stage/'work/pair/new/bundle'),
                     'PUBLISHER_KEY_PATH':str(stage/'work/pair/old/publisher-public.pem')})
         child=subprocess.run([str(python),'-I','-B',str(stage/'scripts/compose_fenced_update_e2e_ci.py'),'--staged'],
-                             env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=3300)
+                             env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=3300)
         if child.returncode:
             match=re.fullmatch(rb'SYNTHETIC_FENCED_UPDATE_CI_([A-Z_]+)_FAILED\r?\n',child.stderr)
             phase=match.group(1).decode('ascii') if match and match.group(1).decode('ascii') in PHASES|INSTALL_CODES|APPLY_PHASES else 'GUARD'
             raise Failure(phase)
-    print('Synthetic same-image CI passed; no product-image upgrade or migration was tested.')
+        if os.environ.get('UTER_CI_SYNTHETIC_MODE')=='shutdown':
+            result=re.fullmatch(rb'SHUTDOWN_PROBE_(ZERO|TERM_LIKE|OTHER)\r?\n',child.stdout)
+            if not result:raise Failure('VERIFY')
+            print('Shutdown probe exit class: '+result.group(1).decode('ascii')+'; quiescent fixture only.')
+        else:print('Synthetic same-image CI passed; no product-image upgrade or migration was tested.')
 
 
 if __name__=='__main__':
