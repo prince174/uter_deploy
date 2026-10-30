@@ -17,7 +17,8 @@ import subprocess
 import time
 
 from scripts import (compose_fence_adapter as compose, redis_fence_journal as journal,
-                     compose_systemd_activation as systemd_activation)
+                     compose_systemd_activation as systemd_activation,
+                     compose_nsfirewall_checkpoint as checkpoint)
 
 NSENTER='/usr/bin/nsenter'
 IPTABLES='/usr/sbin/iptables'
@@ -112,11 +113,11 @@ class Adapter(compose.Adapter):
         except NamespaceFenceError:raise
         except OSError:raise NamespaceFenceError('NS_FENCE_PROC_UNVERIFIED') from None
 
-    def _live_namespace(self, plan):
+    def _live_namespace(self, plan, *, restart='no'):
         self._lock()
         value=self._fd_nonhost()
         if value!=self.net_identity:raise NamespaceFenceError('NS_FENCE_NAMESPACE_CHANGED')
-        state=self._state(plan,detached=False,restart='no',original_endpoint=True)
+        state=self._state(plan,detached=False,restart=restart,original_endpoint=True)
         if state['pid']!=self.redis_pid:raise NamespaceFenceError('NS_FENCE_PROCESS_CHANGED')
         observed=os.stat('/proc/'+str(self.redis_pid)+'/ns/net')
         if value!=(observed.st_dev,observed.st_ino):raise NamespaceFenceError('NS_FENCE_NAMESPACE_CHANGED')
@@ -247,6 +248,13 @@ class Adapter(compose.Adapter):
                 raise NamespaceFenceError('NS_FENCE_PORT_UNSUPPORTED')
             if self._redis(plan,'CONFIG','GET','tls-port')!='tls-port\n0':
                 raise NamespaceFenceError('NS_FENCE_TLS_UNSUPPORTED')
+            checkpoint.create(self.home,record,{
+                'schema':1,'operation':record['operation'],'site':record['site'],
+                'resource':record['resource'],'plan_sha256':record['plan_sha256'],
+                'boot_id':checkpoint.boot_id(),'pid':self.redis_pid,
+                'pid_start':checkpoint.process_start(self.redis_pid),
+                'net_dev':self.net_identity[0],'net_ino':self.net_identity[1],
+                'firewall_sha256':self.initial_hash},self.backup_key)
             return True
         except BaseException:
             self.close();raise
@@ -270,7 +278,7 @@ class Adapter(compose.Adapter):
         self._no_other_clients(plan)
 
     def verify_fenced(self,record):
-        self._journal(record,('isolating','isolated','capturing','captured','aborting'))
+        self._journal(record,('isolating','isolated','capturing','captured','aborting','pre_capture_aborting'))
         plan=self._plan(record);self._signed(plan);self._live_namespace(plan)
         self._network_and_volume(plan);self._peers(plan);self._redis_config(plan)
         self._no_other_clients(plan);self._check_firewall(installed=True);self._live_namespace(plan)
@@ -284,7 +292,7 @@ class Adapter(compose.Adapter):
         if self.verify_fenced(record) is not True:raise NamespaceFenceError('NS_FENCE_RELEASE_UNSUPPORTED')
         # Commit the direct transition before minting the in-memory permit.
         # Once aborting, journal transitions forbid starting a capture.
-        journal.advance(self.home,operation=record['operation'],expected='isolated',next_phase='aborting')
+        journal.advance(self.home,operation=record['operation'],expected='isolated',next_phase='pre_capture_aborting')
         self.release_permit=record['operation']
         return True
 
@@ -295,7 +303,7 @@ class Adapter(compose.Adapter):
         process a one-use permit. This is not crash recovery and cannot release
         a captured or potentially migrated data state.
         """
-        self._journal(record,('aborting',))
+        self._journal(record,('pre_capture_aborting',))
         if (record.get('phase')!='isolated' or self.installed is not True
                 or self.release_permit != record.get('operation')):
             raise NamespaceFenceError('NS_FENCE_RELEASE_UNSUPPORTED')
@@ -306,3 +314,67 @@ class Adapter(compose.Adapter):
         self._run('update','--restart=unless-stopped',plan['container_id'])
         self._state(plan,detached=False,restart='unless-stopped',original_endpoint=True)
         self.installed=False
+
+    def attach_before_capture_recovery(self,record):
+        """Reopen and verify the original live namespace; perform no mutation.
+
+        This intentionally rejects a restarted Redis, different host boot,
+        changed endpoint, unknown firewall state or missing authentication.
+        Call only while the installation operation lock is held.
+        """
+        self._journal(record,('prepared','isolating','isolated','pre_capture_aborting'))
+        if self.fd is not None:raise NamespaceFenceError('NS_RECOVERY_ALREADY_ATTACHED')
+        plan=self._plan(record)
+        try:
+            saved=checkpoint.read(self.home,record,self.backup_key)
+            if checkpoint.boot_id()!=saved['boot_id'] or checkpoint.process_start(saved['pid'])!=saved['pid_start']:
+                raise NamespaceFenceError('NS_RECOVERY_PROCESS_CHANGED')
+            self.operation=record['operation'];self.redis_pid=saved['pid'];self.initial_hash=saved['firewall_sha256']
+            self.daemon_pid=self._daemon_identity()
+            self.daemon_pidfd=os.pidfd_open(self.daemon_pid,0)
+            if select.select([self.daemon_pidfd],[],[],0)[0] or self._daemon_identity()!=self.daemon_pid:
+                raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED')
+            self.daemon_fd=os.open('/proc/'+str(self.daemon_pid)+'/ns/net',os.O_RDONLY)
+            self.fd=os.open('/proc/'+str(self.redis_pid)+'/ns/net',os.O_RDONLY)
+            self.net_identity=self._fd_nonhost()
+            if (self.net_identity!=(saved['net_dev'],saved['net_ino'])
+                    or checkpoint.process_start(self.redis_pid)!=saved['pid_start']):
+                raise NamespaceFenceError('NS_RECOVERY_NAMESPACE_CHANGED')
+            self._signed(plan);self._network_and_volume(plan);self._peers(plan);self._redis_config(plan)
+            restart=self._inspect_redis(plan['container_id']).get('restart')
+            if restart not in ('no','unless-stopped'):raise NamespaceFenceError('NS_RECOVERY_RESTART_CHANGED')
+            self._live_namespace(plan,restart=restart)
+            _,parsed=self._rules();token='uter-fence-'+self.operation
+            matches=[p for p in parsed if '--comment' in p and p.index('--comment')+1<len(p)
+                     and p[p.index('--comment')+1]==token]
+            if len(matches)>1:raise NamespaceFenceError('NS_RECOVERY_FIREWALL_CHANGED')
+            self.installed=bool(matches);self._check_firewall(installed=self.installed)
+            if self.installed and restart!='no':raise NamespaceFenceError('NS_RECOVERY_RESTART_CHANGED')
+            self._live_namespace(plan,restart=restart)
+            return True
+        except BaseException:
+            self.close();raise
+
+    def recover_before_capture(self,record):
+        """Idempotently release only the original Redis rule, before capture.
+
+        Journal must already have committed pre_capture_aborting. Application
+        writers stay stopped; this is not full installation recovery.
+        """
+        self._journal(record,('pre_capture_aborting',))
+        plan=self._plan(record)
+        restart=self._inspect_redis(plan['container_id']).get('restart')
+        if restart not in ('no','unless-stopped'):raise NamespaceFenceError('NS_RECOVERY_RESTART_CHANGED')
+        self._signed(plan);self._live_namespace(plan,restart=restart)
+        if self.installed:
+            if restart!='no':raise NamespaceFenceError('NS_RECOVERY_RESTART_CHANGED')
+            self._check_firewall(installed=True)
+            self._cmd(['-D','INPUT',*self._rule()])
+            self._check_firewall(installed=False);self.installed=False
+        else:self._check_firewall(installed=False)
+        self._live_namespace(plan,restart=restart)
+        if restart=='no':
+            self._run('update','--restart=unless-stopped',plan['container_id'])
+        self._live_namespace(plan,restart='unless-stopped')
+        self._check_firewall(installed=False)
+        return True

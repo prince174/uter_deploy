@@ -12,15 +12,16 @@ import secrets
 import stat
 
 NAME = 'redis-fence-operation.json'
-PHASES = ('prepared', 'isolating', 'isolated', 'capturing', 'captured', 'releasing', 'aborting', 'redis_released', 'restored')
+PHASES = ('prepared', 'isolating', 'isolated', 'capturing', 'captured', 'releasing', 'aborting', 'pre_capture_aborting', 'redis_released', 'restored')
 TRANSITIONS = {
-    'prepared': frozenset(('isolating', 'aborting')),
-    'isolating': frozenset(('isolated', 'aborting')),
-    'isolated': frozenset(('capturing', 'aborting')),
+    'prepared': frozenset(('isolating', 'aborting', 'pre_capture_aborting')),
+    'isolating': frozenset(('isolated', 'aborting', 'pre_capture_aborting')),
+    'isolated': frozenset(('capturing', 'aborting', 'pre_capture_aborting')),
     'capturing': frozenset(('captured', 'aborting')),
     'captured': frozenset(('releasing', 'aborting')),
     'releasing': frozenset(('restored', 'aborting')),
     'aborting': frozenset(('restored', 'redis_released')),
+    'pre_capture_aborting': frozenset(('redis_released',)),
     'redis_released': frozenset(('restored',)),
     'restored': frozenset(),
 }

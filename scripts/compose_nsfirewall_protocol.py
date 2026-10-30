@@ -38,4 +38,24 @@ def release_without_capture(home,operation,adapter):
         raise NamespaceProtocolError('NS_PROTOCOL_RELEASE_INCOMPLETE') from None
     # Only Redis has been released. Guardrail/Agent remain stopped and their
     # restoration has not been attempted or verified by this protocol.
-    journal.advance(home,operation=operation,expected='aborting',next_phase='redis_released')
+    journal.advance(home,operation=operation,expected='pre_capture_aborting',next_phase='redis_released')
+
+
+def recover_before_capture(home,operation,adapter):
+    """Resume an interrupted no-capture fence; caller holds operation lock.
+
+    Never handles `capturing`, `captured` or generic `aborting`: the latter can
+    mean an update already changed data. Redis recovery does not start writers.
+    """
+    record=journal.read(home)
+    allowed=('prepared','isolating','isolated','pre_capture_aborting')
+    if record.get('backend')!='compose' or record.get('operation')!=operation or record.get('phase') not in allowed:
+        raise NamespaceProtocolError('NS_RECOVERY_STATE_UNSUPPORTED')
+    try:
+        if adapter.attach_before_capture_recovery(record) is not True:raise ValueError
+        if record['phase']!='pre_capture_aborting':
+            journal.advance(home,operation=operation,expected=record['phase'],next_phase='pre_capture_aborting')
+        if adapter.recover_before_capture(record) is not True:raise ValueError
+        journal.advance(home,operation=operation,expected='pre_capture_aborting',next_phase='redis_released')
+    except Exception:
+        raise NamespaceProtocolError('NS_RECOVERY_INCOMPLETE') from None

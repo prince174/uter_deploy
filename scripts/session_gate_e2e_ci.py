@@ -281,7 +281,8 @@ def run_scenario():
                     raise CheckFailure(str(error)) from None
                 phases={'GUARD','PATH_CHECK','CONFIG_READ','SITE_READ','SIGNED_IDENTITY','DOCKER_SCOPE','INSPECTION',
                         'STOP_WRITERS','PRE_CAPTURE_ISOLATE','PRE_CAPTURE_RELEASE','CAPTURE_ISOLATE','CAPTURE',
-                        'CAPTURE_RELEASE_REFUSED','CI_ONLY_CLEANUP','CI_RESUME'}
+                        'CAPTURE_RELEASE_REFUSED','CI_ONLY_CLEANUP','CI_RESUME',
+                        'CRASH_SETUP','CRASH_WAIT','CRASH_STALE_LOCK','CRASH_RECOVERY','CRASH_RESUME'}
                 phase=compose_nsfirewall_signed_ci.PHASE
                 raise CheckFailure('COMPOSE_NSFENCE_CI_'+phase if phase in phases else 'COMPOSE_NSFENCE_CI_UNVERIFIED') from None
         if os.environ.get('UTER_CI_VERIFY_COMPOSE_FENCE') == 'true':
@@ -393,6 +394,8 @@ def main():
                            'COMPOSE_NSFENCE_CI_PRE_CAPTURE_ISOLATE','COMPOSE_NSFENCE_CI_PRE_CAPTURE_RELEASE',
                            'COMPOSE_NSFENCE_CI_CAPTURE_ISOLATE','COMPOSE_NSFENCE_CI_CAPTURE','COMPOSE_NSFENCE_CI_CAPTURE_RELEASE_REFUSED',
                            'COMPOSE_NSFENCE_CI_CI_ONLY_CLEANUP','COMPOSE_NSFENCE_CI_CI_RESUME',
+                           'COMPOSE_NSFENCE_CI_CRASH_SETUP','COMPOSE_NSFENCE_CI_CRASH_WAIT','COMPOSE_NSFENCE_CI_CRASH_STALE_LOCK',
+                           'COMPOSE_NSFENCE_CI_CRASH_RECOVERY','COMPOSE_NSFENCE_CI_CRASH_RESUME',
                            'KUBE_LOOPBACK_CI_UNVERIFIED','KUBE_LOOPBACK_CI_GUARD',
                            'KUBE_LOOPBACK_CI_FIXTURE','KUBE_LOOPBACK_CI_STOP_WRITERS','KUBE_LOOPBACK_CI_HOLD',
                            'KUBE_LOOPBACK_CI_PATCH','KUBE_LOOPBACK_CI_TERMINATION','KUBE_LOOPBACK_CI_POD',

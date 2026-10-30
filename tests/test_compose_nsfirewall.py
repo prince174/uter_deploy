@@ -123,7 +123,7 @@ class NamespaceFenceTests(unittest.TestCase):
             journal.advance(self.home,operation=self.operation,expected=old,next_phase=new)
         adapter=mock.Mock()
         def authorize(record):
-            journal.advance(self.home,operation=self.operation,expected='isolated',next_phase='aborting');return True
+            journal.advance(self.home,operation=self.operation,expected='isolated',next_phase='pre_capture_aborting');return True
         adapter.authorize_release_before_capture.side_effect=authorize
         protocol.release_without_capture(self.home,self.operation,adapter)
         self.assertEqual(journal.read(self.home)['phase'],'redis_released')
@@ -145,7 +145,7 @@ class NamespaceFenceTests(unittest.TestCase):
         record=journal.read(self.home);self.adapter.installed=True
         with mock.patch.object(self.adapter,'verify_fenced',return_value=True):
             self.assertIs(self.adapter.authorize_release_before_capture(record),True)
-        self.assertEqual(journal.read(self.home)['phase'],'aborting')
+        self.assertEqual(journal.read(self.home)['phase'],'pre_capture_aborting')
         with self.assertRaises(journal.FenceJournalError):
             journal.advance(self.home,operation=self.operation,expected='isolated',next_phase='capturing')
 
@@ -163,12 +163,72 @@ class NamespaceFenceTests(unittest.TestCase):
             journal.advance(self.home,operation=self.operation,expected=old,next_phase=new)
         adapter=mock.Mock()
         def authorize(record):
-            journal.advance(self.home,operation=self.operation,expected='isolated',next_phase='aborting');return True
+            journal.advance(self.home,operation=self.operation,expected='isolated',next_phase='pre_capture_aborting');return True
         adapter.authorize_release_before_capture.side_effect=authorize
         adapter.release_before_capture.side_effect=RuntimeError('private')
         with self.assertRaisesRegex(protocol.NamespaceProtocolError,'RELEASE_INCOMPLETE'):
             protocol.release_without_capture(self.home,self.operation,adapter)
-        self.assertEqual(journal.read(self.home)['phase'],'aborting')
+        self.assertEqual(journal.read(self.home)['phase'],'pre_capture_aborting')
+
+    def test_recovery_retries_only_before_capture_and_leaves_writers_stopped(self):
+        for phase in ('prepared','isolating','isolated','pre_capture_aborting'):
+            with self.subTest(phase=phase),tempfile.TemporaryDirectory() as folder:
+                record=journal.create(folder,backend='compose',site='test',resource='a'*64,plan_sha256='b'*64)
+                for old,new in (('prepared','isolating'),('isolating','isolated'),('isolated','pre_capture_aborting')):
+                    if journal.read(folder)['phase']==phase:break
+                    journal.advance(folder,operation=record['operation'],expected=old,next_phase=new)
+                adapter=mock.Mock();adapter.attach_before_capture_recovery.return_value=True
+                adapter.recover_before_capture.return_value=True
+                protocol.recover_before_capture(folder,record['operation'],adapter)
+                self.assertEqual(journal.read(folder)['phase'],'redis_released')
+                adapter.attach_before_capture_recovery.assert_called_once()
+                adapter.recover_before_capture.assert_called_once()
+
+    def test_recovery_fails_closed_at_capture_and_on_uncertain_mutation(self):
+        for old,new in (('prepared','isolating'),('isolating','isolated')):
+            journal.advance(self.home,operation=self.operation,expected=old,next_phase=new)
+        adapter=mock.Mock();adapter.attach_before_capture_recovery.return_value=True
+        adapter.recover_before_capture.side_effect=RuntimeError('unknown')
+        with self.assertRaisesRegex(protocol.NamespaceProtocolError,'RECOVERY_INCOMPLETE'):
+            protocol.recover_before_capture(self.home,self.operation,adapter)
+        self.assertEqual(journal.read(self.home)['phase'],'pre_capture_aborting')
+        adapter.recover_before_capture.side_effect=None;adapter.recover_before_capture.return_value=True
+        protocol.recover_before_capture(self.home,self.operation,adapter)
+        self.assertEqual(journal.read(self.home)['phase'],'redis_released')
+        with tempfile.TemporaryDirectory() as folder:
+            record=journal.create(folder,backend='compose',site='test',resource='a'*64,plan_sha256='b'*64)
+            for old,new in (('prepared','isolating'),('isolating','isolated'),('isolated','capturing')):
+                journal.advance(folder,operation=record['operation'],expected=old,next_phase=new)
+            denied=mock.Mock()
+            with self.assertRaisesRegex(protocol.NamespaceProtocolError,'STATE_UNSUPPORTED'):
+                protocol.recover_before_capture(folder,record['operation'],denied)
+            denied.attach_before_capture_recovery.assert_not_called()
+
+    def test_recovery_removes_only_owned_rule_then_restores_restart_policy(self):
+        plan={'container_id':'a'*64};self.adapter.installed=True
+        calls=[]
+        with mock.patch.object(self.adapter,'_journal'),mock.patch.object(self.adapter,'_plan',return_value=plan), \
+             mock.patch.object(self.adapter,'_inspect_redis',return_value={'restart':'no'}), \
+             mock.patch.object(self.adapter,'_signed'),mock.patch.object(self.adapter,'_live_namespace'), \
+             mock.patch.object(self.adapter,'_check_firewall',side_effect=lambda *,installed:calls.append(('verify',installed))), \
+             mock.patch.object(self.adapter,'_cmd',side_effect=lambda args:calls.append(('firewall',args))), \
+             mock.patch.object(self.adapter,'_run',side_effect=lambda *args:calls.append(('docker',args))):
+            self.assertTrue(self.adapter.recover_before_capture(self.record))
+        self.assertEqual(calls[0],('verify',True))
+        self.assertEqual(calls[1],('firewall',['-D','INPUT',*self.adapter._rule()]))
+        self.assertEqual(calls[2],('verify',False))
+        self.assertEqual(calls[3],('docker',('update','--restart=unless-stopped',plan['container_id'])))
+        self.assertEqual(calls[4],('verify',False))
+
+    def test_recovery_does_not_remove_rule_if_restart_policy_changed(self):
+        plan={'container_id':'a'*64};self.adapter.installed=True
+        with mock.patch.object(self.adapter,'_journal'),mock.patch.object(self.adapter,'_plan',return_value=plan), \
+             mock.patch.object(self.adapter,'_inspect_redis',return_value={'restart':'unless-stopped'}), \
+             mock.patch.object(self.adapter,'_signed'),mock.patch.object(self.adapter,'_live_namespace'), \
+             mock.patch.object(self.adapter,'_cmd') as command:
+            with self.assertRaisesRegex(ns.NamespaceFenceError,'RESTART_CHANGED'):
+                self.adapter.recover_before_capture(self.record)
+            command.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()
