@@ -24,9 +24,11 @@ from scripts import (compose_fence_adapter as fence, compose_fence_protocol as p
 IMAGE = helpers.REDIS
 LABEL = helpers.LABEL
 PASSWORD = common.OLD
+PHASE = 'guard'
 
 
 def main():
+    global PHASE
     common.guard(os.environ)
     if common.cmd(['docker','context','show']) != 'default': raise RuntimeError('nondefault context')
     details = json.loads(common.cmd(['docker','context','inspect','default']))
@@ -39,6 +41,7 @@ def main():
     net = None; volume_created = False; containers = []; client = None; uncertain = False
     try:
         with tempfile.TemporaryDirectory(prefix='uter-adapter-synthetic-') as tmp:
+            PHASE='fixture-create'
             root=Path(tmp); root.chmod(0o755)
             home=root/'home'; home.mkdir(mode=0o700)
             password=root/'password';password.write_text(PASSWORD);password.chmod(0o644)
@@ -98,6 +101,7 @@ def main():
                   'network_options':{},'endpoint_driver_options':{}}
             key=os.urandom(32)
             with uterctl.locked(home):
+                PHASE='journal-create'
                 digest=plans.create(home,plan,key)
                 record=journal.create(home,backend='compose',site=site,resource=redis,
                                       plan_sha256=digest,operation=operation)
@@ -107,6 +111,7 @@ def main():
                         self._lock()
                         if supplied != plan: raise RuntimeError('fixture plan changed')
                 adapter=FixtureAdapter(home,home/'unused',home/'unused',key)
+                PHASE='reject-shared-namespace'
                 # A container sharing the Redis netns must prevent any mutation.
                 peer=start('--network','container:'+redis,common.PYTHON,'python','-c','import time;time.sleep(600)')
                 try: adapter._peers(plan)
@@ -114,10 +119,12 @@ def main():
                     if str(error) != 'COMPOSE_FENCE_SHARED_NAMESPACE': raise
                 else: raise RuntimeError('shared network namespace was accepted')
                 helpers.cleanup('container',peer,owner);containers.remove(peer)
+                PHASE='active-client'
                 client=subprocess.Popen(['sudo','-n','-u','nobody','python3','-u','-c',helpers.CLIENT,endpoint['IPAddress']],
                     stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
                 sel=selectors.DefaultSelector();sel.register(client.stdout,selectors.EVENT_READ)
                 if not sel.select(15) or client.stdout.readline().strip()!='READY': raise RuntimeError('fixture client did not connect')
+                PHASE='isolate'
                 protocol.isolate(home,record['operation'],adapter)
                 if journal.read(home)['phase']!='isolated' or adapter.verify_isolated(record) is not True:
                     raise RuntimeError('synthetic isolation was not confirmed')
@@ -126,6 +133,7 @@ def main():
                     raise RuntimeError('synthetic pre-fence write changed')
                 if adapter.verify_old_restoration_safe(record) is not False:
                     raise RuntimeError('unsupported restoration was accepted')
+                PHASE='failed-capture'
                 # Inject a failed snapshot after isolation. The journal must
                 # retain uncertainty and no production restore is authorized.
                 def broken_capture(): raise RuntimeError('synthetic snapshot error')
@@ -135,6 +143,7 @@ def main():
                 else: raise RuntimeError('synthetic capture failure was accepted')
                 if journal.read(home)['phase'] != 'capturing' or adapter.verify_old_restoration_safe(record) is not False:
                     raise RuntimeError('synthetic failed capture unexpectedly allowed recovery')
+                PHASE='competing-dynamic-ip'
                 # Synthetic-only experiment: occupy Redis' old dynamic IP with
                 # another labelled container before manually reattaching. This
                 # does NOT call adapter recovery or authorize production use.
@@ -150,6 +159,7 @@ def main():
                     raise RuntimeError('address conflict was incorrectly accepted')
                 if diag._redis_inspect(redis)['networks']:
                     raise RuntimeError('failed synthetic connection unexpectedly changed Redis network')
+                PHASE='synthetic-conflict-reconnect'
                 # Reconnect without --ip in this synthetic test only and verify
                 # that Docker allocated a DIFFERENT address while it is occupied.
                 network_args=['network','connect']
@@ -161,6 +171,7 @@ def main():
                 if helpers.docker('exec',redis,'sh','-ec',
                     'export REDISCLI_AUTH="$(cat /run/secrets/redis_password)"; redis-cli --raw GET synthetic:old')!='1':
                     raise RuntimeError('synthetic data changed after conflicting reconnect')
+                PHASE='synthetic-endpoint-recreate'
                 # Remove the competitor, then try to restore the original
                 # endpoint. The outcome is reported as a fixture observation,
                 # not a guarantee for any other Docker daemon or network.
@@ -200,5 +211,8 @@ def main():
 
 if __name__ == '__main__':
     try: main()
-    except (RuntimeError, ValueError, OSError, KeyError, subprocess.TimeoutExpired) as error:
-        raise SystemExit('Synthetic Compose adapter test failed: '+type(error).__name__)
+    except RuntimeError as error:
+        # RuntimeError messages here are fixed synthetic categories only.
+        raise SystemExit('Synthetic Compose adapter test failed at '+PHASE+': '+str(error))
+    except (ValueError, OSError, KeyError, subprocess.TimeoutExpired) as error:
+        raise SystemExit('Synthetic Compose adapter test failed at '+PHASE+': '+type(error).__name__)
