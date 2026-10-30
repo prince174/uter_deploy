@@ -206,6 +206,10 @@ def audit_pod(kube, site, manifest, guardrail_pod):
 
 
 def resume_writers(home, cfg, site, current):
+    # Do not restart writers while a Redis isolation operation is unresolved.
+    # The caller must hold the same controller lock as fence operations.
+    if os.path.lexists(Path(home)/'redis-fence-operation.json'):
+        raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
     from scripts import install as installer
     cfg=dict(cfg,images=current['images'])
     cmd,env=installer.commands(home,cfg)

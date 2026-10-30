@@ -32,6 +32,33 @@ class SnapshotTests(unittest.TestCase):
         if 'ps' in args:return b'container-id\n'
         return b''
 
+    def test_resume_refuses_any_fence_marker_before_touching_either_backend(self):
+        marker=self.home/'redis-fence-operation.json'
+        for backend in ('compose','helm'):
+            for kind in ('file','dangling_symlink'):
+                with self.subTest(backend=backend,kind=kind):
+                    if kind=='file':marker.write_text('invalid',encoding='utf-8')
+                    else:marker.symlink_to(self.home/'missing')
+                    with patch.object(backup_snapshot,'checked') as checked:
+                        with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                            backup_snapshot.resume_writers(self.home,self.cfg,dict(self.site,backend=backend),self.current)
+                        checked.assert_not_called()
+                    marker.unlink()
+
+    def test_snapshot_failure_does_not_resume_if_fence_appears(self):
+        marker=self.home/'redis-fence-operation.json'
+        def fail_with_marker(*args,**kwargs):
+            marker.write_text('incomplete',encoding='utf-8')
+            raise RuntimeError('snapshot interrupted')
+        with patch.object(backup_snapshot.adopt_installation,'verify_live'), \
+             patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as checked, \
+             patch.object(backup_snapshot,'process_component',side_effect=fail_with_marker):
+            with self.assertRaisesRegex(ValueError,'^REDIS_FENCE_REQUIRES_INSPECTION$'):
+                backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key)
+        self.assertTrue((self.home/'backup-operation.json').exists())
+        self.assertTrue(marker.exists())
+        self.assertFalse(any('up' in call.args[0] for call in checked.call_args_list))
+
     def fake_component(self,writer,label,command,**kwargs):
         if label=='redis': data=b'REDIS-snapshot'
         else:
