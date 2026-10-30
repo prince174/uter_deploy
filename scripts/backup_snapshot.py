@@ -15,6 +15,10 @@ import time
 
 from scripts import adopt_installation, backup_crypto, backup_store, restore_backup
 
+RDB_MAX_BYTES = 100 * 1024 * 1024
+RDB_STREAM_TIMEOUT = 300
+RDB_EXIT_TIMEOUT = 120
+
 
 class PrefixStream:
     def __init__(self, stream, prefix): self.stream=stream; self.prefix=prefix
@@ -67,23 +71,40 @@ def verify_encrypted_tar(writer, label):
 
 
 def verify_redis_snapshot(writer, command, *, env=None):
-    """Run redis-check-rdb in the existing Redis container's temporary filesystem."""
+    """Stream the encrypted snapshot through redis-check-rdb without a plaintext file."""
     metadata=writer.manifest['files']['redis']
-    if metadata['plaintext_bytes'] > 100*1024*1024:
-        raise ValueError('Redis snapshot exceeds the safe validation size for the 128 MiB tmpfs')
+    if metadata['plaintext_bytes'] > RDB_MAX_BYTES:
+        raise ValueError('Redis snapshot exceeds the 100 MiB validation limit')
     process=subprocess.Popen([str(x) for x in command],env=env,stdin=subprocess.PIPE,
                              stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-    timer=threading.Timer(300,lambda: process.kill() if process.poll() is None else None)
+    def stop_checker():
+        try:
+            if process.poll() is None: process.kill()
+        except ProcessLookupError:
+            pass
+    timer=threading.Timer(RDB_STREAM_TIMEOUT,stop_checker)
     timer.start()
     try:
         backup_crypto.decrypt_verify(writer.path/'redis.enc',writer.key,
             backup_store.aad(writer.manifest['id'],'redis'),metadata,process.stdin)
         process.stdin.close()
-        if process.wait(timeout=120) != 0: raise ValueError('Redis snapshot failed structural validation')
+        if process.wait(timeout=RDB_EXIT_TIMEOUT) != 0: raise ValueError('Redis snapshot failed structural validation')
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError('Redis snapshot validation failed or timed out') from None
     finally:
         timer.cancel()
-        if process.poll() is None: process.kill();process.wait()
-        if not process.stdin.closed: process.stdin.close()
+        # Wait for an already-running timeout callback before reaping the child,
+        # so it cannot signal a later process after PID reuse.
+        timer.join()
+        try:
+            stop_checker()
+            try: process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError('Redis snapshot checker could not be stopped') from None
+        finally:
+            if not process.stdin.closed:
+                try: process.stdin.close()
+                except OSError: pass
 
 
 def archive_runtime(home, writer):
@@ -236,12 +257,11 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
             process_component(writer,'audit',kube+['exec',helper,'-c','reader','--','python','-c',code])
         verify_encrypted_tar(writer,'runtime')
         verify_encrypted_tar(writer,'audit')
-        check_script='p=$(mktemp /tmp/uter-rdb.XXXXXX); trap \'rm -f "$p"\' EXIT; cat > "$p"; redis-check-rdb "$p" >/dev/null'
         if site['backend']=='compose':
-            check=cmd+['exec','-T','redis','sh','-ec',check_script]
+            check=cmd+['exec','-T','redis','redis-check-rdb','/dev/stdin']
             verify_redis_snapshot(writer,check,env=env)
         else:
-            check=kube+['exec','-i','deployment/'+site['name']+'-redis','-c','redis','--','sh','-ec',check_script]
+            check=kube+['exec','-i','deployment/'+site['name']+'-redis','-c','redis','--','redis-check-rdb','/dev/stdin']
             verify_redis_snapshot(writer,check)
         manifest=writer.finish()
         backup_store.verify_set(destination,key,home=home,site=site,version=current['version'])

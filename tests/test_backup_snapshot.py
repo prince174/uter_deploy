@@ -42,8 +42,9 @@ class SnapshotTests(unittest.TestCase):
         writer.put(label,io.BytesIO(data))
 
     def test_snapshot_is_encrypted_and_restarts_on_success(self):
-        with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as cmd, patch.object(backup_snapshot,'process_component',side_effect=self.fake_component), patch.object(backup_snapshot,'verify_redis_snapshot'):
+        with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=self.fake_checked) as cmd, patch.object(backup_snapshot,'process_component',side_effect=self.fake_component), patch.object(backup_snapshot,'verify_redis_snapshot') as check:
             result=backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key)
+        self.assertEqual(check.call_args.args[1][-5:], ['exec','-T','redis','redis-check-rdb','/dev/stdin'])
         self.assertEqual(result['version'],'1.0.0')
         store=backup_store.verify_set(self.root/'backup',self.key,home=self.home,site=self.site,version='1.0.0')
         self.assertEqual(set(store['files']),{'runtime','redis','audit'})
@@ -102,8 +103,9 @@ class SnapshotTests(unittest.TestCase):
         keyfile=self.root/'backup-key';keyfile.write_bytes(self.key);keyfile.chmod(0o600)
         with patch.object(backup_snapshot.adopt_installation,'verify_live'), patch.object(backup_snapshot,'checked',side_effect=checked), \
              patch.object(backup_snapshot,'wait_no_pods'), patch.object(backup_snapshot,'audit_pod',return_value='audit-reader'), \
-             patch.object(backup_snapshot,'process_component',side_effect=self.fake_component), patch.object(backup_snapshot,'verify_redis_snapshot'):
+             patch.object(backup_snapshot,'process_component',side_effect=self.fake_component), patch.object(backup_snapshot,'verify_redis_snapshot') as check:
             backup_snapshot.capture(self.home,self.cfg,self.site,self.current,self.root/'backup',self.key)
+        self.assertEqual(check.call_args.args[1][-5:], ['-c','redis','--','redis-check-rdb','/dev/stdin'])
         self.assertNotIn(b'UPSTREAM_OPENAI_MAX_TOKENS',(self.root/'backup/kubernetes.enc').read_bytes())
         stage=self.root/'staged'; restore_backup.prepare_staging(self.root/'backup',keyfile,stage)
         saved=json.loads((stage/'kubernetes.json').read_text())['items']
