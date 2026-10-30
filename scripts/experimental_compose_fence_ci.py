@@ -20,9 +20,19 @@ BLOCKED = r'''import errno,socket,sys
 s=socket.socket();s.settimeout(3)
 try: code=s.connect_ex((sys.argv[1],6379))
 except TimeoutError: code=errno.ETIMEDOUT
-if code not in (errno.ECONNREFUSED,errno.ENETUNREACH,errno.EHOSTUNREACH,errno.ETIMEDOUT):
- raise SystemExit(1)
-print("BLOCKED")'''
+except OSError as error: code=error.errno if isinstance(error.errno,int) else -1
+if code in (errno.ECONNREFUSED,errno.ENETUNREACH,errno.EHOSTUNREACH,errno.ETIMEDOUT):
+ print("BLOCKED")
+else:
+ print("UNEXPECTED_ERRNO_%s" % code)'''
+
+def expect_blocked(address):
+    result=common.cmd(['sudo','-n','-u','nobody','python3','-c',BLOCKED,address])
+    if result=='BLOCKED': return
+    if re.fullmatch(r'UNEXPECTED_ERRNO_-?[0-9]{1,5}',result):
+        raise RuntimeError('detached TCP probe '+result)
+    raise RuntimeError('detached TCP probe unexpected response')
+
 PASSWORD = common.OLD
 CLIENT = common.OLD_CLIENT.replace("except (OSError,ConnectionError): pass", "except TimeoutError: raise\nexcept (OSError,ConnectionError): pass")
 
@@ -118,7 +128,7 @@ def main():
         assert_detached(inspect(old))
         if docker('exec',old,'redis-cli','-a',PASSWORD,'GET','synthetic:old')!='1': raise RuntimeError('fenced data mismatch')
         print('Synthetic phase: verify detached address inaccessible',flush=True)
-        if common.cmd(['sudo','-n','-u','nobody','python3','-c',BLOCKED,oldip])!='BLOCKED': raise RuntimeError('old network reachable')
+        expect_blocked(oldip)
         # Hosted VM only: restarting dockerd exercises uncertain/crash state.
         print('Synthetic phase: restart isolated Docker daemon',flush=True)
         common.cmd(['sudo','-n','systemctl','restart','docker'],timeout=120)
@@ -144,7 +154,7 @@ def main():
             except RuntimeError: pass
             time.sleep(.1)
         else: raise RuntimeError('AOF content not preserved on detached replacement')
-        if common.cmd(['sudo','-n','-u','nobody','python3','-c',BLOCKED,oldip])!='BLOCKED': raise RuntimeError('replacement was reachable externally')
+        expect_blocked(oldip)
         docker('stop','-t','20',replacement,timeout=45)
         cleanup('container',replacement,owner);containers.remove(replacement)
         # Recovery here is synthetic: reconnect old container and verify preserved state.

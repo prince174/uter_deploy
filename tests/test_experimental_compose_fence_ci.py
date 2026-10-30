@@ -40,7 +40,15 @@ class ComposeFenceProbeTests(unittest.TestCase):
                 if accepted:
                     exec(probe.BLOCKED, {})
                 else:
-                    with self.assertRaises(SystemExit): exec(probe.BLOCKED, {})
+                    exec(probe.BLOCKED, {})
+                    self.assertTrue(__import__('builtins').print.call_args.args[0].startswith('UNEXPECTED_ERRNO_'))
+
+    def test_expect_blocked_rejects_unexpected_errno_and_response(self):
+        for value in ('UNEXPECTED_ERRNO_0', 'UNEXPECTED_ERRNO_13', 'unexpected'):
+            with self.subTest(value=value), mock.patch.object(probe.common, 'cmd', return_value=value):
+                with self.assertRaises(RuntimeError): probe.expect_blocked('192.0.2.1')
+        with mock.patch.object(probe.common, 'cmd', return_value='BLOCKED'):
+            probe.expect_blocked('192.0.2.1')
 
     def test_detached_probe_handles_connect_timeout(self):
         socket_instance = mock.Mock()
