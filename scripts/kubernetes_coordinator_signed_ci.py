@@ -91,7 +91,8 @@ def verify(home,product,publisher,manifest):
             except subprocess.TimeoutExpired:
                 child.kill();child.communicate();raise ValueError from None
             if child.returncode!=-9 or out.strip()!=b'CI_ISOLATION_STAGE_DONE':
-                stages={b'PREFLIGHT',b'REDIS_PLAN',b'START'}
+                stages={b'EXECUTOR_AUTH',b'PROFILE_AUTH',b'KUBECTL_OPEN',b'CONFIG_SEAL',b'PINNED_PREFLIGHT',
+                        b'BOUND_PREFLIGHT',b'REDIS_PLAN',b'START'}
                 found=re.findall(rb'(?m)^KUBE_COORDINATOR_CI_([A-Z_]+)\r?$',err)
                 if found and found[-1] in stages:PHASE='CHILD_'+found[-1].decode('ascii')
                 raise ValueError

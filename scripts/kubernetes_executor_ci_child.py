@@ -10,7 +10,10 @@ import uterctl
 from scripts import (kubernetes_fence_coordinator as coordinator,
                      kubernetes_fence_finalizer as finalizer, kubernetes_fence_recovery_session as recovery,
                      kubernetes_fence_start as start, kubernetes_backup_coordinator as backup,
-                     kubernetes_loopback_snapshot as redis, redis_fence_journal as journal)
+                     kubernetes_loopback_snapshot as redis, redis_fence_journal as journal,
+                     backup_installation, kubernetes_fence_profile_store as profile_store,
+                     kubernetes_fence_pin as pin, kubernetes_pinned_preflight as pinned,
+                     kubernetes_sealed_config as sealed, kubernetes_trusted_kubectl as binary)
 
 
 def main():
@@ -29,7 +32,23 @@ def main():
         home=Path(home);bundle=Path(bundle);publisher=Path(publisher)
         with uterctl.locked(home):
             if mode=='start':
-                stage='PREFLIGHT'
+                stage='EXECUTOR_AUTH'
+                coordinator._executor_identity(ROOT,exec_key)
+                stage='PROFILE_AUTH'
+                key_bytes=backup_installation.safe_file(key,private=True,limit=32)
+                record,_=profile_store.read(profile,key_bytes)
+                raw=backup_installation.safe_file(config,private=True,limit=pin.MAX_CONFIG)
+                stage='KUBECTL_OPEN'
+                binary_fd=binary.open_binary(kubectl,record['kubectl_sha256'])
+                try:
+                    stage='CONFIG_SEAL'
+                    with sealed.sealed(raw,record['api']):pass
+                    stage='PINNED_PREFLIGHT'
+                    with pinned.checked_session(home,bundle,publisher,raw,record['api'],binary_fd=binary_fd,
+                                                binary_sha256=record['kubectl_sha256']) as checked:
+                        if checked.reverify().get('safe_to_update') is not False:raise ValueError
+                finally:os.close(binary_fd)
+                stage='BOUND_PREFLIGHT'
                 with coordinator.checked_session(home,bundle,publisher,config,profile,key,
                         executor_bundle=ROOT,executor_key=exec_key,kubectl_path=kubectl) as session:
                     stage='REDIS_PLAN'
