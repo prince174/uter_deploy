@@ -151,6 +151,14 @@ class ChangedImageUpgradeTests(unittest.TestCase):
             with self.assertRaisesRegex(ci.CheckFailure, '^PRODUCT_IMAGE_DIGEST_UNCHANGED$'):
                 ci.require_new_images(old, same)
 
+    def test_recovery_diagnostics_never_expose_untrusted_error_text(self):
+        self.assertEqual(ci.recovery_failure_category(ValueError('Recovery test project already exists')),
+                         'CURRENT_RECOVERY_PROJECT_EXISTS')
+        self.assertEqual(ci.recovery_failure_category(ValueError('Signed recovery failed; category=unclassified; phase=preparing')),
+                         'CURRENT_RECOVERY_UNCLASSIFIED_PREPARING')
+        self.assertEqual(ci.recovery_failure_category(ValueError('secret-canary')),
+                         'CURRENT_BACKUP_RECOVERY_FAILED')
+
     def test_rejects_missing_and_malformed_digest(self):
         for malformed in ({}, {'guardrail': 'ghcr.io/example:g', 'agent': 42},
                           {'guardrail':'@sha256:'+'f'*64, 'agent':'x@sha256:'+'f'*64}):

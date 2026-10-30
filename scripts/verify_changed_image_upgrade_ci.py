@@ -29,6 +29,7 @@ from scripts import session_identity_upgrade_ci as sessions
 from scripts import wizard_real_llm_ci as runner
 from scripts import wizard_ci as common
 from scripts import release_upgrade_preflight_ci as release
+from scripts import signed_recovery_diagnostics as diagnostics
 
 VERSION = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?\Z')
 DIGEST = re.compile(r'sha256:[0-9a-f]{64}\Z')
@@ -251,8 +252,8 @@ def restore_post_update(root, backend, expected_audit, environ):
             recovery.test(home, backup, key, publisher, expected_audit, recovery_bundle=current)
         except sessions.SessionCheckFailure:
             raise
-        except Exception:
-            raise CheckFailure('CURRENT_BACKUP_RECOVERY_FAILED') from None
+        except Exception as error:
+            raise CheckFailure(recovery_failure_category(error)) from None
         try:
             state = json.loads((stage/'work'/('restored-'+backend+'-api')/'state.json').read_text())
         except (OSError, ValueError, UnicodeError):
@@ -261,6 +262,36 @@ def restore_post_update(root, backend, expected_audit, environ):
             raise CheckFailure('RESTORED_VERSION_INVALID')
     finally:
         recovery.ROOT = previous_root
+
+
+def recovery_failure_category(error):
+    """Select fixed categories only, never echo arbitrary exceptions."""
+    literal = {
+        'Disposable GitHub-hosted Linux runner required':'RUNNER_INVALID',
+        'Recovery test target already exists':'TARGET_EXISTS',
+        'Recovery test project already exists':'PROJECT_EXISTS',
+        'Recovery test namespace already exists':'NAMESPACE_EXISTS',
+        'Recovery returned unexpected project':'PROJECT_IDENTITY',
+        'Recovery returned unexpected namespace':'NAMESPACE_IDENTITY',
+        'Restored audit chain does not match backup':'AUDIT_MISMATCH',
+        'Restored Kubernetes audit chain does not match backup':'AUDIT_MISMATCH',
+        'Recovery smoke command still refers to original installation':'SMOKE_SOURCE_PATH',
+        'Refusing to clean an unrelated recovery volume':'VOLUME_CLEANUP_OWNERSHIP',
+        'Refusing to clean an unrelated namespace':'NAMESPACE_CLEANUP_OWNERSHIP',
+    }
+    if type(error) is ValueError:
+        text = str(error)
+        if text in literal:
+            return 'CURRENT_RECOVERY_'+literal[text]
+        match = re.fullmatch(r'Signed recovery failed; category=([a-z-]+); phase=([a-z-]+)', text)
+        if match:
+            category, phase = match.groups()
+            allowed = {label for _,label in diagnostics.CATEGORIES} | {'unclassified'}
+            if category in allowed and phase in diagnostics.PHASES | {'unknown','unavailable'}:
+                return 'CURRENT_RECOVERY_'+category.replace('-','_').upper()+'_'+phase.replace('-','_').upper()
+    safe_types = {'FileNotFoundError','PermissionError','KeyError','TypeError','JSONDecodeError'}
+    name = type(error).__name__
+    return 'CURRENT_RECOVERY_'+name.upper() if name in safe_types else 'CURRENT_BACKUP_RECOVERY_FAILED'
 
 
 def run_staged(work_root):
