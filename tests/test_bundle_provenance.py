@@ -81,7 +81,7 @@ class BundleProvenanceTests(unittest.TestCase):
                      'experimental_operation_lock.py','managed_operation_lock.py',
                      'maintenance_receipt.py','maintenance_protocol.py','maintenance_evidence.py','maintenance_transport.py',
                      'kubernetes_sealed_config.py','kubernetes_trusted_kubectl.py','kubernetes_fence_pin.py',
-                     'kubernetes_redis_identity.py'):
+                     'kubernetes_redis_identity.py','compose_maintenance_check.py'):
             with self.subTest(name=name):
                 path=result/'scripts'/name
                 self.assertEqual(path.read_bytes(),(uterctl.ROOT/'scripts'/name).read_bytes())

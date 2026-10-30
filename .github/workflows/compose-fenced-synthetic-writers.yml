@@ -1,4 +1,4 @@
-name: Exercise fenced update with synthetic exit-zero writer images
+name: Historical - fenced update synthetic exit-zero writers (blocked)
 on:
   workflow_dispatch:
     inputs:
@@ -35,6 +35,10 @@ jobs:
       OLD_VERSION: ${{ inputs.old_version }}
       NEW_VERSION: ${{ inputs.new_version }}
     steps:
+      - name: Stop historical test while unsafe operation is blocked
+        run: |
+          echo '::error::Historical unsafe fenced update is disabled; verified maintenance, ingress and recovery are not yet integrated.'
+          exit 1
       - name: Validate explicit release selection
         shell: bash
         run: |

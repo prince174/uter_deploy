@@ -36,33 +36,15 @@ class FencedUpdateCLITests(unittest.TestCase):
                               '--backup-key',str(self.key),'--backup-dir',str(self.destination)])
         apply.assert_not_called()
 
-    def test_pipeline_order_under_lock_and_no_ordinary_deploy(self):
-        events=[]
-        def record(name,result=None):
-            def run(*args,**kwargs):
-                self.assertEqual((self.fx.home/'operation.lock').read_text(),str(os.getpid()))
-                events.append(name);return result
-            return run
-        with patch.object(update,'preflight',side_effect=record('preflight',(self.old,self.new))), \
-             patch.object(update,'stage_target',side_effect=record('stage',self.target)), \
-             patch.object(update,'pull_writers',side_effect=record('pull')), \
-             patch.object(update,'capture_for_update',side_effect=record('capture')), \
-             patch.object(update,'release_for_update',side_effect=record('release')), \
-             patch.object(update,'start_target',side_effect=record('start')), \
-             patch.object(update,'finalize_target',side_effect=record('finalize',self.new)), \
-             patch.object(uterctl,'deploy') as ordinary,contextlib.redirect_stdout(io.StringIO()):
-            uterctl.apply_compose_fenced_update(self.fx.home,self.target,self.fx.pub,self.fx.pub,self.key,self.destination)
-        self.assertEqual(events,['preflight','stage','preflight','pull','capture','release','start','finalize'])
-        ordinary.assert_not_called();self.assertFalse((self.fx.home/'operation.lock').exists())
-
-    def test_capture_failure_does_not_release_or_start(self):
-        with patch.object(update,'preflight',return_value=(self.old,self.new)), \
-             patch.object(update,'stage_target',return_value=self.target), \
-             patch.object(update,'capture_for_update',side_effect=ValueError('refused')), \
-             patch.object(update,'release_for_update') as release,patch.object(update,'start_target') as start:
-            with self.assertRaisesRegex(ValueError,'refused'):
-                uterctl.apply_compose_fenced_update(self.fx.home,self.target,self.fx.pub,self.fx.pub,self.key,self.destination,offline=True)
-        release.assert_not_called();start.assert_not_called()
+    def test_new_fenced_update_blocked_before_pull_or_mutation(self):
+        with patch.object(update,'preflight') as preflight, \
+             patch.object(update,'pull_writers') as pull, \
+             patch.object(update,'capture_for_update') as capture, \
+             patch.object(uterctl,'deploy') as deploy:
+            with self.assertRaisesRegex(ValueError,'^COMPOSE_MAINTENANCE_ISOLATION_UNAVAILABLE$'):
+                uterctl.apply_compose_fenced_update(self.fx.home,self.target,self.fx.pub,self.fx.pub,self.key,self.destination)
+        preflight.assert_not_called();pull.assert_not_called();capture.assert_not_called();deploy.assert_not_called()
+        self.assertFalse((self.fx.home/'operation.lock').exists())
 
     def test_finish_refuses_unknown_target_start_without_mutating(self):
         self.destination.mkdir(mode=0o700)

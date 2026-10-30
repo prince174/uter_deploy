@@ -252,6 +252,7 @@ _FENCE_EXECUTOR_MODULES = (
     'compose_fence_finalize', 'compose_fenced_update','experimental_operation_lock','managed_operation_lock',
     'maintenance_receipt','maintenance_protocol','maintenance_evidence','maintenance_transport',
     'kubernetes_sealed_config','kubernetes_trusted_kubectl','kubernetes_fence_pin','kubernetes_redis_identity',
+    'compose_maintenance_check',
 )
 
 
@@ -426,14 +427,8 @@ def recover_compose_redis_after_snapshot(home,bundle,publisher_key,executor_key,
 
 
 def start_compose_fence(home,bundle,publisher_key,backup_key_path):
-    """Start the signed local Compose fence; ambiguous failures stay stopped."""
-    from scripts import compose_fence_start
-    home,_,secret=_fence_secret_inputs(home,backup_key_path)
-    with fenced_locked(home):
-        operation=compose_fence_start.start(home,bundle,publisher_key,secret)
-    print('Compose Redis fence '+operation+' established; writers stopped. '
-          'Experimental profile trusts host root, Docker daemon and administrators; '
-          'no update or session migration is authorized.')
+    """Reject new operations until maintenance and ingress fencing are proven."""
+    raise ValueError('COMPOSE_MAINTENANCE_ISOLATION_UNAVAILABLE')
 
 
 def resume_compose_writers_after_fence(home,bundle,publisher_key,executor_key,backup_key_path,destination):
@@ -485,36 +480,8 @@ def finalize_compose_fence(home,bundle,publisher_key,executor_key,backup_key_pat
 
 
 def apply_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_key_path,destination,*,offline=False):
-    """One explicitly scoped same-epoch Compose update under the PID lock."""
-    from scripts import backup_installation, compose_fenced_update, redis_fence_journal
-    home,key_path,secret=_fence_secret_inputs(home,backup_key_path)
-    if destination is None or not Path(destination).is_absolute() or '..' in Path(destination).parts:
-        raise ValueError('FENCED_UPDATE_DESTINATION_INVALID')
-    destination=Path(destination)
-    try:parent=backup_installation.private_directory(destination.parent)
-    except backup_installation.BackupError:raise ValueError('FENCED_UPDATE_DESTINATION_INVALID') from None
-    destination=parent/destination.name
-    if (destination==home or destination.is_relative_to(home) or key_path==destination
-            or key_path.is_relative_to(destination) or os.path.lexists(destination)):
-        raise ValueError('FENCED_UPDATE_DESTINATION_INVALID')
-    with fenced_locked(home):
-        if redis_fence_journal.blocks_mutation(home):raise ValueError('REDIS_FENCE_REQUIRES_INSPECTION')
-        state=backup_installation.safe_json(home/'state.json')
-        site=site_config(home)
-        current=state.get('current')
-        if not isinstance(current,dict) or not VERSION.fullmatch(current.get('version','')):
-            raise ValueError('FENCED_UPDATE_CURRENT_INVALID')
-        source=home/'releases'/current['version']
-        old,new=compose_fenced_update.preflight(home,source,bundle,publisher_key,state,site)
-        staged=compose_fenced_update.stage_target(home,bundle,publisher_key,new)
-        compose_fenced_update.preflight(home,source,staged,publisher_key,state,site)
-        if not offline:compose_fenced_update.pull_writers(home,staged,new,site)
-        compose_fenced_update.capture_for_update(home,source,staged,publisher_key,executor_key,secret,destination)
-        compose_fenced_update.release_for_update(home,source,staged,publisher_key,executor_key,secret,destination)
-        compose_fenced_update.start_target(home,source,staged,publisher_key,executor_key,secret,destination)
-        result=compose_fenced_update.finalize_target(home,source,staged,publisher_key,executor_key,secret,destination)
-    print('Compose fenced update to '+result['version']+' completed; encrypted backup retained. '
-          'Traffic may have started before health checks; never restore an older backup over new data.')
+    """Reject new updates until maintenance and ingress fencing are proven."""
+    raise ValueError('COMPOSE_MAINTENANCE_ISOLATION_UNAVAILABLE')
 
 
 def finish_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_key_path,destination):
@@ -552,7 +519,7 @@ def finish_compose_fenced_update(home,bundle,publisher_key,executor_key,backup_k
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize", "fence-finish-update"])
+    parser.add_argument("command", choices=["verify", "check", "apply", "resume", "rollback", "status", "fence-status", "fence-recover-redis", "fence-backup-redis", "fence-start-redis", "fence-recover-snapshot-redis", "fence-resume-writers", "fence-finalize", "fence-finish-update", "maintenance-check-compose"])
     parser.add_argument("--home", type=Path, default=Path("runtime-installation"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--key", type=Path, help="Pre-trusted public key, distributed independently")
@@ -564,6 +531,18 @@ def main(argv=None):
     parser.add_argument("--fenced-update", action="store_true", help="Experimental same-epoch Compose fenced update")
     args = parser.parse_args(argv)
     home = args.home.resolve()
+    if args.command == 'maintenance-check-compose':
+        if args.key is None or args.bundle is None or args.executor_key is None:
+            raise ValueError('MAINTENANCE_CHECK_SIGNED_BUNDLE_REQUIRED')
+        if any(not path.is_absolute() for path in (args.home, args.bundle, args.key, args.executor_key)):
+            raise ValueError('MAINTENANCE_CHECK_PATH_NOT_ABSOLUTE')
+        _load_signed_fence_executor(args.executor_key)
+        from scripts import compose_maintenance_check
+        checked_home, _, secret = _fence_secret_inputs(args.home, args.backup_key)
+        with fenced_locked(checked_home):
+            result = compose_maintenance_check.check(checked_home, args.bundle, args.key, secret)
+        print(json.dumps(result, sort_keys=True))
+        return
     if args.fenced_update:
         if args.command!='apply' or args.key is None or args.bundle is None or args.executor_key is None:
             raise ValueError('FENCED_UPDATE_ARGUMENTS_REQUIRED')

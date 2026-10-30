@@ -215,21 +215,22 @@ class FenceStartCLITests(unittest.TestCase):
         self.fx.home.chmod(0o700);self.key=self.fx.prepare_adopted();self.bundle=self.fx.home/'releases'/'1.0.0'
         guard=patch.object(uterctl,'_load_signed_fence_executor');guard.start();self.addCleanup(guard.stop)
 
-    def test_cli_holds_lock_while_calling_start_and_never_deploys(self):
-        def fake(home,bundle,publisher,key):
-            self.assertEqual((home/'operation.lock').read_text(),str(os.getpid()))
-            self.assertEqual(key,b'k'*32);return '1'*32
-        out=io.StringIO()
-        with patch.object(start,'start',side_effect=fake),patch.object(uterctl,'deploy') as deploy,contextlib.redirect_stdout(out):
-            uterctl.main(['fence-start-redis','--home',str(self.fx.home),'--bundle',str(self.bundle),
-                          '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key)])
-        deploy.assert_not_called();self.assertIn('no update or session migration is authorized',out.getvalue())
+    def test_cli_blocks_new_start_before_docker_or_post(self):
+        from scripts import maintenance_transport
+        with patch.object(start,'start') as start_operation, \
+             patch.object(start.diagnostic,'_docker') as docker, \
+             patch.object(maintenance_transport,'request') as request, \
+             patch.object(uterctl,'deploy') as deploy:
+            with self.assertRaisesRegex(ValueError,'^COMPOSE_MAINTENANCE_ISOLATION_UNAVAILABLE$'):
+                uterctl.main(['fence-start-redis','--home',str(self.fx.home),'--bundle',str(self.bundle),
+                              '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key)])
+        start_operation.assert_not_called();docker.assert_not_called();request.assert_not_called();deploy.assert_not_called()
         self.assertFalse((self.fx.home/'operation.lock').exists())
 
-    def test_tampered_product_rejected_before_docker_and_journal(self):
+    def test_block_precedes_observation_even_when_bundle_tampered(self):
         (self.bundle/'compose/compose.yaml').write_text('tampered',encoding='utf-8')
         with patch.object(start.diagnostic,'_read') as docker:
-            with self.assertRaises(start.StartError):
+            with self.assertRaisesRegex(ValueError,'^COMPOSE_MAINTENANCE_ISOLATION_UNAVAILABLE$'):
                 uterctl.main(['fence-start-redis','--home',str(self.fx.home),'--bundle',str(self.bundle),
                               '--key',str(self.fx.pub),'--executor-key',str(self.fx.pub),'--backup-key',str(self.key)])
         docker.assert_not_called()

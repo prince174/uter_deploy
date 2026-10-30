@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -23,6 +24,29 @@ class ComposeFencedUpdateTests(unittest.TestCase):
                    'networks':{'backend':{'internal':True}},'volumes':{'redis-data':{'driver':'local'}}}
         self.target=copy.deepcopy(self.base)
         self.target['services']['agent']['image']='new-a';self.target['services']['guardrail']['image']='new-g'
+
+    def test_recovery_binding_rejects_other_signed_executor_digest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);source=root/'source';target=root/'target';backup=root/'backup'
+            source.mkdir();target.mkdir()
+            (source/'checksums.json').write_bytes(b'source');(target/'checksums.json').write_bytes(b'target')
+            old_digest='a'*64;record={'operation':'b'*32}
+            intent={'source_sha256':hashlib.sha256(b'source').hexdigest(),
+                    'target_sha256':hashlib.sha256(b'target').hexdigest(),
+                    'executor_sha256':old_digest,'receipt_sha256':'c'*64,
+                    'destination_sha256':hashlib.sha256(str(backup.resolve()).encode()).hexdigest()}
+            with patch.object(update,'read_intent',return_value=intent), \
+                 patch.object(update.uterctl,'read',return_value={}), \
+                 patch.object(update.uterctl,'site_config',return_value={}), \
+                 patch.object(update,'preflight',return_value=(self.old,self.new)), \
+                 patch.object(update.receipts,'read_receipt',return_value=({'operation':record['operation']},'c'*64)), \
+                 patch.object(update.snapshot,'_file',side_effect=lambda p: Path(p).read_bytes()), \
+                 patch.object(update.snapshot,'_executor',return_value=old_digest) as executor:
+                self.assertEqual(update._verify_binding(root,source,target,'publisher','old-key',b'k'*32,backup,record),
+                                 (intent,self.old,self.new))
+                executor.return_value='d'*64
+                with self.assertRaisesRegex(update.FencedUpdateError,'^FENCED_UPDATE_BINDING_UNVERIFIED$'):
+                    update._verify_binding(root,source,target,'publisher','new-key',b'k'*32,backup,record)
 
     def test_only_signed_writer_images_may_differ_in_complete_config(self):
         update._compare_configs(self.base,self.target,self.old,self.new)
