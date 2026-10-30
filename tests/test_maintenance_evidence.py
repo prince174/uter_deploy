@@ -1,4 +1,7 @@
 import json
+import hashlib
+import hmac
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,6 +99,126 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(evidence.EvidenceError):
             evidence.Recorder(self.home, b'k'*32, operation=self.operation,
                               backend='kubernetes', plan_sha256=self.plan, lock_guard=lambda: True)
+
+    def test_late_phase_reads_validate_intent_and_receipt_without_new_writes(self):
+        self.recorder.intent('agent', 'instance', self.boot)
+        self.recorder.receipt('agent', 'instance', self.boot, self.receipt)
+        for previous, phase in (('prepared', 'isolating'), ('isolating', 'isolated'),
+                                ('isolated', 'capturing'), ('capturing', 'captured'),
+                                ('captured', 'snapshot_releasing'), ('snapshot_releasing', 'redis_released')):
+            journal.advance(self.home, operation=self.operation, expected=previous, next_phase=phase)
+            # Recreate the reader as after a process restart; the caller is
+            # responsible for authenticating its expected operation and plan.
+            reader = evidence.Recorder(self.home, b'k'*32, operation=self.operation,
+                                       backend='compose', plan_sha256=self.plan, lock_guard=lambda: self.locked)
+            self.assertEqual(reader.read_intent('agent', 'instance', self.boot, site='uter-test', resource='d'*64)['operation'], self.operation)
+            self.assertEqual(reader.read_receipt('agent', 'instance', self.boot, site='uter-test', resource='d'*64), self.receipt)
+            with self.assertRaises(evidence.EvidenceError):
+                reader.intent('agent', 'other-instance', self.boot)
+            with self.assertRaises(evidence.EvidenceError):
+                reader.receipt('agent', 'instance', self.boot, self.receipt)
+
+    def test_missing_intent_or_receipt_cannot_be_interpreted_as_success(self):
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.read_intent('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+        self.recorder.intent('agent', 'instance', self.boot)
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.read_receipt('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+        self.recorder.receipt('agent', 'instance', self.boot, self.receipt)
+        next(self.home.glob('maintenance-intent-*')).unlink()
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.read_receipt('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+
+    def test_tamper_wrong_key_boot_service_and_scope_are_rejected(self):
+        self.recorder.intent('agent', 'instance', self.boot)
+        self.recorder.receipt('agent', 'instance', self.boot, self.receipt)
+        for args in (('agent', 'instance', 'e'*32), ('guardrail', 'instance', self.boot),
+                     ('agent', 'other-instance', self.boot)):
+            with self.subTest(args=args), self.assertRaises(evidence.EvidenceError):
+                self.recorder.read_receipt(*args, site='uter-test', resource='d'*64)
+        wrong = evidence.Recorder(self.home, b'z'*32, operation=self.operation,
+                                  backend='compose', plan_sha256=self.plan, lock_guard=lambda: True)
+        with self.assertRaises(evidence.EvidenceError):
+            wrong.read_receipt('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+        path = next(self.home.glob('maintenance-receipt-*'))
+        data = json.loads(path.read_text()); data['record']['receipt']['safe_to_stop'] = False
+        path.write_text(json.dumps(data))
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.read_receipt('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+
+    def test_authenticated_wrong_operation_or_invalid_receipt_is_rejected(self):
+        self.recorder.intent('agent', 'instance', self.boot)
+        self.recorder.receipt('agent', 'instance', self.boot, self.receipt)
+        path = next(self.home.glob('maintenance-receipt-*'))
+        original = json.loads(path.read_text())
+        for mutate in (lambda item: item['identity'].update(operation='f'*32),
+                       lambda item: item['identity'].update(plan_sha256='f'*64),
+                       lambda item: item['receipt'].update(safe_to_stop=False)):
+            envelope = json.loads(json.dumps(original))
+            mutate(envelope['record'])
+            envelope['mac'] = hmac.new(self.recorder.key, evidence._canonical(envelope['record']),
+                                       hashlib.sha256).hexdigest()
+            path.write_text(json.dumps(envelope))
+            with self.assertRaises(evidence.EvidenceError):
+                self.recorder.read_receipt('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+
+    def test_lock_or_journal_changes_during_read_are_rejected(self):
+        self.recorder.intent('agent', 'instance', self.boot)
+        self.locked = False
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.read_intent('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+        self.locked = True
+        real_read = journal.read
+        calls = 0
+        def changed(home):
+            nonlocal calls
+            calls += 1
+            state = real_read(home)
+            return dict(state, phase='isolating') if calls > 1 else state
+        with mock.patch.object(journal, 'read', side_effect=changed):
+            with self.assertRaisesRegex(evidence.EvidenceError, 'SCOPE_UNVERIFIED'):
+                self.recorder.read_intent('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+
+    def test_all_journal_scope_fields_must_match_independent_expectations(self):
+        self.recorder.intent('agent', 'instance', self.boot)
+        self.recorder.receipt('agent', 'instance', self.boot, self.receipt)
+        for site, resource in (('other-site', 'd'*64), ('uter-test', 'f'*64)):
+            with self.subTest(site=site, resource=resource), self.assertRaises(evidence.EvidenceError):
+                self.recorder.read_receipt('agent', 'instance', self.boot, site=site, resource=resource)
+        journal_path = self.home/journal.NAME
+        original = json.loads(journal_path.read_text())
+        for field, value in (('site', 'other-site'), ('resource', 'f'*64),
+                             ('operation', 'f'*32), ('plan_sha256', 'f'*64),
+                             ('backend', 'kubernetes'), ('schema', 2)):
+            with self.subTest(field=field):
+                journal_path.write_text(json.dumps(dict(original, **{field: value})))
+                with self.assertRaises(evidence.EvidenceError):
+                    self.recorder.read_receipt('agent', 'instance', self.boot,
+                                               site='uter-test', resource='d'*64)
+        journal_path.write_text(json.dumps(original))
+
+    def test_failed_fsync_preserves_uncertain_intent_and_prevents_replay(self):
+        with mock.patch.object(evidence.os, 'fsync', side_effect=OSError):
+            with self.assertRaisesRegex(evidence.EvidenceError, 'WRITE_UNCERTAIN'):
+                self.recorder.intent('agent', 'instance', self.boot)
+        self.assertEqual(len(list(self.home.glob('maintenance-intent-*'))), 1)
+        with self.assertRaisesRegex(evidence.EvidenceError, 'WRITE_UNCERTAIN'):
+            self.recorder.intent('agent', 'instance', self.boot)
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.read_receipt('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+
+    def test_untrusted_file_type_permissions_and_duplicate_fields_rejected(self):
+        self.recorder.intent('agent', 'instance', self.boot)
+        path = next(self.home.glob('maintenance-intent-*'))
+        path.chmod(0o644)
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.read_intent('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+        path.chmod(0o600); path.write_text('{"record":{},"record":{},"mac":"x"}')
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.read_intent('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
+        path.unlink(); os.symlink('missing', path)
+        with self.assertRaises(evidence.EvidenceError):
+            self.recorder.read_intent('agent', 'instance', self.boot, site='uter-test', resource='d'*64)
 
     def test_kubernetes_scope_requires_its_own_journal(self):
         with tempfile.TemporaryDirectory() as folder:

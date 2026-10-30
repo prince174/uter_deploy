@@ -2,7 +2,8 @@
 
 This module does not block mutations by itself, hold a lock, inspect a workload,
 or authorize backup/update. A production adapter must retain the blocking
-journal throughout and establish a tested cleanup/recovery protocol.
+journal throughout and establish a tested cleanup/recovery protocol. Reading
+records never proves the current workload, a live fence, or permission to act.
 """
 import hashlib
 import hmac
@@ -36,7 +37,7 @@ def _pairs(items):
 
 
 class Recorder:
-    """Write evidence once while the caller holds and proves its operation lock."""
+    """Write in prepared, read under the same authenticated operation later."""
     def __init__(self, home, key, *, operation, backend, plan_sha256, lock_guard):
         if (not isinstance(key, bytes) or len(key) != 32 or backend not in ('compose', 'kubernetes')
                 or not isinstance(operation, str) or not re.fullmatch(r'[0-9a-f]{32}', operation)
@@ -49,14 +50,16 @@ class Recorder:
         self.lock_guard = lock_guard
         self._guard()
 
-    def _guard(self):
+    def _guard(self, *, writing=False):
         try:
             if self.lock_guard() is not True:
                 raise ValueError
             state = journal.read(self.home)
             if (state['operation'] != self.operation or state['backend'] != self.backend
-                    or state['plan_sha256'] != self.plan or state['phase'] != 'prepared'):
+                    or state['plan_sha256'] != self.plan
+                    or (writing and state['phase'] != 'prepared')):
                 raise ValueError
+            return state
         except Exception:
             raise EvidenceError('MAINTENANCE_EVIDENCE_SCOPE_UNVERIFIED') from None
 
@@ -72,7 +75,7 @@ class Recorder:
         return 'maintenance-' + kind + '-' + identity['instance_sha256'] + '.json'
 
     def _write(self, name, value):
-        self._guard()
+        self._guard(writing=True)
         raw = _canonical({'record': value, 'mac': hmac.new(self.key, _canonical(value), hashlib.sha256).hexdigest()}) + b'\n'
         if len(raw) > _LIMIT:
             raise EvidenceError('MAINTENANCE_EVIDENCE_INVALID')
@@ -86,12 +89,12 @@ class Recorder:
             raise EvidenceError('MAINTENANCE_EVIDENCE_WRITE_UNCERTAIN') from None
         finally:
             os.close(directory)
-        self._guard()
+        self._guard(writing=True)
         if self._read(name) != value:
             raise EvidenceError('MAINTENANCE_EVIDENCE_UNVERIFIED')
 
     def _read(self, name):
-        self._guard()
+        before = self._guard()
         directory = journal._directory(self.home)
         try:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -109,11 +112,49 @@ class Recorder:
             expected = hmac.new(self.key, _canonical(envelope['record']), hashlib.sha256).hexdigest()
             if not isinstance(envelope['mac'], str) or not hmac.compare_digest(envelope['mac'], expected):
                 raise ValueError
-            return envelope['record']
+            record = envelope['record']
         except (OSError, ValueError, TypeError, UnicodeDecodeError):
             raise EvidenceError('MAINTENANCE_EVIDENCE_UNVERIFIED') from None
         finally:
             os.close(directory)
+        if self._guard() != before:
+            raise EvidenceError('MAINTENANCE_EVIDENCE_SCOPE_UNVERIFIED')
+        return record
+
+    def _read_scope(self, site, resource):
+        """Bind every journal identity field to independently verified inputs."""
+        state = self._guard()
+        if state['site'] != site or state['resource'] != resource:
+            raise EvidenceError('MAINTENANCE_EVIDENCE_SCOPE_UNVERIFIED')
+        return state
+
+    def read_intent(self, service, instance, boot, *, site, resource):
+        """Read the exact intent against an independently verified journal scope."""
+        before = self._read_scope(site, resource)
+        identity = self._identity(service, instance, boot)
+        value = self._read(self._name('intent', identity))
+        if value != identity:
+            raise EvidenceError('MAINTENANCE_EVIDENCE_INTENT_UNVERIFIED')
+        if self._read_scope(site, resource) != before:
+            raise EvidenceError('MAINTENANCE_EVIDENCE_SCOPE_UNVERIFIED')
+        return value
+
+    def read_receipt(self, service, instance, boot, *, site, resource):
+        """Verify the matching intent and receipt without authorizing replay."""
+        before = self._read_scope(site, resource)
+        identity = self._identity(service, instance, boot)
+        self.read_intent(service, instance, boot, site=site, resource=resource)
+        value = self._read(self._name('receipt', identity))
+        if (not isinstance(value, dict) or set(value) != {'identity', 'receipt'}
+                or value['identity'] != identity):
+            raise EvidenceError('MAINTENANCE_EVIDENCE_RECEIPT_UNVERIFIED')
+        try:
+            receipt = maintenance_receipt.validate(_canonical(value['receipt']), service=service, expected_boot=boot)
+        except (maintenance_receipt.ReceiptError, ValueError, TypeError):
+            raise EvidenceError('MAINTENANCE_EVIDENCE_RECEIPT_UNVERIFIED') from None
+        if self._read_scope(site, resource) != before:
+            raise EvidenceError('MAINTENANCE_EVIDENCE_SCOPE_UNVERIFIED')
+        return receipt
 
     def intent(self, service, instance, boot):
         identity = self._identity(service, instance, boot)
@@ -121,6 +162,7 @@ class Recorder:
         return True
 
     def receipt(self, service, instance, boot, value):
+        self._guard(writing=True)
         identity = self._identity(service, instance, boot)
         if self._read(self._name('intent', identity)) != identity:
             raise EvidenceError('MAINTENANCE_EVIDENCE_INTENT_UNVERIFIED')
