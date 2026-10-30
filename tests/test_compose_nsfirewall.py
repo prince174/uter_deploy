@@ -61,9 +61,9 @@ class NamespaceFenceTests(unittest.TestCase):
                      mock.patch.object(ns.os,'stat',side_effect=stat),mock.patch.object(ns.os,'fstat',side_effect=fstat):
                     with self.assertRaisesRegex(ns.NamespaceFenceError,'HOST_NAMESPACE_REJECTED'):self.adapter._fd_nonhost()
         with mock.patch.object(self.adapter,'_daemon_identity',return_value=100),mock.patch.object(ns.select,'select',return_value=([],[],[])):
-            with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_UNVERIFIED'):self.adapter._fd_nonhost()
+            with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_PID_CHANGED'):self.adapter._fd_nonhost()
         with mock.patch.object(ns.select,'select',return_value=([42],[],[])):
-            with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_UNVERIFIED'):self.adapter._fd_nonhost()
+            with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_PIDFD_EXITED'):self.adapter._fd_nonhost()
 
     def test_daemon_socket_is_retained_and_dead_or_noisy_peer_is_rejected(self):
         peer=mock.Mock();peer.getsockopt.return_value=struct.pack('3i',99,0,0)
@@ -73,10 +73,12 @@ class NamespaceFenceTests(unittest.TestCase):
              mock.patch.object(ns.select,'select',return_value=([],[],[])):
             self.assertEqual(self.adapter._daemon_identity(),99)
             peer.close.assert_not_called()
+            peer.getsockopt.return_value=struct.pack('3i',1,0,0)
+            with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_PEER_PID1'):self.adapter._daemon_identity()
         for content in (b'',b'unexpected'):
             peer.recv.return_value=content
             with self.subTest(content=content),mock.patch.object(ns.select,'select',return_value=([peer],[],[])):
-                with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_UNVERIFIED'):self.adapter._daemon_identity()
+                with self.assertRaisesRegex(ns.NamespaceFenceError,'DAEMON_SOCKET_STATE'):self.adapter._daemon_identity()
         self.adapter.close();peer.close.assert_called_once()
 
     def test_extra_loopback_process_wrong_child_namespace_and_capabilities_are_rejected(self):

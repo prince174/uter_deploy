@@ -48,35 +48,41 @@ class Adapter(compose.Adapter):
                 self.daemon_socket.settimeout(3);self.daemon_socket.connect('/var/run/docker.sock')
             peer=self.daemon_socket
             readable,_,exceptional=select.select([peer],[],[peer],0)
-            if exceptional:raise ValueError
+            if exceptional:raise NamespaceFenceError('NS_FENCE_DAEMON_SOCKET_STATE')
             if readable:
                 try:peek=peer.recv(1,socket.MSG_PEEK|socket.MSG_DONTWAIT)
                 except BlockingIOError:peek=None
                 # No protocol bytes are expected; EOF also means the peer died.
-                if peek is not None:raise ValueError
+                if peek is not None:raise NamespaceFenceError('NS_FENCE_DAEMON_SOCKET_STATE')
             pid,uid,_=struct.unpack('3i',peer.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
-            if uid!=0 or pid<=1:raise ValueError
+            if uid!=0 or pid<=0:raise NamespaceFenceError('NS_FENCE_DAEMON_PEER_CREDENTIALS')
+            if pid==1:raise NamespaceFenceError('NS_FENCE_DAEMON_PEER_PID1')
             proc=Path('/proc')/str(pid)
-            if (proc/'comm').read_text(encoding='utf-8').strip()!='dockerd':raise ValueError
+            if (proc/'comm').read_text(encoding='utf-8').strip()!='dockerd':
+                raise NamespaceFenceError('NS_FENCE_DAEMON_PEER_PROCESS')
             namespaces=[os.stat('/proc/self/ns/pid'),os.stat('/proc/1/ns/pid'),os.stat(proc/'ns/pid')]
-            if len({(item.st_dev,item.st_ino) for item in namespaces})!=1:raise ValueError
+            if len({(item.st_dev,item.st_ino) for item in namespaces})!=1:
+                raise NamespaceFenceError('NS_FENCE_DAEMON_PID_NAMESPACE')
             return pid
+        except NamespaceFenceError:raise
         except (OSError,ValueError,UnicodeError,struct.error):
-            raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED') from None
+            raise NamespaceFenceError('NS_FENCE_DAEMON_SOCKET_OR_PROC') from None
 
     def _fd_nonhost(self):
         if self.fd is None:raise NamespaceFenceError('NS_FENCE_FD_UNAVAILABLE')
-        if (self.daemon_fd is None or self.daemon_pidfd is None
-                or select.select([self.daemon_pidfd],[],[],0)[0]
-                or self._daemon_identity()!=self.daemon_pid):
+        if self.daemon_fd is None or self.daemon_pidfd is None:
             raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED')
+        if select.select([self.daemon_pidfd],[],[],0)[0]:
+            raise NamespaceFenceError('NS_FENCE_DAEMON_PIDFD_EXITED')
+        if self._daemon_identity()!=self.daemon_pid:
+            raise NamespaceFenceError('NS_FENCE_DAEMON_PID_CHANGED')
         value=os.fstat(self.fd)
         blocked=(os.stat('/proc/self/ns/net'),os.stat('/proc/1/ns/net'),os.fstat(self.daemon_fd))
         if any((value.st_dev,value.st_ino)==(host.st_dev,host.st_ino) for host in blocked):
             raise NamespaceFenceError('NS_FENCE_HOST_NAMESPACE_REJECTED')
         current=os.stat('/proc/'+str(self.daemon_pid)+'/ns/net');old=os.fstat(self.daemon_fd)
         if (current.st_dev,current.st_ino)!=(old.st_dev,old.st_ino):
-            raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED')
+            raise NamespaceFenceError('NS_FENCE_DAEMON_NAMESPACE_CHANGED')
         return value.st_dev,value.st_ino
 
     def _journal(self,record,phases):
@@ -215,9 +221,12 @@ class Adapter(compose.Adapter):
             self.daemon_pid=self._daemon_identity()
             # A pidfd pins the checked process identity and detects exit even
             # if its numeric PID is immediately recycled.
-            self.daemon_pidfd=os.pidfd_open(self.daemon_pid,0)
-            if select.select([self.daemon_pidfd],[],[],0)[0] or self._daemon_identity()!=self.daemon_pid:
-                raise NamespaceFenceError('NS_FENCE_DAEMON_UNVERIFIED')
+            try:self.daemon_pidfd=os.pidfd_open(self.daemon_pid,0)
+            except (AttributeError,OSError):raise NamespaceFenceError('NS_FENCE_DAEMON_PIDFD_UNAVAILABLE') from None
+            if select.select([self.daemon_pidfd],[],[],0)[0]:
+                raise NamespaceFenceError('NS_FENCE_DAEMON_PIDFD_EXITED')
+            if self._daemon_identity()!=self.daemon_pid:
+                raise NamespaceFenceError('NS_FENCE_DAEMON_PID_CHANGED')
             self.daemon_fd=os.open('/proc/'+str(self.daemon_pid)+'/ns/net',os.O_RDONLY)
             self.fd=os.open('/proc/'+str(self.redis_pid)+'/ns/net',os.O_RDONLY)
             self.net_identity=self._fd_nonhost()
