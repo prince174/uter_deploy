@@ -1,0 +1,24 @@
+name: Synthetic Compose Redis adapter lifecycle
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  synthetic-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/uter-venv"
+          "$RUNNER_TEMP/uter-venv/bin/pip" install -r requirements.txt
+      - name: Unit tests without Docker
+        run: '"$RUNNER_TEMP/uter-venv/bin/python" -m unittest tests.test_compose_fence_adapter -v'
+      - name: Synthetic adapter lifecycle on hosted runner
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          "$RUNNER_TEMP/uter-venv/bin/python" -m scripts.experimental_compose_adapter_ci

@@ -1,0 +1,156 @@
+"""Hosted-runner-only synthetic adapter exercise; not a production installation.
+
+The pinned Redis image is published, but this fixture is NOT a signed 0.1.6
+Compose installation. Only _signed is overridden; no CI result authorizes a
+real upgrade or a rollback. Never run this on a local/shared Docker daemon.
+"""
+import json
+import os
+from pathlib import Path
+import re
+import selectors
+import signal
+import subprocess
+import tempfile
+import time
+import uuid
+
+import uterctl
+from scripts import (compose_fence_adapter as fence, compose_fence_protocol as protocol,
+                     compose_fence_recovery_plan as plans, compose_redis_diagnostic as diag,
+                     experimental_compose_fence_ci as helpers, experimental_netns_probe as common,
+                     redis_fence_journal as journal)
+
+IMAGE = helpers.REDIS
+LABEL = helpers.LABEL
+PASSWORD = common.OLD
+
+
+def main():
+    common.guard(os.environ)
+    if common.cmd(['docker','context','show']) != 'default': raise RuntimeError('nondefault context')
+    details = json.loads(common.cmd(['docker','context','inspect','default']))
+    if len(details) != 1 or details[0]['Endpoints']['docker']['Host'] != 'unix:///var/run/docker.sock':
+        raise RuntimeError('unexpected Docker endpoint')
+    owner = uuid.uuid4().hex
+    site = 'uterci-'+owner[:16]
+    netname = site+'_backend'; volname = site+'_redis-data'
+    # Helpers enforce their original exact synthetic volume naming prefix.
+    net = None; volume_created = False; containers = []; client = None; uncertain = False
+    try:
+        with tempfile.TemporaryDirectory(prefix='uter-adapter-synthetic-') as tmp:
+            root=Path(tmp); root.chmod(0o755)
+            home=root/'home'; home.mkdir(mode=0o700)
+            password=root/'password';password.write_text(PASSWORD);password.chmod(0o644)
+            uncertain=True
+            net=helpers.docker('network','create','--internal','--label',f'{LABEL}={owner}',
+                               '--label',f'com.docker.compose.project={site}',
+                               '--label','com.docker.compose.network=backend',netname)
+            if not re.fullmatch(r'[0-9a-f]{64}',net): raise RuntimeError('network identifier invalid')
+            uncertain=False
+            uncertain=True
+            if helpers.docker('volume','create','--label',f'{LABEL}={owner}',
+                              '--label',f'com.docker.compose.project={site}',
+                              '--label','com.docker.compose.volume=redis-data',volname)!=volname:
+                raise RuntimeError('volume identifier invalid')
+            volume_created=True;uncertain=False
+            def start(*args):
+                nonlocal uncertain
+                uncertain=True
+                ident=helpers.docker('run','-d','--label',f'{LABEL}={owner}',*args)
+                if not re.fullmatch(r'[0-9a-f]{64}',ident): raise RuntimeError('container identifier invalid')
+                containers.append(ident);uncertain=False
+                return ident
+            initial=start('--network','none','--user','0','--mount',f'type=volume,source={volname},target=/data',
+                          common.PYTHON,'python','-c','import os,time;os.chmod("/data",0o777);time.sleep(600)')
+            for _ in range(100):
+                try:
+                    if helpers.docker('exec',initial,'python','-c','import os;print(oct(os.stat("/data").st_mode & 0o777))')=='0o777': break
+                except RuntimeError: pass
+                time.sleep(.1)
+            else: raise RuntimeError('synthetic volume not ready')
+            helpers.cleanup('container',initial,owner);containers.remove(initial)
+            redis=start('--network',netname,'--network-alias','redis','--restart','unless-stopped',
+                        '--mount',f'type=volume,source={volname},target=/data',
+                        '--mount',f'type=bind,source={password},target=/run/secrets/redis_password,readonly',
+                        IMAGE,'redis-server','--bind','0.0.0.0','--requirepass',PASSWORD,
+                        '--appendonly','yes','--appendfsync','always','--save','')
+            for _ in range(100):
+                try:
+                    if helpers.docker('exec',redis,'redis-cli','-a',PASSWORD,'PING')=='PONG': break
+                except RuntimeError: pass
+                time.sleep(.1)
+            else: raise RuntimeError('synthetic Redis not ready')
+            details=diag._redis_inspect(redis)
+            endpoint=details['networks'][netname]
+            netinfo=json.loads(helpers.docker('network','inspect','--format','{{json .IPAM}}',net))
+            config=netinfo['Config'][0]
+            operation=plans.new_operation()
+            plan={'schema':1,'operation':operation,'site':site,'container_id':redis,
+                  'started_at':details['started'],'restart_count':details['restart_count'],'image_ref':IMAGE,
+                  'image_config_id':details['image_id'],'restart_policy':'unless-stopped',
+                  'volume_name':volname,'volume_driver':'local','network_id':net,'network_name':netname,
+                  'network_driver':'bridge','network_scope':'local','network_internal':True,
+                  'network_subnet':config['Subnet'],'network_gateway':config['Gateway'],
+                  'endpoint_id':endpoint['EndpointID'],'endpoint_ipv4':endpoint['IPAddress'],
+                  'endpoint_static_ipv4':None,'endpoint_aliases':endpoint['Aliases'],
+                  'endpoint_mac':endpoint['MacAddress'].lower(),'ipv6_enabled':False,
+                  'network_options':{},'endpoint_driver_options':{}}
+            key=os.urandom(32)
+            with uterctl.locked(home):
+                digest=plans.create(home,plan,key)
+                record=journal.create(home,backend='compose',site=site,resource=redis,
+                                      plan_sha256=digest,operation=operation)
+                class FixtureAdapter(fence.Adapter):
+                    def _signed(self, supplied):
+                        # NOT a signed-installation test. Still require the real lock.
+                        self._lock()
+                        if supplied != plan: raise RuntimeError('fixture plan changed')
+                adapter=FixtureAdapter(home,home/'unused',home/'unused',key)
+                # A container sharing the Redis netns must prevent any mutation.
+                peer=start('--network','container:'+redis,common.PYTHON,'python','-c','import time;time.sleep(600)')
+                try: adapter._peers(plan)
+                except fence.ComposeFenceAdapterError as error:
+                    if str(error) != 'COMPOSE_FENCE_SHARED_NAMESPACE': raise
+                else: raise RuntimeError('shared network namespace was accepted')
+                helpers.cleanup('container',peer,owner);containers.remove(peer)
+                client=subprocess.Popen(['sudo','-n','-u','nobody','python3','-u','-c',helpers.CLIENT,endpoint['IPAddress']],
+                    stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+                sel=selectors.DefaultSelector();sel.register(client.stdout,selectors.EVENT_READ)
+                if not sel.select(15) or client.stdout.readline().strip()!='READY': raise RuntimeError('fixture client did not connect')
+                protocol.isolate(home,record['operation'],adapter)
+                if journal.read(home)['phase']!='isolated' or adapter.verify_isolated(record) is not True:
+                    raise RuntimeError('synthetic isolation was not confirmed')
+                if helpers.docker('exec',redis,'sh','-ec',
+                    'export REDISCLI_AUTH="$(cat /run/secrets/redis_password)"; redis-cli --raw GET synthetic:old')!='1':
+                    raise RuntimeError('synthetic pre-fence write changed')
+                if adapter.verify_old_restoration_safe(record) is not False:
+                    raise RuntimeError('unsupported restoration was accepted')
+                # Never reconnect this isolated fixture; cleanup removes only owned resources.
+    finally:
+        if client is not None:
+            try: os.killpg(client.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+            client.wait(timeout=5)
+        errors=[]
+        for item in reversed(containers):
+            try: helpers.cleanup('container',item,owner)
+            except Exception: errors.append('container')
+        if net:
+            try: helpers.cleanup('network',net,owner)
+            except Exception: errors.append('network')
+        if volume_created:
+            try:
+                label=helpers.docker('volume','inspect','--format','{{index .Labels "'+LABEL+'"}}',volname)
+                if label != owner or volname != site+'_redis-data': raise RuntimeError('volume ownership mismatch')
+                helpers.docker('volume','rm',volname)
+            except Exception: errors.append('volume')
+        if uncertain: errors.append('unknown resource')
+        if errors: raise RuntimeError('synthetic cleanup unconfirmed: '+', '.join(errors))
+    print('Synthetic adapter detached Redis and blocked a shared namespace; this is not a signed installation or restore test.')
+
+
+if __name__ == '__main__':
+    try: main()
+    except (RuntimeError, ValueError, OSError, KeyError, subprocess.TimeoutExpired) as error:
+        raise SystemExit('Synthetic Compose adapter test failed: '+type(error).__name__)
