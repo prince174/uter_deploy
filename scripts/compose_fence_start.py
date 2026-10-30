@@ -198,29 +198,35 @@ def _observe(home,bundle,publisher,key,adapter):
 def start(home,bundle,publisher,key):
     """Stop the two exact verified writers and install a scoped Redis fence."""
     adapter=fence.Adapter(home,bundle,publisher,key)
+    phase='PRECHECK'
     try:
         adapter._lock()
         for name in (journal.NAME,plans.NAME,NAME,'backup-operation.json','session-migration-block.json'):
             if os.path.lexists(Path(home)/name):raise StartError('FENCE_START_PRIOR_OPERATION')
         plan,writers,bundle_hash=_observe(home,bundle,publisher,key,adapter)
+        phase='PLAN'
         digest=plans.create(home,plan,key)
         intent={'schema':1,'operation':plan['operation'],'site':plan['site'],'redis':plan['container_id'],
                 'guardrail':writers['guardrail'],'agent':writers['agent'],'plan_sha256':digest,'bundle_sha256':bundle_hash}
-        _write_intent(home,intent,key)
+        phase='INTENT';_write_intent(home,intent,key)
+        phase='JOURNAL'
         record=journal.create(home,backend='compose',site=plan['site'],resource=plan['container_id'],
                               plan_sha256=digest,operation=plan['operation'])
         # Recheck every exact service/Redis identity after durable intent and
         # immediately before the first mutation. Never infer timeout success.
-        adapter._lock();again,now,current_hash=_observe(home,bundle,publisher,key,adapter)
+        phase='RECHECK';adapter._lock();again,now,current_hash=_observe(home,bundle,publisher,key,adapter)
         if dict(again,operation=plan['operation'])!=plan or now!=writers or current_hash!=bundle_hash:
             raise StartError('FENCE_START_STATE_CHANGED')
-        adapter._run('stop','--time','25',writers['guardrail']['id'],writers['agent']['id'])
+        phase='STOP';adapter._run('stop','--time','25',writers['guardrail']['id'],writers['agent']['id'])
+        phase='WRITER_STOP_VERIFY'
         _writers_stopped(writers,plan['site'])
+        phase='ISOLATE'
         protocol.isolate(home,record['operation'],adapter)
+        phase='RESULT'
         final=journal.read(home)
         if final['operation']!=record['operation'] or final['phase']!='isolated':
             raise StartError('FENCE_START_RESULT_UNVERIFIED')
         return final['operation']
     except StartError:raise
-    except Exception:raise StartError('FENCE_START_INCOMPLETE') from None
+    except Exception:raise StartError('FENCE_START_'+phase+'_UNCERTAIN') from None
     finally:adapter.close()

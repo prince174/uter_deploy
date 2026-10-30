@@ -36,6 +36,14 @@ class SignedNamespaceCITests(unittest.TestCase):
                     ci.verify('/unknown','/unknown','/unknown',{})
                 self.assertEqual(str(error.exception),expected)
 
+    def test_start_diagnostic_never_forwards_untrusted_stderr(self):
+        valid=b'uterctl: StartError: FENCE_START_WRITER_EXIT_UNVERIFIED\n'
+        self.assertEqual(ci._start_diagnostic(valid),ci.START_DIAGNOSTICS['FENCE_START_WRITER_EXIT_UNVERIFIED'])
+        for raw in (b'uterctl: StartError: FENCE_START_WRITER_EXIT_UNVERIFIED secret\n',
+                    b'uterctl: StartError: FENCE_START_UNKNOWN\n',
+                    b'secret\n'+valid,valid+b'secret\n',b'\xff'):
+            self.assertIsNone(ci._start_diagnostic(raw))
+
     @unittest.skipUnless(os.name=='posix','POSIX lock check')
     def test_ci_stale_lock_requires_exact_fixture_and_killed_child_pid(self):
         env={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','UTER_CI_STRICT_RUNNER':'true'}

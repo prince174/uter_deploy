@@ -41,9 +41,29 @@ DIAGNOSTICS={name:'COMPOSE_NSFENCE_CAUSE_'+name for name in (
     'NS_FENCE_BIND_UNSUPPORTED','NS_FENCE_PORT_UNSUPPORTED','NS_FENCE_TLS_UNSUPPORTED',
     'COMPOSE_FENCE_EXECUTABLE_UNVERIFIED','COMPOSE_FENCE_DOCKER_UNCERTAIN',
     'COMPOSE_FENCE_REDIS_CHANGED','COMPOSE_FENCE_IDENTITY_INVALID','COMPOSE_FENCE_CLIENTS_REMAIN')}
+START_DIAGNOSTICS={name:'COMPOSE_START_CI_'+name for name in (
+    'FENCE_START_INCOMPLETE','FENCE_START_INTENT_INVALID','FENCE_START_INTENT_UNCERTAIN',
+    'FENCE_START_NETWORK_UNVERIFIED','FENCE_START_PRIOR_OPERATION','FENCE_START_REDIS_UNVERIFIED',
+    'FENCE_START_RESULT_UNVERIFIED','FENCE_START_STATE_CHANGED','FENCE_START_WRITER_EXIT_UNVERIFIED',
+    'FENCE_START_WRITER_UNVERIFIED','FENCE_START_PRECHECK_UNCERTAIN','FENCE_START_PLAN_UNCERTAIN',
+    'FENCE_START_INTENT_UNCERTAIN','FENCE_START_JOURNAL_UNCERTAIN','FENCE_START_RECHECK_UNCERTAIN',
+    'FENCE_START_STOP_UNCERTAIN','FENCE_START_WRITER_STOP_VERIFY_UNCERTAIN',
+    'FENCE_START_ISOLATE_UNCERTAIN','FENCE_START_RESULT_UNCERTAIN',
+    'FENCE_EXECUTOR_COMPONENT_MISSING','FENCE_EXECUTOR_IMPORT_STATE_UNSAFE','FENCE_EXECUTOR_IMPORT_UNSAFE',
+    'FENCE_EXECUTOR_ISOLATED_PYTHON_REQUIRED','FENCE_RECOVERY_BACKUP_KEY_INVALID',
+    'FENCE_RECOVERY_BACKUP_KEY_REQUIRED','FENCE_RECOVERY_INSTALLATION_UNSUPPORTED',
+    'FENCE_RECOVERY_KEY_LOCATION_INVALID','FENCE_RECOVERY_PATH_NOT_ABSOLUTE','FENCE_RECOVERY_PATH_UNSAFE',
+    'FENCE_RECOVERY_SIGNED_BUNDLE_REQUIRED','FENCE_RECOVERY_SIGNED_VERSION_MISMATCH')}
 
 
 class SignedComposeFenceCheckFailure(ValueError): pass
+
+
+def _start_diagnostic(raw):
+    """Map a single exact error line; never print or forward raw stderr."""
+    match=re.fullmatch(rb'uterctl: (?:StartError|ValueError): ([A-Z0-9_]+)\r?\n',raw)
+    if not match:return None
+    return START_DIAGNOSTICS.get(match.group(1).decode('ascii'))
 
 
 def _ci_signed_executor(source,root):
@@ -497,13 +517,16 @@ def _verify(home, bundle, publisher, manifest):
                 if owned._redis(plan,'SET',KEY,VALUE)!='OK':raise ValueError
             finally:owned.close()
         PHASE='SNAPSHOT_CLI_START'
-        process=subprocess.run([sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-start-redis',
-                                '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
-                                '--backup-key',str(keyfile),'--executor-key',str(executor_public)],cwd=executor,
-                               env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-                                    'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
-        if process.returncode:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_START_COMMAND')
+        with tempfile.TemporaryFile() as error_file:
+            process=subprocess.run([sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-start-redis',
+                                    '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
+                                    '--backup-key',str(keyfile),'--executor-key',str(executor_public)],cwd=executor,
+                                   env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                                        'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL,stderr=error_file,timeout=600)
+            if process.returncode:
+                error_file.seek(0);safe=_start_diagnostic(error_file.read(4097))
+                raise SignedComposeFenceCheckFailure(safe or 'COMPOSE_SIGNED_CI_START_COMMAND')
         with uterctl.locked(home):
             entry=journal.read(home)
             if entry['phase']!='isolated' or entry['site']!=cfg['name'] or entry['resource']!=redis_id:raise ValueError

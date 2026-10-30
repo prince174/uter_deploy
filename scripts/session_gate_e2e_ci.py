@@ -283,7 +283,8 @@ def run_scenario():
             try:
                 compose_nsfirewall_signed_ci.verify(Path(home), source, public, old)
             except compose_nsfirewall_signed_ci.SignedComposeFenceCheckFailure as error:
-                if str(error) in compose_nsfirewall_signed_ci.DIAGNOSTICS.values():
+                if (str(error) in compose_nsfirewall_signed_ci.DIAGNOSTICS.values()
+                        or str(error) in compose_nsfirewall_signed_ci.START_DIAGNOSTICS.values()):
                     raise CheckFailure(str(error)) from None
                 phases={'GUARD','PATH_CHECK','CONFIG_READ','SITE_READ','SIGNED_IDENTITY','DOCKER_SCOPE','INSPECTION',
                         'STOP_WRITERS','PRE_CAPTURE_ISOLATE','PRE_CAPTURE_RELEASE','CAPTURE_ISOLATE','CAPTURE',
@@ -465,6 +466,7 @@ def main():
                            'WIZARD_CURRENT_BUNDLE_STATE_MISMATCH','WIZARD_INSTALLED_BUNDLE_STATE_MISMATCH',
                            'WIZARD_BACKUP_REQUIRES_INSPECTION','WIZARD_BACKUP_KEY_INVALID'}
                 allowed.update(compose_nsfirewall_signed_ci.DIAGNOSTICS.values())
+                allowed.update(compose_nsfirewall_signed_ci.START_DIAGNOSTICS.values())
                 found = re.findall(rb'(?m)^Session gate test: ([A-Z_0-9]+)\r?$', output)
                 code = found[-1].decode('ascii') if found else ''
                 raise CheckFailure(code if code in allowed else 'SESSION_GATE_E2E_FAILED')
