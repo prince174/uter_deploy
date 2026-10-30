@@ -63,6 +63,44 @@ def marker_valid(marker, old_uid):
     return bool(re.fullmatch(r'[a-z0-9-]{1,64}', old_uid) and marker == old_uid)
 
 
+def termination_observed(pod, old_uid, original_container_id, *, forced=False):
+    """Classify a synthetic Pod observation, not proof of durable AOF."""
+    if forced or not isinstance(pod, dict): return False
+    meta=pod.get('metadata',{});status=pod.get('status',{})
+    if meta.get('uid')!=old_uid or not meta.get('deletionTimestamp'): return False
+    containers=status.get('containerStatuses',[])
+    if len(containers)!=1: return False
+    item=containers[0]
+    term=item.get('state',{}).get('terminated',{})
+    return bool(item.get('name')=='redis' and item.get('containerID')==original_container_id
+                and type(item.get('restartCount')) is int and item['restartCount']==0
+                and type(term.get('exitCode')) is int and term['exitCode']==0
+                and type(term.get('signal',0)) is int and term.get('signal',0)==0
+                and term.get('reason')=='Completed')
+
+
+def original_deployment(bind='0.0.0.0'):
+    """Synthetic copy of the 0.1.6 Redis PID 1 command; no supervisor/hook."""
+    # The loopback option is the experimental template change. Other fields
+    # are a minimal fixture, not the signed release Helm chart.
+    original = ('exec redis-server --appendonly yes --dir /data --maxmemory 256mb '
+                '--maxmemory-policy noeviction --requirepass "$REDIS_PASSWORD"')
+    if bind == '127.0.0.1': original += ' --bind 127.0.0.1'
+    elif bind != '0.0.0.0': raise ValueError('unsupported synthetic bind')
+    return {'apiVersion':'apps/v1','kind':'Deployment','metadata':{'name':'original-redis'},
+            'spec':{'replicas':1,'strategy':{'type':'Recreate'},
+                    'selector':{'matchLabels':{'app':'original-redis'}},
+                    'template':{'metadata':{'labels':{'app':'original-redis'}},
+                      'spec':{'automountServiceAccountToken':False,'securityContext':{'fsGroup':1000},
+                              'containers':[{'name':'redis','image':REDIS,'command':['sh','-ec'],
+                                'args':[original], 'env':[{'name':'REDIS_PASSWORD','value':PASS}],
+                                'readinessProbe':{'exec':{'command':['sh','-ec',
+                                  'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG']},
+                                  'periodSeconds':2},
+                                'volumeMounts':[{'name':'data','mountPath':'/data'}]}],
+                              'volumes':[{'name':'data','persistentVolumeClaim':{'claimName':'original-data'}}]}}}}
+
+
 def client_failure_category(stderr):
     """Expose only fixed synthetic categories, never the raw kubectl error."""
     for marker in ('FIXTURE_CONNECTION_FAILED', 'FIXTURE_AUTH_FAILED', 'FIXTURE_WRITE_FAILED'):
@@ -155,6 +193,61 @@ def main():
         def external_blocked(ip):
             if k('exec','client','--','python','-c',EXTERNAL,ip)!='BLOCKED':
                 raise RuntimeError('synthetic Redis was externally reachable')
+        def original_ready(): k('rollout','status','deployment/original-redis','--timeout=180s')
+        def original_pod():
+            pods=json.loads(k('get','pods','-l','app=original-redis','-o','json'))['items']
+            active=[p for p in pods if not p['metadata'].get('deletionTimestamp')]
+            if len(active)!=1 or active[0].get('status',{}).get('phase')!='Running':
+                raise RuntimeError('unexpected original synthetic pods')
+            return active[0]
+        def finalizer(pod, action):
+            name=pod['metadata']['name'];uid=pod['metadata']['uid']
+            for _ in range(5):
+                obj=json.loads(k('get','pod/'+name,'-o','json'))
+                meta=obj['metadata']; fs=meta.get('finalizers',[])
+                if meta['uid']!=uid or not isinstance(fs,list): raise RuntimeError('synthetic finalizer identity changed')
+                op=[{'op':'test','path':'/metadata/uid','value':uid},
+                    {'op':'test','path':'/metadata/resourceVersion','value':meta['resourceVersion']}]
+                if action=='add':
+                    if fs: raise RuntimeError('unexpected synthetic finalizer')
+                    op.append({'op':'add','path':'/metadata/finalizers','value':[owned_finalizer]})
+                else:
+                    if fs.count(owned_finalizer)!=1: raise RuntimeError('synthetic finalizer missing')
+                    op.append({'op':'remove','path':'/metadata/finalizers/'+str(fs.index(owned_finalizer))})
+                try:
+                    k('patch','pod/'+name,'--type=json','-p',json.dumps(op));return
+                except RuntimeError: time.sleep(.3)
+            raise RuntimeError('synthetic finalizer patch failed')
+        def await_termination(pod, *, forced=False, limit=120):
+            name=pod['metadata']['name'];uid=pod['metadata']['uid']
+            statuses=pod.get('status',{}).get('containerStatuses',[])
+            if len(statuses)!=1: raise RuntimeError('synthetic original container identity missing')
+            cid=statuses[0].get('containerID')
+            if not cid: raise RuntimeError('synthetic original container ID missing')
+            deadline=time.monotonic()+limit
+            while time.monotonic()<deadline:
+                obs=json.loads(k('get','pod/'+name,'-o','json'))
+                if obs.get('metadata',{}).get('uid')!=uid:
+                    raise RuntimeError('synthetic original pod UID changed')
+                statuses=obs.get('status',{}).get('containerStatuses',[])
+                if len(statuses)!=1: raise RuntimeError('synthetic termination status unavailable')
+                terminated=statuses[0].get('state',{}).get('terminated')
+                if terminated is not None:
+                    return termination_observed(obs,uid,cid,forced=forced)
+                time.sleep(.5)
+            return False
+        def patch_original_loopback():
+            desired=original_deployment('127.0.0.1')['spec']['template']
+            for _ in range(5):
+                obj=json.loads(k('get','deployment/original-redis','-o','json'))
+                ops=[{'op':'test','path':'/metadata/resourceVersion','value':obj['metadata']['resourceVersion']},
+                     {'op':'replace','path':'/spec/template','value':desired}]
+                try:
+                    k('patch','deployment/original-redis','--type=json','-p',json.dumps(ops));return
+                except RuntimeError: time.sleep(.3)
+            raise RuntimeError('original synthetic deployment patch failed')
+        owned_finalizer='uter.io/experimental-'+uuid.uuid4().hex
+        protected=[]
         try:
             if cluster in call('kind','get','clusters').splitlines():
                 raise RuntimeError('synthetic cluster name already exists')
@@ -217,14 +310,68 @@ def main():
             set_template(False,'127.0.0.1');ready();after,_,_=current()
             if marker_valid(marker(after,hung_uid),hung_uid):
                 raise RuntimeError('synthetic hung shutdown incorrectly accepted')
+            PHASE='original-create'
+            apply({'apiVersion':'v1','kind':'PersistentVolumeClaim','metadata':{'name':'original-data'},
+                   'spec':{'accessModes':['ReadWriteOnce'],'resources':{'requests':{'storage':'32Mi'}}}})
+            apply(original_deployment());original_ready()
+            original=original_pod();original_name=original['metadata']['name'];original_uid=original['metadata']['uid']
+            if k('exec',original_name,'-c','redis','--','cat','/proc/1/comm')!='redis-server':
+                raise RuntimeError('original synthetic Redis is not PID 1')
+            if redis(original_name,'SET','synthetic:original-data','before')!='OK':
+                raise RuntimeError('original synthetic data setup failed')
+            proc=subprocess.Popen(kube+['exec','-i','client','--','python','-u','-c',OLD_CLIENT,
+                                        original['status']['podIP']],env=env,stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            selector=selectors.DefaultSelector();selector.register(proc.stdout,selectors.EVENT_READ)
+            if not selector.select(30) or proc.stdout.readline().strip()!=b'READY':
+                if proc.poll() is None: proc.kill()
+                _, diagnostic=proc.communicate(timeout=10);proc=None
+                raise RuntimeError('original synthetic client failed: '+client_failure_category(diagnostic))
+            PHASE='original-finalizer'
+            finalizer(original,'add');protected.append(original)
+            PHASE='original-loopback-rollout'
+            patch_original_loopback()
+            if not await_termination(original):
+                raise RuntimeError('original synthetic termination was not observed as clean')
+            proc.stdin.write(b'check\n');proc.stdin.flush()
+            if not selector.select(20) or proc.stdout.readline().strip()!=b'CLOSED' or proc.wait(timeout=5):
+                raise RuntimeError('original synthetic connection did not close')
+            proc=None
+            # Observation of exit status is only an experiment; no production
+            # conclusion about fsync or the authority of AOF is inferred.
+            finalizer(original,'remove');protected.remove(original)
+            original_ready();replacement=original_pod();replacement_name=replacement['metadata']['name']
+            if replacement['metadata']['uid']==original_uid:
+                raise RuntimeError('original synthetic pod did not change')
+            if redis(replacement_name,'CONFIG','GET','bind')!='bind\n127.0.0.1':
+                raise RuntimeError('original synthetic replacement bind mismatch')
+            if redis(replacement_name,'GET','synthetic:original-data')!='before':
+                raise RuntimeError('original synthetic AOF state was not preserved')
+            info=redis(replacement_name,'INFO','persistence')
+            if 'aof_enabled:1' not in info or 'aof_last_write_status:ok' not in info:
+                raise RuntimeError('original synthetic AOF not healthy')
+            if 'DB loaded from append only file' not in k('logs',replacement_name,'-c','redis'):
+                raise RuntimeError('original synthetic AOF load was not observed')
+            external_blocked(replacement['status']['podIP'])
+            PHASE='original-force-delete'
+            finalizer(replacement,'add');protected.append(replacement)
+            k('delete','pod/'+replacement_name,'--grace-period=0','--force','--wait=false')
+            if await_termination(replacement,forced=True,limit=30):
+                raise RuntimeError('forced synthetic shutdown was incorrectly accepted')
+            finalizer(replacement,'remove');protected.remove(replacement)
         finally:
             if proc is not None:
                 proc.kill();proc.wait(timeout=10)
+            cleanup_problem=False
+            for pod in reversed(protected):
+                try: finalizer(pod,'remove')
+                except Exception: cleanup_problem=True
             if attempted:
                 # Unique cluster had been verified absent; only this named cluster
                 # and its private kubeconfig are touched, never another context.
                 try: call('kind','delete','cluster','--name',cluster,timeout=180)
-                except Exception: raise RuntimeError('synthetic cluster cleanup unconfirmed') from None
+                except Exception: cleanup_problem=True
+            if cleanup_problem: raise RuntimeError('synthetic cleanup unconfirmed')
     print('Synthetic Kubernetes loopback/AOF lifecycle and hung-shutdown rejection passed; cluster cleanup confirmed.')
 
 

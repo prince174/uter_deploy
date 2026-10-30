@@ -1,4 +1,5 @@
 import unittest
+import copy
 from unittest.mock import patch
 
 from scripts import experimental_kube_fence_ci as experiment
@@ -42,6 +43,36 @@ class SyntheticKubernetesFenceTests(unittest.TestCase):
         self.assertEqual(experiment.client_failure_category(b'Error from server: secret'), 'KUBECTL_EXEC_FAILED')
         self.assertEqual(experiment.client_failure_category(b'Traceback: private data'), 'FIXTURE_EXCEPTION')
         self.assertEqual(experiment.client_failure_category(b'private data'), 'NO_FIXED_DIAGNOSTIC')
+
+    def test_original_fixture_runs_redis_as_pid_one_without_supervisor(self):
+        original=experiment.original_deployment()
+        container=original['spec']['template']['spec']['containers'][0]
+        self.assertEqual(container['command'],['sh','-ec'])
+        self.assertTrue(container['args'][0].startswith('exec redis-server --appendonly yes'))
+        self.assertNotIn('lifecycle',container)
+        self.assertIn('--bind 127.0.0.1',experiment.original_deployment('127.0.0.1')
+                      ['spec']['template']['spec']['containers'][0]['args'][0])
+        with self.assertRaises(ValueError): experiment.original_deployment('::')
+
+    def test_original_termination_requires_exact_clean_process_and_is_never_accepted_if_forced(self):
+        pod={'metadata':{'uid':'pod-1','deletionTimestamp':'now'},
+             'status':{'containerStatuses':[{'name':'redis','containerID':'containerd://original',
+                 'restartCount':0,'state':{'terminated':{'exitCode':0,'signal':0,'reason':'Completed'}}}]}}
+        check=lambda item,forced=False: experiment.termination_observed(item,'pod-1','containerd://original',forced=forced)
+        self.assertTrue(check(pod));self.assertFalse(check(pod,forced=True))
+        cases=[]
+        for target,key,value in ((('metadata',),'uid','other'),(('metadata',),'deletionTimestamp',None),
+                                 (('status','containerStatuses',0),'containerID','other'),
+                                 (('status','containerStatuses',0),'restartCount',1),
+                                 (('status','containerStatuses',0,'state','terminated'),'exitCode',137),
+                                 (('status','containerStatuses',0,'state','terminated'),'signal',9),
+                                 (('status','containerStatuses',0,'state','terminated'),'reason','OOMKilled')):
+            altered=copy.deepcopy(pod);node=altered
+            for component in target: node=node[component]
+            node[key]=value;cases.append(altered)
+        for item in cases:
+            with self.subTest(item=item):self.assertFalse(check(item))
+        self.assertFalse(check(None))
 
 
 if __name__ == '__main__':
