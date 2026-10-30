@@ -21,7 +21,7 @@ import urllib.request
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import uterctl
-from scripts import (adopt_managed, backup_crypto, backup_store, compose_nsfirewall_signed_ci,
+from scripts import (adopt_managed, backup_crypto, backup_store, compose_fenced_update, compose_nsfirewall_signed_ci,
                      install, redis_fence_journal as journal, release_upgrade_preflight_ci as release,
                      verify_changed_image_upgrade_ci as staging, wizard_ci)
 from cryptography.hazmat.primitives import serialization
@@ -39,7 +39,9 @@ APPLY_CODES=frozenset('FENCED_UPDATE_'+suffix for suffix in (
     'START_STATE_UNVERIFIED','START_INCOMPLETE','FINALIZE_STATE_UNVERIFIED','FINALIZE_INCOMPLETE'))
 APPLY_CODES=APPLY_CODES | frozenset('FENCED_UPDATE_CAPTURE_'+code
                                    for code in compose_nsfirewall_signed_ci.START_DIAGNOSTICS
-                                   if code.startswith('FENCE_START_'))
+                                   if code in compose_fenced_update._SAFE_START_CODES)
+APPLY_CODES=APPLY_CODES | frozenset('FENCED_UPDATE_CAPTURE_'+stage+'_UNCERTAIN'
+                                   for stage in ('PRECHECK','FENCE_START','ADAPTER_ATTACH','BACKUP_CAPTURE','RECEIPT','INTENT'))
 JOURNAL_PHASES=frozenset(('NONE','INVALID','PREPARED','ISOLATING','ISOLATED','CAPTURING','CAPTURED',
                           'SNAPSHOT_RELEASING','REDIS_RELEASED','TARGET_STARTING','TARGET_RUNNING','UPDATE_FINALIZING'))
 APPLY_PHASES=frozenset('APPLY_'+code+'_PHASE_'+phase for code in APPLY_CODES|{'UNKNOWN'} for phase in JOURNAL_PHASES)
