@@ -73,10 +73,20 @@ set_loose() {
 
 set_loose 1
 probe 41001
-[[ "$(accepted)" == 1 ]] || { echo 'Loose mode did not classify ACK as ESTABLISHED on this kernel' >&2; exit 1; }
+observed="$(accepted)"
+[[ "$observed" == 1 ]] || {
+  printf 'Loose-mode ESTABLISHED packet count was %s, expected 1\n' "$observed" >&2
+  ip netns exec "$receiver" iptables -w -nvxL INPUT >&2
+  exit 1
+}
 ip netns exec "$receiver" iptables -w -Z INPUT
 set_loose 0
 probe 41002
-[[ "$(accepted)" == 0 ]] || { echo 'Strict mode did not reject the unrelated ACK on this kernel' >&2; exit 1; }
+observed="$(accepted)"
+[[ "$observed" == 0 ]] || {
+  printf 'Strict-mode ESTABLISHED packet count was %s, expected 0\n' "$observed" >&2
+  ip netns exec "$receiver" iptables -w -nvxL INPUT >&2
+  exit 1
+}
 echo 'Observed: loose mode classified an unrelated ACK as ESTABLISHED; strict mode did not.'
 echo 'This is one kernel experiment, not a complete ingress, quiescence, Redis or recovery proof.'
