@@ -60,7 +60,7 @@ class SyntheticImageSafetyTests(unittest.TestCase):
         wrapper=Path(__file__).resolve().parents[1]/'scripts/ci_synthetic_writer_wrapper.py'
         with tempfile.TemporaryDirectory() as temp:
             child=Path(temp)/'child.py'
-            child.write_text('import signal,sys,time\nsignal.signal(signal.SIGTERM,lambda *_:sys.exit(12))\nprint("ready",flush=True)\ntime.sleep(60)\n')
+            child.write_text('import signal,sys,time\nsignal.signal(signal.SIGTERM,lambda *_:sys.exit(12))\nprint("ready",flush=True)\ntime.sleep(10)\n')
             process=subprocess.Popen([sys.executable,str(wrapper),sys.executable,str(child)],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
             try:
                 self.assertEqual(process.stdout.readline().strip(),'ready')
