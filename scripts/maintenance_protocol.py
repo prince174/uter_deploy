@@ -70,8 +70,10 @@ def collect(inventory, *, observe_inventory, request, record_intent, record_rece
     returns (HTTP status, JSON bytes); errors leave the operation incomplete.
     `record_receipt` must durably bind the receipt to that exact instance before
     any subsequent writer is contacted. Neither callback is implemented here.
-    POST transport failure is re-observed via GET, never retried. No call is
-    made until all initial running states and complete identities are verified.
+    An uncertain POST is re-observed immediately via GET, never retried. The
+    complete inventory and boot identity must still match; a running response
+    cannot rule out a delayed POST and therefore stops the operation. No call
+    is made until all initial running states and identities are verified.
     """
     try:
         if (not isinstance(inventory, dict) or set(inventory) != {'agent', 'guardrail'}
@@ -99,6 +101,15 @@ def collect(inventory, *, observe_inventory, request, record_intent, record_rece
         receipts = {}
         for service in ('agent', 'guardrail'):
             deadline = clock() + 70
+            def save_receipt(instance, raw):
+                receipt = maintenance_receipt.validate(raw, service=service, expected_boot=boots[instance])
+                checked()
+                if record_receipt(service, instance, boots[instance], receipt) is not True:
+                    raise ProtocolError('MAINTENANCE_RECEIPT_PERSISTENCE_UNVERIFIED')
+                checked()
+                if clock() >= deadline:
+                    raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
+                receipts[instance] = receipt
             for instance in initial[service]:
                 if clock() >= deadline:
                     raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
@@ -110,15 +121,30 @@ def collect(inventory, *, observe_inventory, request, record_intent, record_rece
                     raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
                 try:
                     status, raw = request(service, instance, 'POST', 5)
-                except TimeoutError:
-                    status, raw = None, None
-                if status is not None:
                     value = _parse(raw, boots[instance])
                     if status != 202 or value['state'] not in ('draining', 'quiesced'):
-                        raise ProtocolError('MAINTENANCE_POST_UNVERIFIED')
+                        raise ValueError
+                except Exception:
+                    # Even an identity-guard failure is uncertain: prove the
+                    # full inventory again before attempting a guarded GET.
+                    checked()
+                    if clock() >= deadline:
+                        raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
+                    status, raw = request(service, instance, 'GET', 5)
+                    value = _parse(raw, boots[instance]); checked()
+                    if clock() >= deadline:
+                        raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
+                    if status == 200 and value['state'] == 'quiesced':
+                        save_receipt(instance, raw)
+                    elif (status != 202 or value['state'] != 'draining'
+                          or value['safe_to_stop'] is not False or value['error'] is not None
+                          or value['evidence'] is not None):
+                        raise ProtocolError('MAINTENANCE_POST_UNCERTAIN')
             # Start every replica in the phase before waiting for any one of
             # them. Guardrail remains running until all Agents are confirmed.
             for instance in initial[service]:
+                if instance in receipts:
+                    continue
                 while True:
                     if clock() >= deadline:
                         raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
@@ -127,14 +153,7 @@ def collect(inventory, *, observe_inventory, request, record_intent, record_rece
                     if clock() >= deadline:
                         raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
                     if status == 200 and value['state'] == 'quiesced':
-                        receipt = maintenance_receipt.validate(raw, service=service, expected_boot=boots[instance])
-                        checked()
-                        if record_receipt(service, instance, boots[instance], receipt) is not True:
-                            raise ProtocolError('MAINTENANCE_RECEIPT_PERSISTENCE_UNVERIFIED')
-                        checked()
-                        if clock() >= deadline:
-                            raise ProtocolError('MAINTENANCE_DEADLINE_EXCEEDED')
-                        receipts[instance] = receipt
+                        save_receipt(instance, raw)
                         break
                     if status != 202 or value['state'] != 'draining' or value['safe_to_stop'] is not False or value['error'] is not None:
                         raise ProtocolError('MAINTENANCE_STATE_UNVERIFIED')

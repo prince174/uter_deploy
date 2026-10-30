@@ -1,7 +1,15 @@
 import json
+import os
 import unittest
 
 from scripts import maintenance_protocol as protocol
+
+if os.name == 'posix':
+    from scripts.maintenance_transport import TransportError
+else:
+    # The production exec transport is POSIX-only; retain portable protocol tests.
+    class TransportError(ValueError):
+        pass
 
 
 class CoordinatorTests(unittest.TestCase):
@@ -57,6 +65,74 @@ class CoordinatorTests(unittest.TestCase):
         def request(service, name, method, timeout):
             if method == 'POST' and name == 'agent-1':
                 self.events.append((method, name)); self.states[name] = 'quiesced'; raise TimeoutError
+            return self.request(service, name, method, timeout)
+        self.run_protocol(request=request)
+        self.assertEqual(self.events.count(('POST', 'agent-1')), 1)
+        post = self.events.index(('POST', 'agent-1'))
+        self.assertEqual(self.events[post + 1], ('GET', 'agent-1'))
+        self.assertLess(self.events.index(('GET', 'agent-1'), post), self.events.index(('POST', 'agent-2')))
+
+    def test_transport_error_recovers_with_guarded_get_and_persists_before_next_post(self):
+        def request(service, name, method, timeout):
+            if method == 'POST' and name == 'agent-1':
+                self.events.append((method, name)); self.states[name] = 'quiesced'
+                raise TransportError('MAINTENANCE_TRANSPORT_UNVERIFIED')
+            return self.request(service, name, method, timeout)
+        def save(service, name, boot, receipt):
+            self.events.append(('receipt', name))
+            return True
+        self.run_protocol(request=request, save=save)
+        self.assertEqual(self.events.count(('POST', 'agent-1')), 1)
+        self.assertLess(self.events.index(('receipt', 'agent-1')), self.events.index(('POST', 'agent-2')))
+
+    def test_uncertain_post_rechecks_inventory_before_get(self):
+        changed = False
+        def request(service, name, method, timeout):
+            nonlocal changed
+            if method == 'POST' and name == 'agent-1':
+                self.events.append((method, name)); changed = True
+                raise TransportError('MAINTENANCE_TRANSPORT_UNVERIFIED')
+            return self.request(service, name, method, timeout)
+        def observe():
+            return {'agent': ('agent-2',), 'guardrail': ('guard-1',)} if changed else self.observe()
+        with self.assertRaisesRegex(protocol.ProtocolError, 'INVENTORY_CHANGED'):
+            self.run_protocol(request=request, observe=observe)
+        post = self.events.index(('POST', 'agent-1'))
+        self.assertEqual(self.events[post + 1:], [])
+
+    def test_uncertain_post_running_or_changed_boot_fails_closed(self):
+        for changed_boot in (False, True):
+            with self.subTest(changed_boot=changed_boot):
+                self.setUp()
+                def request(service, name, method, timeout):
+                    if method == 'POST' and name == 'agent-1':
+                        self.events.append((method, name))
+                        if changed_boot:
+                            self.states[name] = 'quiesced'; self.boots[name] = 'd' * 32
+                        raise TransportError('MAINTENANCE_TRANSPORT_UNVERIFIED')
+                    return self.request(service, name, method, timeout)
+                with self.assertRaises(protocol.ProtocolError):
+                    self.run_protocol(request=request)
+                self.assertEqual(self.events.count(('POST', 'agent-1')), 1)
+                self.assertNotIn(('POST', 'agent-2'), self.events)
+                self.assertNotIn(('POST', 'guard-1'), self.events)
+
+    def test_uncertain_post_cannot_probe_after_deadline(self):
+        def request(service, name, method, timeout):
+            if method == 'POST' and name == 'agent-1':
+                self.events.append((method, name)); self.now += 71
+                raise TransportError('MAINTENANCE_TRANSPORT_UNVERIFIED')
+            return self.request(service, name, method, timeout)
+        with self.assertRaisesRegex(protocol.ProtocolError, 'DEADLINE_EXCEEDED'):
+            self.run_protocol(request=request)
+        post = self.events.index(('POST', 'agent-1'))
+        self.assertEqual(self.events[post + 1:], [])
+
+    def test_invalid_post_response_is_observed_and_never_retried(self):
+        def request(service, name, method, timeout):
+            if method == 'POST' and name == 'agent-1':
+                self.events.append((method, name)); self.states[name] = 'quiesced'
+                return 200, b'not-json'
             return self.request(service, name, method, timeout)
         self.run_protocol(request=request)
         self.assertEqual(self.events.count(('POST', 'agent-1')), 1)

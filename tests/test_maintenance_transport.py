@@ -42,6 +42,15 @@ class TransportTests(unittest.TestCase):
                 transport.request(service='guardrail', method='GET', container_id='b'*64,
                                   identity_guard=lambda: True)
 
+    def test_post_http_client_failure_and_outer_timeout_are_uncertain(self):
+        # httpx failure in the child produces a nonzero exit, while the outer
+        # process timeout is separate. Neither may be interpreted as success.
+        for failure, expected in ((ValueError(), transport.TransportError), (TimeoutError(), TimeoutError)):
+            with self.subTest(expected=expected), mock.patch.object(transport, '_run', side_effect=failure):
+                with self.assertRaises(expected):
+                    transport.request(service='agent', method='POST', container_id='a'*64,
+                                      identity_guard=lambda: True)
+
     def test_invalid_target_does_not_call_subprocess(self):
         with mock.patch.object(transport, '_run') as run, self.assertRaises(transport.TransportError):
             transport.request(service='guardrail', method='POST', container_id='--privileged', identity_guard=lambda: True)
