@@ -170,6 +170,7 @@ class CaptureStageDiagnosticTests(unittest.TestCase):
             with self.subTest(stage=failing),patch.object(subject,'_assert_adapter'), \
                  patch.object(subject.journal,'read',return_value=record),patch.object(subject.journal,'advance'), \
                  patch.object(subject,'_bound',return_value=binding), \
+                 patch.object(subject,'_file',return_value=b'{"backend":"compose"}'), \
                  patch.object(subject.backup_store,'BackupWriter',return_value=writer), \
                  patch.object(subject.receipts,'write_descriptor',return_value='3'*64), \
                  patch.object(subject.backup_snapshot,'archive_runtime',side_effect=archive), \
@@ -180,3 +181,36 @@ class CaptureStageDiagnosticTests(unittest.TestCase):
                     subject.capture_for_mutation(adapter,record,'executor','publisher','destination')
                 self.assertEqual(str(error.exception),'SNAPSHOT_CAPTURE_'+expected+'_UNCERTAIN')
                 self.assertNotIn('secret',str(error.exception))
+
+    def test_opt_in_requires_signed_capability_before_backup_or_journal_mutation(self):
+        from types import SimpleNamespace
+        record={'phase':'isolated'}
+        adapter=SimpleNamespace(home='/fixture',bundle='/bundle',publisher_key='/key',backup_key=b'k'*32)
+        binding={'current':{'version':'1.0.0'}}
+        with patch.object(subject,'_assert_adapter'), patch.object(subject.journal,'read',return_value=record), \
+             patch.object(subject.journal,'advance') as advance, patch.object(subject,'_bound',return_value=binding), \
+             patch.object(subject,'_file',return_value=b'{"backend":"compose","maintenance_enabled":true}'), \
+             patch.object(subject.maintenance_protocol,'verify_capability',side_effect=ValueError('no capability')), \
+             patch.object(subject.backup_store,'BackupWriter') as writer:
+            with self.assertRaisesRegex(subject.SnapshotOnlyError,'SNAPSHOT_CAPTURE_BINDING_UNCERTAIN'):
+                subject.capture(adapter,record,'executor','publisher','destination')
+            writer.assert_not_called(); advance.assert_not_called()
+
+    def test_changed_opt_in_marker_cannot_produce_a_receipt(self):
+        from types import SimpleNamespace
+        record={'phase':'isolated','operation':'a'*32,'site':'fixture','resource':'b'*64,'plan_sha256':'c'*64}
+        binding={'site':{'name':'fixture'},'current':{'version':'1.0.0'},'bundle':'d'*64,
+                 'checkpoint':'e'*64,'executor':'f'*64,'destination':'1'*64}
+        adapter=SimpleNamespace(home='/fixture',backup_key=b'k'*32,verify_fenced=Mock(return_value=True))
+        writer=SimpleNamespace(manifest={'id':'2'*32})
+        with patch.object(subject,'_assert_adapter'), patch.object(subject.journal,'read',return_value=record), \
+             patch.object(subject.journal,'advance'), patch.object(subject,'_bound',return_value=binding), \
+             patch.object(subject,'_file',side_effect=[b'{"backend":"compose"}',
+                                                        b'{"backend":"compose","maintenance_enabled":true}']), \
+             patch.object(subject.backup_store,'BackupWriter',return_value=writer), \
+             patch.object(subject.receipts,'write_descriptor',return_value='3'*64), \
+             patch.object(subject.receipts,'write_receipt') as receipt, \
+             patch.object(subject.backup_snapshot,'archive_runtime'):
+            with self.assertRaisesRegex(subject.SnapshotOnlyError,'SNAPSHOT_CAPTURE_RUNTIME_UNCERTAIN'):
+                subject.capture(adapter,record,'executor','publisher','destination')
+            receipt.assert_not_called()

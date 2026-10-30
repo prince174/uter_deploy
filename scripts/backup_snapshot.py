@@ -3,6 +3,8 @@
 Callers must hold uterctl's operation lock. This module never restores data.
 """
 import io
+import base64
+import hmac
 import json
 import os
 from pathlib import Path
@@ -14,7 +16,7 @@ import tarfile
 import threading
 import time
 
-from scripts import adopt_installation, backup_crypto, backup_store, restore_backup
+from scripts import adopt_installation, backup_crypto, backup_store, compose_maintenance_secret, restore_backup
 
 RDB_MAX_BYTES = 100 * 1024 * 1024
 RDB_STREAM_TIMEOUT = 300
@@ -136,11 +138,28 @@ def verify_redis_snapshot(writer, command, *, env=None):
 
 def archive_runtime(home, writer):
     home=Path(home)
+    config_path = home / 'install.json'
+    if config_path.is_symlink():
+        raise ValueError('INSTALL_CONFIG_INVALID')
+    config_bytes = config_path.read_bytes() if config_path.exists() else None
+    config = json.loads(config_bytes) if config_bytes is not None else {}
+    if not isinstance(config, dict):
+        raise ValueError('INSTALL_CONFIG_INVALID')
+    maintenance = config.get('backend') == 'compose' and compose_maintenance_secret.enabled(config)
+    if config.get('backend') == 'compose' and not maintenance and os.path.lexists(home/'runtime'/'maintenance-key'):
+        raise ValueError('MAINTENANCE_KEY_UNEXPECTED')
+    key = compose_maintenance_secret.read_key(home/'runtime') if maintenance else None
     names=['runtime','install.json','install-state.json','credentials.json','empty.env','values.yaml','resources.yaml','state.json','releases']
     def add_tar(out):
         with tarfile.open(fileobj=out,mode='w|') as tar:
             for name in names:
                 path=home/name
+                if name == 'install.json' and config.get('backend') == 'compose':
+                    member = tarfile.TarInfo(name)
+                    member.size = len(config_bytes); member.mode = 0o600
+                    member.uid = os.geteuid(); member.gid = os.getegid()
+                    tar.addfile(member, io.BytesIO(config_bytes))
+                    continue
                 if not path.exists(): continue
                 if path.is_symlink(): raise ValueError('Runtime symlinks are unsupported')
                 for current, dirs, files in os.walk(path) if path.is_dir() else []:
@@ -148,14 +167,86 @@ def archive_runtime(home, writer):
                         p=Path(current)/child
                         if p.is_symlink() or not (p.is_file() or p.is_dir()):
                             raise ValueError('Runtime contains a symlink or special file')
-                tar.add(path,arcname=name,recursive=True)
+                def omit_key(info):
+                    if config.get('backend') == 'compose' and info.name == 'runtime/maintenance-key':
+                        if not maintenance:
+                            raise ValueError('MAINTENANCE_KEY_UNEXPECTED')
+                        return None
+                    return info
+                tar.add(path,arcname=name,recursive=True,filter=omit_key)
+                if maintenance and name == 'runtime':
+                    member = tarfile.TarInfo('runtime/maintenance-key')
+                    member.size = len(key); member.mode = 0o400; member.uid = member.gid = 10001
+                    tar.addfile(member, io.BytesIO(key))
+            if maintenance and (compose_maintenance_secret.read_key(home/'runtime') != key
+                                or config_path.read_bytes() != config_bytes):
+                raise ValueError('MAINTENANCE_KEY_UNVERIFIED')
+            if (config.get('backend') == 'compose' and not maintenance
+                    and (os.path.lexists(home/'runtime'/'maintenance-key')
+                         or config_path.read_bytes() != config_bytes)):
+                raise ValueError('MAINTENANCE_KEY_UNEXPECTED')
     writer.put_generated('runtime',add_tar)
 
 
-def kube_objects(home, site):
+def maintenance_enabled(home, values, site, manifest):
+    """Require explicit opt-in and caller-verified capability for this secret."""
+    from scripts import backup_installation
+    config=backup_installation.safe_json(Path(home)/'install.json')
+    marker=config.get('maintenance_enabled',False)
+    if type(marker) is not bool: raise ValueError('Invalid maintenance opt-in')
+    secret=values.get('maintenanceSecret')
+    if not marker:
+        if secret not in (None,''): raise ValueError('Unexpected maintenance Secret reference')
+        if os.path.lexists(Path(home)/'runtime/maintenance-key'):
+            raise ValueError('Unexpected maintenance key')
+        for name in ('guardrailEnv','agentEnv'):
+            env=values.get(name,{})
+            if not isinstance(env,dict): raise ValueError('Invalid Kubernetes environment')
+            if 'UTER_MAINTENANCE_KEY_FILE' in env:
+                raise ValueError('Unexpected maintenance environment')
+            if 'UTER_MAINTENANCE_ENABLED' in env:
+                value=env['UTER_MAINTENANCE_ENABLED']
+                if value is not False and not (type(value) is str and value=='false'):
+                    raise ValueError('Unexpected maintenance environment')
+        return False
+    capability=manifest.get('maintenance_protocol') if isinstance(manifest,dict) else None
+    if (not isinstance(capability,dict) or set(capability)!={'version','services'}
+            or type(capability['version']) is not int or capability['version']!=1
+            or capability['services']!=['agent','guardrail']
+            or secret!=site['name']+'-maintenance'):
+        raise ValueError('Signed maintenance capability or Secret reference missing')
+    local=backup_installation.safe_file(Path(home)/'runtime/maintenance-key',private=True,limit=4096)
+    try:
+        key=local.decode('utf-8').strip()
+        if not 32<=len(key)<=4096 or any(not 32<=ord(c)<=126 for c in key): raise ValueError
+    except (ValueError,UnicodeDecodeError): raise ValueError('Maintenance key invalid') from None
+    return True
+
+
+def validate_maintenance_secret(item, name, namespace, *, home=None):
+    """Validate only shape and key encoding; never return or log key material."""
+    try:
+        if (not isinstance(item,dict) or item.get('kind')!='Secret' or item.get('type')!='Opaque'
+                or item.get('metadata',{}).get('name')!=name or item.get('metadata',{}).get('namespace')!=namespace
+                or 'stringData' in item or not isinstance(item.get('data'),dict)
+                or set(item['data'])!={'key'}): raise ValueError
+        raw=base64.b64decode(item['data']['key'],validate=True)
+        key=raw.decode('utf-8').strip()
+        if not 32<=len(key)<=4096 or any(not 32<=ord(c)<=126 for c in key): raise ValueError
+        if home is not None:
+            from scripts import backup_installation
+            local=backup_installation.safe_file(Path(home)/'runtime/maintenance-key',private=True,limit=4096)
+            if not hmac.compare_digest(raw.strip(),local.strip()): raise ValueError
+    except Exception:
+        raise ValueError('Maintenance Secret invalid') from None
+
+
+def kube_objects(home, site, *, manifest=None):
     import yaml
     values=yaml.safe_load((Path(home)/'runtime/values.yaml').read_text())
     names=[('secret',values.get(k)) for k in ('guardrailSecret','agentSecret','redisSecret')]
+    enabled=maintenance_enabled(home,values,site,manifest)
+    if enabled: names.append(('secret',values['maintenanceSecret']))
     names += [('configmap',values.get(k)) for k in ('policyConfigMap','profileConfigMap')]
     names += [('secret',v.get('name')) for v in values.get('imagePullSecrets',[])]
     names += [('pvc',site['name']+'-'+s) for s in ('guardrail','redis')]
@@ -164,6 +255,7 @@ def kube_objects(home, site):
     for kind,name in names:
         if not isinstance(name,str) or not re.fullmatch(r'[a-z0-9]([-a-z0-9.]*[a-z0-9])?',name):
             raise ValueError('Invalid Kubernetes resource name')
+    if enabled and len(names)!=len(set(names)): raise ValueError('Duplicate Kubernetes resource reference')
     return [kind+'/'+name for kind,name in names]
 
 
@@ -292,8 +384,15 @@ def capture(home, cfg, site, current, destination, key, *, leave_stopped=False):
     objects=None;cluster_snapshot=None
     if site['backend']=='helm':
         # Validate scope and capture live Secrets/ConfigMaps, not just stale local copies.
-        objects=kube_objects(home,site)
+        objects=kube_objects(home,site,manifest=current)
         cluster_snapshot=checked(kube+['get',*objects,'-o','json'])
+        import yaml
+        if maintenance_enabled(home,yaml.safe_load((home/'runtime/values.yaml').read_text()),site,current):
+            values=json.loads(cluster_snapshot)
+            matches=[item for item in values.get('items',[]) if item.get('kind')=='Secret'
+                     and item.get('metadata',{}).get('name')==site['name']+'-maintenance']
+            if len(matches)!=1: raise ValueError('Maintenance Secret missing or duplicated')
+            validate_maintenance_secret(matches[0],site['name']+'-maintenance',site['namespace'],home=home)
         writer.put('kubernetes',io.BytesIO(cluster_snapshot))
         pods=json.loads(checked(kube+['get','pods','-l','app.kubernetes.io/instance='+site['name'],'-o','json']))['items']
         guards=[p for p in pods if p['metadata'].get('labels',{}).get('app.kubernetes.io/name')=='guardrail' and not p['metadata'].get('deletionTimestamp')]

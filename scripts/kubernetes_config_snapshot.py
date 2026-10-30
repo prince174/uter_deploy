@@ -22,7 +22,7 @@ def _objects(session):
     site=uterctl.site_config(session.home)
     if (site.get('backend')!='helm' or site.get('name')!=session.site or site.get('namespace')!=session.site
             or site.get('context')!=session.api.context):raise ValueError
-    names=backup_snapshot.kube_objects(session.home,site)
+    names=backup_snapshot.kube_objects(session.home,site,manifest=session.manifest)
     if len(set(names))!=len(names):raise ValueError
     expected=set(session._record['object_uids'])|{'pvc/'+session.site+'-redis','pvc/'+session.site+'-guardrail'}
     if set(names)!=expected:raise ValueError
@@ -31,7 +31,11 @@ def _objects(session):
 
 def _read(session,name):
     kind,item=name.split('/',1)
-    if kind in ('secret','configmap'):return session._get_configured_object(kind,item)
+    if kind in ('secret','configmap'):
+        value=session._get_configured_object(kind,item)
+        if kind=='secret' and item==session.site+'-maintenance':
+            backup_snapshot.validate_maintenance_secret(value,item,session.site,home=session.home)
+        return value
     if kind!='pvc' or item not in (session.site+'-redis',session.site+'-guardrail'):raise ValueError
     value=session._query(['get','pvc',item]);meta=value['metadata']
     uid=session.profile['redis_pvc_uid'] if item.endswith('-redis') else session._record['audit_pvc_uid']

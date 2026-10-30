@@ -13,7 +13,7 @@ import tempfile
 sys.dont_write_bytecode = True  # Signed bundles must remain byte-for-byte immutable.
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import uterctl
-from scripts import adopt_installation, install, recovery_aof, recovery_preflight
+from scripts import adopt_installation, compose_maintenance_secret, install, maintenance_protocol, recovery_aof, recovery_preflight
 from scripts.smoke_http import check as smoke
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -41,7 +41,7 @@ def stage_recovery_helpers(parent):
     return directory
 
 
-def prepare_runtime_permissions(runtime):
+def prepare_runtime_permissions(runtime, maintenance_key=None):
     """Restore only the file access required by the non-root containers."""
     runtime = Path(runtime)
     for folder in ('policies','profiles','models'):os.chmod(runtime/folder,0o755)
@@ -50,6 +50,8 @@ def prepare_runtime_permissions(runtime):
     install.prepare_ca_permissions(runtime)
     for filename in ('redis.conf','redis-password'):
         os.chown(runtime/filename,999,10001);os.chmod(runtime/filename,0o440)
+    if maintenance_key is not None:
+        compose_maintenance_secret.prepare_restored_key(runtime, maintenance_key)
 
 
 def restore(source_home,backup,backup_key,publisher_key,target,name,port):
@@ -85,6 +87,14 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,port):
         if name==site['name']:raise ValueError('Recovery project must have a different name')
         bundle=source/'releases'/current['version']
         if uterctl.verify(bundle,publisher_key)!=current:raise ValueError('Signed backup release changed')
+        maintenance_key = None
+        if compose_maintenance_secret.enabled(cfg):
+            if maintenance_protocol.verify_capability(bundle,publisher_key) != current:
+                raise ValueError('MAINTENANCE_CAPABILITY_UNVERIFIED')
+            maintenance_key = compose_maintenance_secret.read_key(source/'runtime', staged=True)
+            # A signed Compose runtime profile and mount verification are not
+            # yet implemented. Never start an opt-in restore without them.
+            raise ValueError('MAINTENANCE_RESTORE_PROFILE_UNSUPPORTED')
         # Validate the actual snapshot with the signed Redis image before creating a target.
         for image in current['images'].values():run(['docker','--context','default','pull',image])
         run(['docker','--context','default','run','--rm','--network','none','--read-only',
@@ -109,7 +119,7 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,port):
             site.update(name=name,namespace=name,port=port,smoke_command=[sys.executable,str(runtime/'recovery_smoke.py')])
             uterctl.write(runtime/'site.json',site);uterctl.site_config(target)
             state.pop('last_backup',None);uterctl.write(target/'state.json',state)
-            prepare_runtime_permissions(runtime)
+            prepare_runtime_permissions(runtime, maintenance_key)
             env=os.environ.copy()
             for k in list(env):
                 if k.startswith('COMPOSE_'):del env[k]

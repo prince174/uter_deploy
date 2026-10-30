@@ -16,7 +16,7 @@ import yaml
 sys.dont_write_bytecode = True  # Signed bundles must remain byte-for-byte immutable.
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import uterctl
-from scripts import adopt_installation, install, recovery_kube_volumes, recovery_preflight
+from scripts import adopt_installation, backup_snapshot, install, recovery_kube_volumes, recovery_preflight
 from scripts.smoke_http import check as smoke
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -28,7 +28,7 @@ def run(args, *, data=None):
     return p.stdout
 
 
-def resource_mapping(values,new_name):
+def resource_mapping(values,new_name,*,maintenance_source=None):
     roles={'guardrailSecret':'guardrail-env','agentSecret':'agent-env','redisSecret':'redis-secret',
            'policyConfigMap':'policies','profileConfigMap':'profiles'}
     mapping={}
@@ -36,6 +36,12 @@ def resource_mapping(values,new_name):
         old=values.get(key)
         if not isinstance(old,str) or not old or old in mapping:raise ValueError('Invalid or duplicate Kubernetes resource reference')
         mapping[old]=new_name+'-'+suffix;values[key]=mapping[old]
+    maintenance=values.get('maintenanceSecret')
+    if maintenance_source is None:
+        if maintenance not in (None,''):raise ValueError('Unexpected maintenance Secret reference')
+    else:
+        if maintenance!=maintenance_source or maintenance in mapping:raise ValueError('Invalid maintenance Secret reference')
+        mapping[maintenance]=new_name+'-maintenance';values['maintenanceSecret']=mapping[maintenance]
     pulls=values.get('imagePullSecrets',[])
     if not isinstance(pulls,list):raise ValueError('Invalid image pull secrets')
     for index,item in enumerate(pulls):
@@ -45,7 +51,10 @@ def resource_mapping(values,new_name):
     return mapping
 
 
-def prepare_objects(items, mapping, source_name, namespace):
+def prepare_objects(items, mapping, source_name, namespace, *, maintenance_source=None, maintenance_home=None,
+                    source_namespace=None):
+    if maintenance_source is not None and maintenance_home is None:
+        raise ValueError('Maintenance key source required')
     objects=[];sizes={};seen=set()
     for item in items:
         kind=item.get('kind');old=item.get('metadata',{}).get('name')
@@ -57,6 +66,8 @@ def prepare_objects(items, mapping, source_name, namespace):
             continue
         if kind not in ('Secret','ConfigMap') or old not in mapping or old in seen:
             raise ValueError('Unexpected Kubernetes recovery resource')
+        if old==maintenance_source:
+            backup_snapshot.validate_maintenance_secret(item,maintenance_source,source_namespace or source_name,home=maintenance_home)
         seen.add(old)
         obj={'apiVersion':'v1','kind':kind,'metadata':{'name':mapping[old],'namespace':namespace}}
         for field in ('data','binaryData','type','immutable'):
@@ -88,8 +99,15 @@ def restore(source_home,backup,backup_key,publisher_key,target,name,context,port
         bundle=source/'releases'/current['version']
         if uterctl.verify(bundle,publisher_key)!=current:raise ValueError('Signed backup release changed')
         values=yaml.safe_load((source/'runtime/values.yaml').read_text())
-        mapping=resource_mapping(values,name)
-        objects,sizes=prepare_objects(json.loads((stage/'kubernetes.json').read_text())['items'],mapping,cfg['name'],name)
+        has_maintenance=backup_snapshot.maintenance_enabled(source,values,site,current)
+        if has_maintenance:
+            # No signed Helm profile/live mount verification exists yet.
+            raise ValueError('MAINTENANCE_RESTORE_PROFILE_UNSUPPORTED')
+        maintenance_source=site['name']+'-maintenance' if has_maintenance else None
+        mapping=resource_mapping(values,name,maintenance_source=maintenance_source)
+        objects,sizes=prepare_objects(json.loads((stage/'kubernetes.json').read_text())['items'],mapping,cfg['name'],name,
+                                      maintenance_source=maintenance_source,maintenance_home=source if has_maintenance else None,
+                                      source_namespace=site['namespace'])
         selected=values.get('storageClass','') if storage_class is None else storage_class
         values.update(images=current['images'],productVersion=current['version'],storageClass=selected,
                       redisSize=sizes['redis'],auditSize=sizes['audit'])

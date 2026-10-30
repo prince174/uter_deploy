@@ -19,7 +19,7 @@ class ConfigSnapshotTests(unittest.TestCase):
             'metadata':{'uid':'uid-'+str(i),'resourceVersion':'10'},'data':{'sensitive':'not-a-real-secret'}}
                     for i,name in enumerate(self.names)}
         self.session=SimpleNamespace(_executor=('signed',),_record={'schema':2},_key_path='key',home=self.home,
-            _profile_digest='d'*64,reverify=lambda:None,_scope=lambda:None)
+            _profile_digest='d'*64,manifest={},reverify=lambda:None,_scope=lambda:None)
         class Writer:
             manifest={'files':{}}
             def put(inner,label,stream):self.label=label;self.raw=stream.read()

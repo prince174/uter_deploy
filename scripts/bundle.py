@@ -29,7 +29,7 @@ def build(manifest, output, key, *, source_root=ROOT):
         shutil.copy2(source_root/'examples/redis.conf.example',output/'examples/redis.conf.example')
         scripts=output/'scripts';scripts.mkdir()
         for name in ('install.py','adopt_installation.py','backup_crypto.py','backup_store.py',
-                     'backup_snapshot.py','archive_safety.py','restore_backup.py','recovery_preflight.py',
+                     'backup_snapshot.py','compose_maintenance_secret.py','archive_safety.py','restore_backup.py','recovery_preflight.py',
                      'recovery_volume.py','recovery_aof.py','recover_compose.py','recover_kubernetes.py',
                      'recovery_kube_volumes.py','extract_signed_bundle.py','managed_smoke.py','adopt_managed.py',
                      'update_installation.py','smoke_http.py','extract_release_inputs.py','preflight.py',

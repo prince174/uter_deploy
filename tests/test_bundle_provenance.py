@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import ast
 import json
@@ -108,6 +109,24 @@ class BundleProvenanceTests(unittest.TestCase):
         path.write_bytes(original+b'\n# tampered\n')
         with self.assertRaisesRegex(ValueError,'inventory mismatch'):
             uterctl.verify(result,self.public)
+
+    def test_signed_compose_maintenance_secret_helper_rejects_modification(self):
+        result=self.make_bundle(gated=False)
+        path=result/'scripts'/'compose_maintenance_secret.py'
+        self.assertEqual(path.read_bytes(),(uterctl.ROOT/'scripts'/'compose_maintenance_secret.py').read_bytes())
+        uterctl.verify(result,self.public)
+        path.write_bytes(path.read_bytes()+b'\n# tampered\n')
+        with self.assertRaisesRegex(ValueError,'inventory mismatch'):
+            uterctl.verify(result,self.public)
+
+    def test_legacy_signed_bundle_without_new_helper_still_verifies(self):
+        result=self.make_bundle(gated=False)
+        (result/'scripts/compose_maintenance_secret.py').unlink()
+        raw=json.dumps(uterctl.inventory(result),sort_keys=True,indent=2).encode()
+        private=serialization.load_pem_private_key(self.private.read_bytes(),password=None)
+        (result/'checksums.json').write_bytes(raw)
+        (result/'checksums.sig').write_bytes(base64.b64encode(private.sign(raw)))
+        self.assertEqual(uterctl.verify(result,self.public)['data_epoch'],1)
 
     def test_signed_compose_coordinator_imports_in_isolated_executor_with_gate_closed(self):
         result=self.make_bundle(gated=False)

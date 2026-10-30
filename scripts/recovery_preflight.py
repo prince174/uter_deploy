@@ -53,7 +53,8 @@ def preflight(home, backup, backup_key, publisher_key, output):
             config.get('context') != site.get('context')):
         raise ValueError('Backed-up installer identity does not match selected installation')
     if manifest['backend']=='helm':
-        from scripts.backup_snapshot import kube_objects
+        from scripts.backup_snapshot import kube_objects, maintenance_enabled, validate_maintenance_secret
+        import yaml
         objects=json.loads((output/'kubernetes.json').read_text(encoding='utf-8'))
         if not isinstance(objects.get('items'),list): raise ValueError('Kubernetes resource list is missing')
         if any(item.get('metadata',{}).get('namespace') != site['namespace'] for item in objects['items']):
@@ -64,9 +65,16 @@ def preflight(home, backup, backup_key, publisher_key, output):
             kind=kinds.get(item.get('kind'));name=item.get('metadata',{}).get('name')
             if not kind or not isinstance(name,str): raise ValueError('Unsupported Kubernetes backup resource')
             actual.append(kind+'/'+name)
-        expected=kube_objects(staged,staged_site)
+        expected=kube_objects(staged,staged_site,manifest=signed)
         if len(actual)!=len(set(actual)) or set(actual)!=set(expected):
             raise ValueError('Kubernetes backup resources do not match installation configuration')
+        values=yaml.safe_load((staged/'runtime/values.yaml').read_text())
+        if maintenance_enabled(staged,values,staged_site,signed):
+            name=staged_site['name']+'-maintenance'
+            matches=[item for item in objects['items'] if item.get('kind')=='Secret'
+                     and item.get('metadata',{}).get('name')==name]
+            if len(matches)!=1: raise ValueError('Maintenance Secret missing or duplicated')
+            validate_maintenance_secret(matches[0],name,staged_site['namespace'],home=staged)
     marker.unlink()
     return {'backup_id':manifest['id'],'version':manifest['version'],'backend':manifest['backend']}
 

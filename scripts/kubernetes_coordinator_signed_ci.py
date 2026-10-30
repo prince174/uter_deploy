@@ -61,7 +61,7 @@ def verify(home,product,publisher,manifest):
         loopback_ci.guard(home,product,publisher,manifest)
         PHASE='INPUT'
         raw,api=pin_ci._material(home,product,publisher)
-        site=uterctl.site_config(home);names=backup_snapshot.kube_objects(home,site)
+        site=uterctl.site_config(home);names=backup_snapshot.kube_objects(home,site,manifest=manifest)
         if (site.get('name')!=snapshot.SITE or site.get('namespace')!=snapshot.SITE
                 or site.get('context')!=snapshot.CONTEXT):raise ValueError
         if len(names)!=len(set(names)):raise ValueError

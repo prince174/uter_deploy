@@ -15,7 +15,8 @@ from pathlib import Path
 import stat
 
 import uterctl
-from scripts import (backup_snapshot, backup_store, compose_fence_origin as origin, compose_nsfirewall_adapter as fence,
+from scripts import (backup_snapshot, backup_store, compose_maintenance_secret, maintenance_protocol,
+                     compose_fence_origin as origin, compose_nsfirewall_adapter as fence,
                      compose_nsfirewall_checkpoint as checkpoint, redis_fence_journal as journal,
                      snapshot_only_receipts as receipts)
 
@@ -95,6 +96,12 @@ def _capture(adapter,record,executor_bundle,executor_publisher,destination,decis
         _assert_adapter(adapter)
         if journal.read(adapter.home)!=record or record['phase']!='isolated':raise ValueError
         phase='BINDING';binding=_bound(adapter,record,executor_bundle,executor_publisher,destination)
+        config_bytes = _file(Path(adapter.home)/'install.json')
+        config = json.loads(config_bytes)
+        if not isinstance(config, dict) or config.get('backend') != 'compose':raise ValueError
+        if compose_maintenance_secret.enabled(config):
+            if maintenance_protocol.verify_capability(adapter.bundle,adapter.publisher_key) != binding['current']:
+                raise ValueError
         phase='FENCE_BEFORE'
         if adapter.verify_fenced(record) is not True:raise ValueError
         phase='BACKUP_OPEN'
@@ -109,6 +116,7 @@ def _capture(adapter,record,executor_bundle,executor_publisher,destination,decis
         journal.advance(adapter.home,operation=record['operation'],expected='isolated',next_phase='capturing')
         phase='RUNTIME'
         backup_snapshot.archive_runtime(adapter.home,writer)
+        if _file(Path(adapter.home)/'install.json') != config_bytes:raise ValueError
         phase='WRITER_ID'
         plan=binding['plan'];redis=plan['container_id']
         guard=adapter._run('ps','-aq','--filter','label=com.docker.compose.project='+plan['site'],
@@ -132,6 +140,7 @@ def _capture(adapter,record,executor_bundle,executor_publisher,destination,decis
         if verified!=manifest:raise ValueError
         phase='FENCE_FINAL'
         if adapter.verify_fenced(record) is not True:raise ValueError
+        if _file(Path(adapter.home)/'install.json') != config_bytes:raise ValueError
         receipt={'schema':1,'operation':record['operation'],'descriptor_sha256':descriptor_hash,
                  'backup_id':manifest['id'],'manifest_sha256':_hash(_file(Path(destination)/'manifest.json'))}
         phase='RECEIPT';receipts.write_receipt(adapter.home,adapter.backup_key,receipt)
