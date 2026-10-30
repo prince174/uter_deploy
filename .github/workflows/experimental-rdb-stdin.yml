@@ -1,0 +1,26 @@
+name: Synthetic Redis RDB stdin check
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/experimental-rdb-stdin.yml
+      - scripts/experimental_rdb_stdin_ci.py
+      - scripts/experimental_rdb_probe.py
+      - tests/test_experimental_rdb_stdin_ci.py
+permissions:
+  contents: read
+jobs:
+  synthetic-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Unit tests without Docker
+        run: python3 -m unittest discover -s tests -p test_experimental_rdb_stdin_ci.py -v
+      - name: Synthetic stdin RDB checks on release Redis digest
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          python3 -m scripts.experimental_rdb_stdin_ci
