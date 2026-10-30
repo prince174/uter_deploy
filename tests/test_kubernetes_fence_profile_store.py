@@ -64,6 +64,8 @@ class ProfileStoreTests(unittest.TestCase):
 
     def test_schema_two_requires_independent_audit_pvc_uid(self):
         record=copy.deepcopy(self.record);record['schema']=2;record['kubectl_sha256']='f'*64
+        record['object_uids']={'secret/test':'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                               'configmap/test':'cccccccc-cccc-cccc-cccc-cccccccccccc'}
         for uid in (None,'bad',record['api']['redis_pvc_uid'],record['writer_uids']['agent']):
             record['audit_pvc_uid']=uid
             with self.subTest(uid=uid),self.assertRaises(store.ProfileError):store.create(self.path,self.key,record)
@@ -72,5 +74,12 @@ class ProfileStoreTests(unittest.TestCase):
         record['kubectl_sha256']='bad'
         with self.assertRaises(store.ProfileError):store.create(self.path,self.key,record)
         record['kubectl_sha256']='f'*64
+        objects=copy.deepcopy(record['object_uids'])
+        for bad in ({'secret/test':record['audit_pvc_uid'],'configmap/test':objects['configmap/test']},
+                    {'secret/../../bad':objects['secret/test'],'configmap/test':objects['configmap/test']},
+                    {'secret/test':objects['secret/test']}):
+            record['object_uids']=bad
+            with self.assertRaises(store.ProfileError):store.create(self.path,self.key,record)
+        record['object_uids']=objects
         store.create(self.path,self.key,record)
         self.assertEqual(store.read(self.path,self.key)[0],record)

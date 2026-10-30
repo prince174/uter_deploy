@@ -16,7 +16,9 @@ else:
 class RecoverySessionTests(fixtures.OperatorSessionTests):
     def setUp(self):
         super().setUp()
-        self.record.update(schema=2,audit_pvc_uid='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',kubectl_sha256='f'*64)
+        self.record.update(schema=2,audit_pvc_uid='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',kubectl_sha256='f'*64,
+            object_uids={'secret/test':'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                         'configmap/test':'cccccccc-cccc-cccc-cccc-cccccccccccc'})
         self.inner.api.binary_fd=19;self.inner.api.binary_sha256='f'*64
         kubectl_patch=patch.object(recovery.coordinator.kubectl_binary,'verify');kubectl_patch.start();self.addCleanup(kubectl_patch.stop)
         self.profile.unlink();fixtures.store.create(self.profile,b'k'*32,self.record)
@@ -81,3 +83,15 @@ class RecoverySessionTests(fixtures.OperatorSessionTests):
             session._executor=(self.bundle,self.pub,self.executor_identity)
             with patch.object(recovery.coordinator,'_executor_identity',return_value=self.executor_identity):
                 with self.assertRaises(recovery.RecoverySessionError):recovery.seal_before_mutation(session,'f'*32,b'k'*32)
+
+    def test_unpinned_config_object_is_never_queried(self):
+        with self.open() as session:
+            session._executor=(self.bundle,self.pub,self.executor_identity)
+            with patch.object(session,'_scope'),patch.object(session._inner,'_query') as query:
+                with self.assertRaises(recovery.coordinator.CoordinatorError):session._get_configured_object('secret','unlisted')
+                query.assert_not_called()
+                query.return_value={'kind':'Secret','metadata':{'name':'test','namespace':'uter-test',
+                    'uid':'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','resourceVersion':'123'}}
+                self.assertEqual(session._get_configured_object('secret','test')['metadata']['resourceVersion'],'123')
+                query.return_value['metadata']['uid']='dddddddd-dddd-dddd-dddd-dddddddddddd'
+                with self.assertRaises(recovery.coordinator.CoordinatorError):session._get_configured_object('secret','test')

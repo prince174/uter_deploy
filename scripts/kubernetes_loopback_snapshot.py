@@ -9,12 +9,19 @@ import re
 import subprocess
 import threading
 
-from scripts import (backup_snapshot, kubernetes_fence_finalizer as finalizer,
+from scripts import (backup_crypto, backup_installation, backup_snapshot, backup_store, kubernetes_fence_finalizer as finalizer,
+                     kubernetes_loopback_auth as loopback_auth,
                      kubernetes_loopback_intent as loopback, kubernetes_redis_identity as identity,
                      kubernetes_sealed_config as sealed, kubernetes_trusted_kubectl as kubectl_binary)
 
 
 class SnapshotError(ValueError):pass
+
+
+def _stop(process):
+    try:
+        if process.poll() is None:process.kill()
+    except ProcessLookupError:pass
 
 
 class _LimitedStream:
@@ -28,11 +35,16 @@ class _LimitedStream:
 def _observe(session,operation,pod_name,pod_uid):
     session._scope()
     plan=finalizer.read_plan(session.home)
+    key=backup_installation.safe_file(session._key_path,private=True,limit=32)
+    loopback_auth.verify(session,operation,key,'forward')
     if loopback.classify(session.home,plan,operation,session.api)['state']!='loopback_spec_observed':raise ValueError
     if not re.fullmatch(re.escape(session.site)+r'-redis-[a-z0-9-]{1,64}',pod_name):raise ValueError
     if not identity.UUID.fullmatch(pod_uid) or pod_uid==plan['uid']:raise ValueError
     deployment=session._query(['get','deployment',session.site+'-redis'])
     pod=session._query(['get','pod',pod_name])
+    labels='app.kubernetes.io/instance='+session.site+',app.kubernetes.io/name=redis'
+    pods=session._query(['get','pods','-l',labels]).get('items')
+    if not isinstance(pods,list) or len(pods)!=1 or pods[0].get('metadata',{}).get('uid')!=pod_uid:raise ValueError
     owner=[x for x in pod['metadata']['ownerReferences'] if x.get('kind')=='ReplicaSet' and x.get('controller') is True]
     if len(owner)!=1 or not re.fullmatch(re.escape(session.site)+r'-redis-[a-z0-9]{1,32}',owner[0]['name']):raise ValueError
     rs=session._query(['get','replicaset',owner[0]['name']])
@@ -73,7 +85,7 @@ def capture_component(session,operation,pod_name,pod_uid,writer):
         process=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                                  pass_fds=(fd,binary_fd),start_new_session=True,
                                  env=dict(kubectl_binary.ENV))
-        timer=threading.Timer(300,lambda:process.kill() if process.poll() is None else None);timer.start()
+        timer=threading.Timer(300,_stop,args=(process,));timer.start()
         first=process.stdout.read(5)
         if first!=b'REDIS':raise ValueError
         writer.put('redis',_LimitedStream(backup_snapshot.PrefixStream(process.stdout,first)))
@@ -98,3 +110,44 @@ def capture_component(session,operation,pod_name,pod_uid,writer):
             manifest=getattr(writer,'manifest',None)
             if isinstance(manifest,dict) and isinstance(manifest.get('files'),dict):manifest['files'].pop('redis',None)
         if cleanup_error and accepted:raise SnapshotError('KUBE_LOOPBACK_SNAPSHOT_CLEANUP_UNVERIFIED') from None
+
+
+def verify_component(session,operation,pod_name,pod_uid,writer):
+    """Stream authenticated decrypted bytes into the pinned Redis checker."""
+    process=None;timer=None;accepted=False
+    try:
+        if session._executor is None or session._record['schema']!=2:raise ValueError
+        before=_observe(session,operation,pod_name,pod_uid)
+        meta=writer.manifest['files']['redis']
+        if meta['plaintext_bytes']>backup_snapshot.RDB_MAX_BYTES:raise ValueError
+        fd=session._inner.config_fd;binary_fd=session._inner.api.binary_fd
+        sealed.verify_sealed(fd,session.config_sha256);kubectl_binary.verify(binary_fd,session._record['kubectl_sha256'])
+        command=['/proc/self/fd/'+str(binary_fd),'--kubeconfig=/proc/self/fd/'+str(fd),
+                 '--context='+session.api.context,'--namespace='+session.site,'--request-timeout=20s',
+                 'exec','-i','pod/'+pod_name,'-c','redis','--','redis-check-rdb','/dev/stdin']
+        process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                                 pass_fds=(fd,binary_fd),start_new_session=True,env=dict(kubectl_binary.ENV))
+        timer=threading.Timer(backup_snapshot.RDB_STREAM_TIMEOUT,_stop,args=(process,))
+        timer.start()
+        backup_crypto.decrypt_verify(writer.path/'redis.enc',writer.key,backup_store.aad(writer.manifest['id'],'redis'),meta,
+                                     backup_snapshot.BoundedSnapshotSink(process.stdin,backup_snapshot.RDB_MAX_BYTES))
+        process.stdin.close();timer.cancel();timer.join();timer=None
+        if process.wait(timeout=backup_snapshot.RDB_EXIT_TIMEOUT)!=0:raise ValueError
+        if _observe(session,operation,pod_name,pod_uid)!=before:raise ValueError
+        accepted=True
+        return {'redis_component_verified':True,'complete_backup':False,'safe_to_update':False}
+    except Exception:raise SnapshotError('KUBE_LOOPBACK_RDB_VERIFICATION_UNCERTAIN') from None
+    finally:
+        cleanup_error=False
+        try:
+            if timer is not None:timer.cancel();timer.join(timeout=10)
+            if timer is not None and timer.is_alive():cleanup_error=True
+            if process is not None:
+                if process.poll() is None:process.kill()
+                process.wait(timeout=10)
+                if process.stdin is not None and not process.stdin.closed:process.stdin.close()
+        except (OSError,subprocess.SubprocessError):cleanup_error=True
+        if not accepted or cleanup_error:
+            manifest=getattr(writer,'manifest',None)
+            if isinstance(manifest,dict) and isinstance(manifest.get('files'),dict):manifest['files'].pop('redis',None)
+        if cleanup_error and accepted:raise SnapshotError('KUBE_LOOPBACK_RDB_CLEANUP_UNVERIFIED') from None

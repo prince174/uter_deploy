@@ -19,7 +19,7 @@ from scripts import snapshot_only_receipts as records
 
 LIMIT=16384
 FIELDS=frozenset(('schema','site','api','writer_uids','release_version','inventory_sha256','publisher_sha256'))
-FIELDS_V2=FIELDS|{'audit_pvc_uid','kubectl_sha256'}
+FIELDS_V2=FIELDS|{'audit_pvc_uid','kubectl_sha256','object_uids'}
 
 
 class ProfileError(ValueError):pass
@@ -55,6 +55,15 @@ def _validate(record):
             binary=record['kubectl_sha256']
             if (not isinstance(uid,str) or not identity.UUID.fullmatch(uid) or uid in ids+list(writers.values())
                     or not isinstance(binary,str) or not re.fullmatch(r'[0-9a-f]{64}',binary)):raise ValueError
+            objects=record['object_uids']
+            if (not isinstance(objects,dict) or not 2<=len(objects)<=32
+                    or not any(k.startswith('secret/') for k in objects if isinstance(k,str))
+                    or not any(k.startswith('configmap/') for k in objects if isinstance(k,str))):raise ValueError
+            for name,value in objects.items():
+                if (not isinstance(name,str) or not re.fullmatch(r'(?:secret|configmap)/[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?',name)
+                        or not isinstance(value,str) or not identity.UUID.fullmatch(value)):raise ValueError
+            all_uids=ids+list(writers.values())+[uid]+list(objects.values())
+            if len(set(all_uids))!=len(all_uids):raise ValueError
         return record
     except (ValueError,KeyError,TypeError):raise ProfileError('KUBE_PROFILE_INVALID') from None
 

@@ -67,6 +67,23 @@ class SnapshotExecutorTests(unittest.TestCase):
                  patch.object(snapshot.subprocess,'Popen',Process):
                 with self.assertRaisesRegex(snapshot.SnapshotError,code):self.capture()
 
+    def test_checker_uses_same_sealed_identity_and_fd(self):
+        class Checker:
+            def __init__(inner,command,**kwargs):self.command=command;self.kwargs=kwargs;inner.stdin=io.BytesIO()
+            def poll(inner):return 0
+            def wait(inner,timeout=None):return 0
+            def kill(inner):pass
+        writer=SimpleNamespace(path=Path('/unused'),key=b'k'*32,
+                               manifest={'id':'a'*32,'files':{'redis':{'plaintext_bytes':5}}})
+        def decrypt(path,key,aad,meta,sink):sink.write(b'REDIS')
+        with patch.object(snapshot,'_observe',return_value=self.observed), \
+             patch.object(snapshot.sealed,'verify_sealed'),patch.object(snapshot.kubectl_binary,'verify'), \
+             patch.object(snapshot.subprocess,'Popen',Checker),patch.object(snapshot.backup_crypto,'decrypt_verify',side_effect=decrypt):
+            self.assertEqual(snapshot.verify_component(self.session,'a'*32,self.pod,self.uid,writer),
+                {'redis_component_verified':True,'complete_backup':False,'safe_to_update':False})
+            self.assertEqual(self.kwargs['pass_fds'],(13,19))
+            self.assertIn('redis-check-rdb',self.command)
+
     @unittest.skipUnless(os.name=='posix' and os.path.isfile('/usr/bin/true'),'trusted Linux executable required')
     def test_binary_path_and_hash_are_checked_independent_of_path_and_proxy(self):
         binary=Path('/usr/bin/true').resolve()

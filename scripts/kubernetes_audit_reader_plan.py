@@ -1,5 +1,6 @@
 """Write-once authenticated audit reader plan; creates no Kubernetes object."""
 from scripts import (backup_installation, kubernetes_fence_finalizer as finalizer,
+                     kubernetes_audit_reader as reader,
                      kubernetes_writer_finalizer as writer_finalizer,
                      kubernetes_writer_quiesce as storage)
 
@@ -20,6 +21,10 @@ def prepare(session,operation,key):
         pod=session.api.get(record['pod']);spec=pod['spec'];meta=pod['metadata']
         if (meta.get('uid')!=record['uid'] or meta.get('resourceVersion')!=record['rv']
                 or finalizer._digest(spec)!=record['spec_sha256']):raise ValueError
+        security=spec.get('securityContext',{})
+        if (security.get('runAsNonRoot') is not True or security.get('runAsUser')!=10001
+                or security.get('runAsGroup')!=10001 or security.get('fsGroup')!=10001
+                or security.get('seccompProfile')!={'type':'RuntimeDefault'}):raise ValueError
         container=spec['containers'][0]
         mounts=[x for x in container.get('volumeMounts',[]) if x.get('mountPath')=='/var/lib/uter/audit']
         if len(mounts)!=1 or mounts[0].get('subPath') or mounts[0].get('subPathExpr'):raise ValueError
@@ -33,6 +38,7 @@ def prepare(session,operation,key):
                'guardrail_pod_sha256':record['spec_sha256'],'reader_image':container['image'],
                'reader_name':session.site+'-audit-reader-'+operation[:12],
                'recovery_binding_sha256':storage._hash(storage._read(session.home,'kubernetes-fence-recovery-auth.json',key))}
+        reader.pod_spec(value)
         storage._write(session.home,NAME,value,key)
         session._scope()
         return {'audit_reader_plan_saved':True,'reader_created':False,'safe_to_backup':False}

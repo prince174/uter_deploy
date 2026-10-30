@@ -59,7 +59,8 @@ def _query_allowed(site,args):
     if args in (['get','namespace','kube-system'],['get','namespace',site],['get','pvc',site+'-redis'],
                 ['get','pvc',site+'-guardrail']):return True
     if len(args)==3 and args[:2]==['get','deployment'] and args[2] in tuple(site+'-'+x for x in ('redis','guardrail','agent')):return True
-    if len(args)==3 and args[:2]==['get','pod'] and _pod_name(site,args[2]):return True
+    if len(args)==3 and args[:2]==['get','pod']:
+        return bool(_pod_name(site,args[2]) or re.fullmatch(re.escape(site)+r'-audit-reader-[0-9a-f]{12}',args[2]))
     if (len(args)==3 and args[:2]==['get','replicaset']
             and re.fullmatch(re.escape(site)+r'-(?:redis|guardrail|agent)-[a-z0-9]{1,32}',args[2])):return True
     if len(args)==4 and args[:3]==['get','pods','-l']:
@@ -267,12 +268,16 @@ class BoundSession:
                 forward._bound(self.home,plan,operation,self.api)
                 if path==[forward.identity.COMMAND]:
                     record=forward._read(self.home)
+                    from scripts import kubernetes_loopback_auth as loopback_auth
+                    loopback_auth.verify(self,operation,backup_installation.safe_file(self._key_path,private=True,limit=32),'forward')
                     marker=json.loads(backup_installation.safe_file(self.home/forward.ATTEMPT_NAME,private=True,limit=4096))
                     if (record['operation']!=operation or record['uid']!=uid or record['original_rv']!=ops[1]['value']
                             or marker!={'operation':operation,'intent_sha256':forward._hash(record)}):raise ValueError
                 else:
                     from scripts import kubernetes_loopback_recovery as recovery
                     record,_=recovery._record(self.home,plan,operation,self.api)
+                    from scripts import kubernetes_loopback_auth as loopback_auth
+                    loopback_auth.verify(self,operation,backup_installation.safe_file(self._key_path,private=True,limit=32),'reverse')
                     marker=json.loads(backup_installation.safe_file(self.home/recovery.ATTEMPT_NAME,private=True,limit=4096))
                     if (record['uid']!=uid or record['resource_version']!=ops[1]['value']
                             or marker!={'operation':operation,'intent_sha256':forward._hash(record)}):raise ValueError
@@ -283,6 +288,20 @@ class BoundSession:
     def _query(self,args):
         if not _query_allowed(self.site,args):raise CoordinatorError('KUBE_OPERATOR_REQUEST_REJECTED')
         self._guard();value=self._inner._query(args);self._guard();return value
+
+    def _get_configured_object(self,kind,name):
+        """Read only an independently pinned installation Secret/ConfigMap."""
+        try:
+            if self._executor is None or self._record['schema']!=2 or kind not in ('secret','configmap'):raise ValueError
+            expected=self._record['object_uids'][kind+'/'+name]
+            self._scope();value=self._inner._query(['get',kind,name]);meta=value['metadata']
+            if (value.get('kind')!=('Secret' if kind=='secret' else 'ConfigMap')
+                    or meta.get('name')!=name or meta.get('namespace')!=self.site or meta.get('uid')!=expected
+                    or meta.get('deletionTimestamp') or not isinstance(meta.get('resourceVersion'),str)
+                    or not re.fullmatch(r'[0-9]{1,32}',meta['resourceVersion'])):raise ValueError
+            self._scope()
+            return value
+        except Exception:raise CoordinatorError('KUBE_OPERATOR_OBJECT_UNVERIFIED') from None
 
     def reverify(self):
         self._guard();value=self._inner.reverify();self._guard();return value
