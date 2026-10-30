@@ -64,6 +64,15 @@ class ProbeHarnessTests(unittest.TestCase):
                 probe.main("binary")
             self.assertEqual(run.call_args_list, [mock.call(["docker", "context", "show"])])
 
+    def test_default_context_must_use_local_linux_socket(self):
+        env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux"}
+        remote = b'[{"Endpoints":{"docker":{"Host":"tcp://example:2375"}}}]'
+        with mock.patch.dict(probe.os.environ, env, clear=True), \
+                mock.patch.object(probe, "run", side_effect=[b"default", remote]) as run:
+            with self.assertRaises(RuntimeError):
+                probe.main("binary")
+            self.assertEqual(run.call_count, 2)
+
     def test_cleanup_requires_exact_id_and_owner_label(self):
         env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux"}
         container = "a" * 64
@@ -71,20 +80,46 @@ class ProbeHarnessTests(unittest.TestCase):
         for inspection, should_remove in ((f"{container} {owner}", True),
                                            (f"{container} wrong", False),
                                            (f"{'c' * 64} {owner}", False)):
+            details = b'[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]'
+            results = [b"default", details, container.encode(), RuntimeError("stop"), inspection.encode()]
+            if should_remove:
+                results.append(container.encode())
             with self.subTest(inspection=inspection), mock.patch.dict(probe.os.environ, env, clear=True), \
                     mock.patch.object(probe.uuid, "uuid4", return_value=mock.Mock(hex=owner)), \
-                    mock.patch.object(probe, "run", side_effect=[b"default", container.encode(),
-                                                               RuntimeError("stop"), inspection.encode()]), \
-                    mock.patch.object(probe.subprocess, "run") as subprocess_run, \
+                    mock.patch.object(probe, "run", side_effect=results) as run, \
                     mock.patch.object(probe.time, "sleep"):
                 # Force the retry loop to terminate immediately with a synthetic exception.
                 with mock.patch.object(probe, "range", return_value=range(1), create=True):
-                    with self.assertRaises(RuntimeError):
+                    with self.assertRaises(RuntimeError) as error:
                         probe.main("binary")
-                self.assertEqual(subprocess_run.called, should_remove)
+                self.assertEqual("cleanup unconfirmed" in str(error.exception), not should_remove)
                 if should_remove:
-                    self.assertEqual(subprocess_run.call_args.args[0], ["docker", "rm", "-f", container])
-                    self.assertEqual(subprocess_run.call_args.kwargs["timeout"], probe.TIMEOUT_SECONDS)
+                    self.assertEqual(run.call_args.args[0], ["docker", "--context", "default", "rm", "-f", container])
+                else:
+                    self.assertFalse(any("rm" in call.args[0] for call in run.call_args_list))
+
+    def test_run_failure_has_unconfirmed_cleanup(self):
+        env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux"}
+        details = b'[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]'
+        for result in (subprocess.TimeoutExpired("docker", 50), b"unexpected-id"):
+            with self.subTest(result=result), mock.patch.dict(probe.os.environ, env, clear=True), \
+                    mock.patch.object(probe, "run", side_effect=[b"default", details, result]):
+                with self.assertRaisesRegex(RuntimeError, "cleanup unconfirmed"):
+                    probe.main("binary")
+
+    def test_failed_removal_has_unconfirmed_cleanup(self):
+        env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux"}
+        container, owner = "a" * 64, "b" * 32
+        details = b'[{"Endpoints":{"docker":{"Host":"unix:///var/run/docker.sock"}}}]'
+        results = [b"default", details, container.encode(), RuntimeError("stop"),
+                   f"{container} {owner}".encode(), RuntimeError("rm failed")]
+        with mock.patch.dict(probe.os.environ, env, clear=True), \
+                mock.patch.object(probe.uuid, "uuid4", return_value=mock.Mock(hex=owner)), \
+                mock.patch.object(probe, "run", side_effect=results), \
+                mock.patch.object(probe.time, "sleep"), \
+                mock.patch.object(probe, "range", return_value=range(1), create=True):
+            with self.assertRaisesRegex(RuntimeError, "cleanup unconfirmed"):
+                probe.main("binary")
 
     def test_rejects_unknown_or_short_snapshots_without_execution(self):
         def fail(*args, **kwargs):

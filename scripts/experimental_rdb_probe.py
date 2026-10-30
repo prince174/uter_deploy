@@ -4,6 +4,7 @@ The snapshot contains synthetic data only. Redis writes it to a container tmpfs;
 the host forwards it from RAM to the probe's stdin and never writes it to disk.
 It tests Redis 7.4.2, not the digest shipped with the product.
 """
+import json
 import os
 import re
 import subprocess
@@ -49,19 +50,26 @@ def verify_probe(binary, snapshot, expiry, execute=subprocess.run):
 
 def main(binary):
     container = None
+    resource_uncertain = False
     owner = uuid.uuid4().hex
     runner_guard(os.environ)
     if run(["docker", "context", "show"]).strip() != b"default":
         raise RuntimeError("Docker context is not default")
+    details = json.loads(run(["docker", "--context", "default", "context", "inspect", "default"]))
+    if (not isinstance(details, list) or len(details) != 1 or
+            details[0].get("Endpoints", {}).get("docker", {}).get("Host") != "unix:///var/run/docker.sock"):
+        raise RuntimeError("Docker default context must use local Linux socket")
     try:
-        container = run(["docker", "run", "-d", "--label", f"{OWNER_LABEL}={owner}",
+        resource_uncertain = True
+        container = run(["docker", "--context", "default", "run", "-d", "--label", f"{OWNER_LABEL}={owner}",
                          "--network", "none", "--tmpfs", "/data:rw,mode=1777",
                          IMAGE, "redis-server", "--save", "", "--appendonly", "no"]).decode().strip()
         if not re.fullmatch(r"[0-9a-f]{64}", container):
             container = None
             raise RuntimeError("unexpected Docker container identifier")
+        resource_uncertain = False
         def redis(*args, data=None):
-            return run(["docker", "exec", "-i", container, "redis-cli", "-n", "2", *args], data=data).strip()
+            return run(["docker", "--context", "default", "exec", "-i", container, "redis-cli", "-n", "2", *args], data=data).strip()
 
         for _ in range(50):
             try:
@@ -79,24 +87,29 @@ def main(binary):
         expiry = int(redis("PEXPIRETIME", "sess:synthetic"))
         if redis("SAVE") != b"OK":
             raise RuntimeError("synthetic snapshot failed")
-        snapshot = run(["docker", "exec", container, "cat", "/data/dump.rdb"])
+        snapshot = run(["docker", "--context", "default", "exec", container, "cat", "/data/dump.rdb"])
         deadline = time.monotonic() + 30
         while redis("EXISTS", "sess:synthetic") != b"0":
             if time.monotonic() >= deadline:
                 raise RuntimeError("synthetic TTL did not expire")
             time.sleep(0.2)
         verify_probe(binary, snapshot, expiry)
-        print("Synthetic Redis 7.4 expired-key extraction and integrity checks passed.")
     finally:
+        cleanup_failed = resource_uncertain
         if container:
             try:
                 template = '{{.Id}} {{index .Config.Labels "' + OWNER_LABEL + '"}}'
-                identity = run(["docker", "inspect", "--format", template, container]).decode().strip()
-                if identity == f"{container} {owner}":
-                    subprocess.run(["docker", "rm", "-f", container], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, check=False, timeout=TIMEOUT_SECONDS)
+                identity = run(["docker", "--context", "default", "inspect", "--format", template, container]).decode().strip()
+                if identity != f"{container} {owner}":
+                    raise RuntimeError("synthetic container ownership mismatch")
+                removed = run(["docker", "--context", "default", "rm", "-f", container]).decode().strip()
+                if removed != container:
+                    raise RuntimeError("unexpected Docker removal response")
             except (RuntimeError, OSError, subprocess.TimeoutExpired, UnicodeError):
-                pass
+                cleanup_failed = True
+        if cleanup_failed:
+            raise RuntimeError("synthetic Docker cleanup unconfirmed")
+    print("Synthetic Redis 7.4 expired-key extraction and integrity checks passed; cleanup confirmed.")
 
 
 if __name__ == "__main__":
@@ -104,5 +117,7 @@ if __name__ == "__main__":
         raise SystemExit("usage: experimental_rdb_probe.py PROBE_BINARY")
     try:
         main(sys.argv[1])
-    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
-        raise SystemExit("Synthetic Redis RDB experiment failed; no snapshot was published.")
+    except RuntimeError as exc:
+        raise SystemExit("Synthetic Redis RDB experiment failed: " + str(exc))
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit("Synthetic Redis RDB experiment failed: " + type(exc).__name__)
