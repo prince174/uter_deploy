@@ -118,6 +118,24 @@ class ComposeFenceStartTests(unittest.TestCase):
                 with self.assertRaisesRegex(start.StartError,'^FENCE_START_WRITER_EXIT_UNVERIFIED$'):
                     start._writers_stopped({'guardrail':writer},'test')
 
+    def test_fixed_diagnostic_classes_never_expose_changed_values(self):
+        examples={'container_id':'PROCESS','image_ref':'IMAGE','network_id':'NETWORK_ID',
+                  'network_driver':'NETWORK_POLICY','network_subnet':'IPAM','endpoint_id':'ENDPOINT_ID',
+                  'endpoint_ipv4':'ENDPOINT_ADDRESS','endpoint_aliases':'ENDPOINT_ALIASES',
+                  'endpoint_mac':'ENDPOINT_MAC','endpoint_driver_options':'ENDPOINT_OPTIONS','volume_name':'VOLUME',
+                  'site':'OTHER'}
+        for field,category in examples.items():
+            with self.subTest(field=field):
+                altered=dict(self.plan,**{field:'secret-canary'})
+                code=start._plan_change(self.plan,altered)
+                self.assertEqual(code,'FENCE_START_RECHECK_PLAN_'+category)
+                self.assertNotIn('secret-canary',code)
+        for field,category in (('id','IDENTITY'),('image_id','IDENTITY'),('started','STARTED'),('restart_count','RESTART')):
+            changed={name:dict(value) for name,value in self.writers.items()}
+            changed['agent'][field]='secret-canary'
+            code=start._writers_change(self.writers,changed,'FENCE_START_RECHECK_WRITERS')
+            self.assertEqual(code,'FENCE_START_RECHECK_WRITERS_'+category)
+
 
 @unittest.skipUnless(os.name=='posix' and hasattr(os,'O_NOFOLLOW'),'requires POSIX private files')
 class FenceStartCLITests(unittest.TestCase):

@@ -39,6 +39,8 @@ class SignedNamespaceCITests(unittest.TestCase):
     def test_start_diagnostic_never_forwards_untrusted_stderr(self):
         valid=b'uterctl: StartError: FENCE_START_WRITER_EXIT_UNVERIFIED\n'
         self.assertEqual(ci._start_diagnostic(valid),ci.START_DIAGNOSTICS['FENCE_START_WRITER_EXIT_UNVERIFIED'])
+        detail=b'uterctl: StartError: FENCE_START_RECHECK_PLAN_ENDPOINT_ID\n'
+        self.assertEqual(ci._start_diagnostic(detail),ci.START_DIAGNOSTICS['FENCE_START_RECHECK_PLAN_ENDPOINT_ID'])
         for raw in (b'uterctl: StartError: FENCE_START_WRITER_EXIT_UNVERIFIED secret\n',
                     b'uterctl: StartError: FENCE_START_UNKNOWN\n',
                     b'secret\n'+valid,valid+b'secret\n',b'\xff'):

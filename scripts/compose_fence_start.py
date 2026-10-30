@@ -28,6 +28,43 @@ def _canonical(value):
     return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('ascii')
 
 
+def _changed_class(before,after,groups,prefix):
+    """Report only fixed field classes, never field values or external output."""
+    if not isinstance(before,dict) or not isinstance(after,dict):return prefix+'_OTHER'
+    for label,fields in groups:
+        if any(before.get(name)!=after.get(name) for name in fields):return prefix+'_'+label
+    return prefix+'_OTHER'
+
+
+def _redis_change(before,after):
+    return _changed_class(before,after,(('PROCESS',('id','running','pid','started','restart_count','restart')),
+        ('IMAGE',('image','image_id')),('NETWORK',('network_mode','ports','publish_all','runtime_ports','networks')),
+        ('VOLUME',('mounts',))), 'FENCE_START_OBSERVE_REDIS')
+
+
+def _plan_change(before,after):
+    return _changed_class(before,after,(('PROCESS',('container_id','started_at','restart_count','restart_policy')),
+        ('IMAGE',('image_ref','image_config_id')),
+        ('NETWORK_ID',('network_id','network_name')),
+        ('NETWORK_POLICY',('network_driver','network_scope','network_internal','ipv6_enabled','network_options')),
+        ('IPAM',('network_subnet','network_gateway')),
+        ('ENDPOINT_ID',('endpoint_id',)),('ENDPOINT_ADDRESS',('endpoint_ipv4','endpoint_static_ipv4')),
+        ('ENDPOINT_ALIASES',('endpoint_aliases',)),('ENDPOINT_MAC',('endpoint_mac',)),
+        ('ENDPOINT_OPTIONS',('endpoint_driver_options',)),
+        ('VOLUME',('volume_name','volume_driver'))), 'FENCE_START_RECHECK_PLAN')
+
+
+def _writers_change(before,after,prefix):
+    if not isinstance(before,dict) or not isinstance(after,dict):return prefix+'_OTHER'
+    for label,fields in (('IDENTITY',('id','image_ref','image_id')),('STARTED',('started',)),
+                         ('RESTART',('restart_count',))):
+        for service in ('guardrail','agent'):
+            left,right=before.get(service),after.get(service)
+            if not isinstance(left,dict) or not isinstance(right,dict):return prefix+'_OTHER'
+            if any(left.get(field)!=right.get(field) for field in fields):return prefix+'_'+label
+    return prefix+'_OTHER'
+
+
 def _validate_intent(record):
     if (not isinstance(record,dict)
             or set(record)!={'schema','operation','site','redis','guardrail','agent','plan_sha256','bundle_sha256'}
@@ -190,8 +227,10 @@ def _observe(home,bundle,publisher,key,adapter):
     adapter._lock();adapter._config(Path(home)/'releases'/manifest['version'])
     adapter._state(plan,detached=False,restart='unless-stopped',original_endpoint=True)
     adapter._network_and_volume(plan);adapter._peers(plan)
-    if diagnostic._redis_inspect(redis)!=live or _writers(command,env,cfg['name'],manifest)!=writers:
-        raise StartError('FENCE_START_STATE_CHANGED')
+    again=diagnostic._redis_inspect(redis)
+    if again!=live:raise StartError(_redis_change(live,again))
+    other_writers=_writers(command,env,cfg['name'],manifest)
+    if other_writers!=writers:raise StartError(_writers_change(writers,other_writers,'FENCE_START_OBSERVE_WRITERS'))
     return plan,writers,hashlib.sha256((Path(bundle)/'checksums.json').read_bytes()).hexdigest()
 
 
@@ -215,8 +254,10 @@ def start(home,bundle,publisher,key):
         # Recheck every exact service/Redis identity after durable intent and
         # immediately before the first mutation. Never infer timeout success.
         phase='RECHECK';adapter._lock();again,now,current_hash=_observe(home,bundle,publisher,key,adapter)
-        if dict(again,operation=plan['operation'])!=plan or now!=writers or current_hash!=bundle_hash:
-            raise StartError('FENCE_START_STATE_CHANGED')
+        normalized=dict(again,operation=plan['operation'])
+        if normalized!=plan:raise StartError(_plan_change(plan,normalized))
+        if now!=writers:raise StartError(_writers_change(writers,now,'FENCE_START_RECHECK_WRITERS'))
+        if current_hash!=bundle_hash:raise StartError('FENCE_START_RECHECK_BUNDLE_CHANGED')
         phase='STOP';adapter._run('stop','--time','25',writers['guardrail']['id'],writers['agent']['id'])
         phase='WRITER_STOP_VERIFY'
         _writers_stopped(writers,plan['site'])
