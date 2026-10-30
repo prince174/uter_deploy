@@ -469,10 +469,60 @@ def _verify(home, bundle, publisher, manifest):
         _ci_wait_recovery_child(recovery_pid)
         PHASE='SNAPSHOT_CRASH_RESUME'
         with uterctl.locked(home):backup_snapshot.resume_writers(home,cfg,site,manifest)
+    # Separate CLI round: capture must execute from the ephemeral signed
+    # controller, not from a caller-supplied Python callback. The forced-death
+    # test above remains separate, because this CLI is allowed to exit normally.
+    PHASE='SNAPSHOT_CLI_SETUP'
+    with tempfile.TemporaryDirectory(prefix='snapshot-cli-ci-',dir=ROOT/'work') as temp:
+        executor,executor_public=_ci_signed_executor(bundle,temp)
+        destination=Path(temp)/'backup';snap_key=os.urandom(32);snap_operation=plans.new_operation()
+        snap_plan=dict(plan,operation=snap_operation);keyfile=Path(temp)/'backup.key'
+        fd=os.open(keyfile,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,'wb') as output:
+            os.fchmod(output.fileno(),0o600);output.write(snap_key);output.flush();os.fsync(output.fileno())
+        with uterctl.locked(home):
+            checked(cmd+['stop','guardrail','agent'],supplied_env=runenv)
+            digest=plans.create(home,snap_plan,snap_key)
+            entry=journal.create(home,backend='compose',site=cfg['name'],resource=redis_id,
+                                 plan_sha256=digest,operation=snap_operation)
+            owned=fence.Adapter(home,bundle,publisher,snap_key)
+            try:
+                if owned._redis(snap_plan,'SET',KEY,VALUE)!='OK':raise ValueError
+                protocol.isolate(home,snap_operation,owned)
+            finally:owned.close()
+        PHASE='SNAPSHOT_CLI_CAPTURE'
+        process=subprocess.run([sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-backup-redis',
+                                '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
+                                '--backup-key',str(keyfile),'--backup-dir',str(destination),
+                                '--executor-key',str(executor_public)],cwd=executor,
+                               env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                                    'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
+        if process.returncode:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_SNAPSHOT_COMMAND')
+        PHASE='SNAPSHOT_CLI_RECOVERY'
+        with uterctl.locked(home):
+            entry=journal.read(home)
+            if entry['operation']!=snap_operation or entry['phase']!='captured':raise ValueError
+            owned=fence.Adapter(home,bundle,publisher,snap_key)
+            try:
+                snapshot_only.recover(owned,executor,executor_public,destination)
+                entry=journal.read(home)
+                if entry['phase']!='redis_released':raise ValueError
+                owned._signed(snap_plan)
+                if owned._redis(snap_plan,'GET',KEY)!=VALUE:raise ValueError
+                if docker_json('inspect','--format','{{json .NetworkSettings.Networks}}',redis_id)!=endpoint_before:raise ValueError
+                if owned._redis(snap_plan,'DEL',KEY)!='1':raise ValueError
+                plans.read(home,snap_key,entry['plan_sha256'],operation=snap_operation,site=cfg['name'],resource=redis_id)
+                checkpoint.read(home,entry,snap_key);snapshot_receipts.read_decision(home,snap_key)
+                for name in (journal.NAME,plans.NAME,checkpoint.NAME,snapshot_receipts.DECISION,
+                             snapshot_receipts.RECEIPT,snapshot_receipts.DESCRIPTOR):(home/name).unlink()
+            finally:owned.close()
+        PHASE='SNAPSHOT_CLI_RESUME'
+        with uterctl.locked(home):backup_snapshot.resume_writers(home,cfg,site,manifest)
     return {'signed_016_firewall_fence':'pass','no_capture_release':'pass',
             'snapshot_under_firewall':'pass','release_after_capture_blocked':'pass',
             'unchanged_endpoint':'pass','ci_only_cleanup':'pass',
-            'pre_capture_sigkill_recovery':'pass','snapshot_sigkill_recovery':'pass',
+            'pre_capture_sigkill_recovery':'pass','snapshot_sigkill_recovery':'pass','signed_snapshot_cli':'pass',
             'production_recovery_available':False}
 
 
