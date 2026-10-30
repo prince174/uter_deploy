@@ -405,6 +405,10 @@ def _verify(home, bundle, publisher, manifest):
         executor,executor_public=_ci_signed_executor(bundle,temp)
         destination=Path(temp)/'backup';snap_key=os.urandom(32);snap_operation=plans.new_operation()
         snap_plan=dict(plan,operation=snap_operation)
+        keyfile=Path(temp)/'backup.key'
+        fd=os.open(keyfile,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,'wb') as output:
+            os.fchmod(output.fileno(),0o600);output.write(snap_key);output.flush();os.fsync(output.fileno())
         with uterctl.locked(home):checked(cmd+['stop','guardrail','agent'],supplied_env=runenv)
         readfd,writefd=os.pipe();pid=os.fork()
         if pid==0:
@@ -447,9 +451,16 @@ def _verify(home, bundle, publisher, manifest):
         if recovery_pid==0:
             owned=None
             try:
+                process=subprocess.run([sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-recover-snapshot-redis',
+                                        '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
+                                        '--backup-key',str(keyfile),'--backup-dir',str(destination),
+                                        '--executor-key',str(executor_public)],cwd=executor,
+                                       env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                                            'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=240)
+                if process.returncode:raise ValueError
                 with uterctl.locked(home):
                     owned=fence.Adapter(home,bundle,publisher,snap_key)
-                    snapshot_only.recover(owned,executor,executor_public,destination)
                     entry=journal.read(home)
                     if entry['phase']!='redis_released':raise ValueError
                     owned._signed(snap_plan)
@@ -510,14 +521,19 @@ def _verify(home, bundle, publisher, manifest):
                                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
         if process.returncode:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_SNAPSHOT_COMMAND')
         PHASE='SNAPSHOT_CLI_RECOVERY'
+        process=subprocess.run([sys.executable,'-I','-B',str(executor/'uterctl.py'),'fence-recover-snapshot-redis',
+                                '--home',str(home),'--bundle',str(bundle),'--key',str(publisher),
+                                '--backup-key',str(keyfile),'--backup-dir',str(destination),
+                                '--executor-key',str(executor_public)],cwd=executor,
+                               env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                                    'LANG':'C','HOME':'/root'},stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=600)
+        if process.returncode:raise SignedComposeFenceCheckFailure('COMPOSE_SIGNED_CI_RECOVERY_COMMAND')
         with uterctl.locked(home):
             entry=journal.read(home)
-            if entry['operation']!=snap_operation or entry['phase']!='captured':raise ValueError
+            if entry['operation']!=snap_operation or entry['phase']!='redis_released':raise ValueError
             owned=fence.Adapter(home,bundle,publisher,snap_key)
             try:
-                snapshot_only.recover(owned,executor,executor_public,destination)
-                entry=journal.read(home)
-                if entry['phase']!='redis_released':raise ValueError
                 owned._signed(snap_plan)
                 if owned._redis(snap_plan,'GET',KEY)!=VALUE:raise ValueError
                 if docker_json('inspect','--format','{{json .NetworkSettings.Networks}}',redis_id)!=endpoint_before:raise ValueError
