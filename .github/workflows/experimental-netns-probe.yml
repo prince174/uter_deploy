@@ -1,0 +1,25 @@
+name: Experimental synthetic Redis network namespace
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/experimental-netns-probe.yml
+      - scripts/experimental_netns_probe.py
+      - tests/test_experimental_netns_probe.py
+permissions:
+  contents: read
+jobs:
+  synthetic-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Unit tests (never start Docker)
+        run: python3 -m unittest discover -s tests -p test_experimental_netns_probe.py -v
+      - name: Synthetic disposable netns experiment
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          python3 scripts/experimental_netns_probe.py
