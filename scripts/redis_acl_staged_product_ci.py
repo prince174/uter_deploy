@@ -111,8 +111,10 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         request_thread=threading.Thread(target=complete_request,args=(login['access_token'],),daemon=True)
         state['threads'].append(request_thread)
         redis_id=pinned['redis']['id']
-        state['phase']='REDIS_PORT';mapping=product._docker('port',redis_id,'6379/tcp')
+        state['phase']='REDIS_PORT_QUERY';mapping=product._docker('port',redis_id,'6379/tcp')
+        state['phase']='REDIS_PORT_FORMAT'
         if not re.fullmatch(r'127\.0\.0\.1:[1-9][0-9]{0,4}',mapping):raise ValueError
+        state['phase']='REDIS_PORT_RANGE'
         port=int(mapping.rsplit(':',1)[1])
         if not 1<=port<=65535:raise ValueError
         state['phase']='REDIS_ADMIN_AUTH';admin=redis_acl_experiment_ci.Client(port);state['clients'].append(admin)
@@ -233,7 +235,8 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
     except Exception:
         allowed={'INITIAL','PIN','LOGIN_HTTP','LOGIN_HTTP_OTHER','LOGIN_RESPONSE','LOGIN_RECHECK',
                  'LOGIN_HTTP_400','LOGIN_HTTP_401','LOGIN_HTTP_403','LOGIN_HTTP_404','LOGIN_HTTP_429',
-                 'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_PORT','REDIS_ADMIN_AUTH','REDIS_WRITER_AUTH',
+                 'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_PORT_QUERY','REDIS_PORT_FORMAT','REDIS_PORT_RANGE',
+                 'REDIS_ADMIN_AUTH','REDIS_WRITER_AUTH',
                  'ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}
         allowed|={'LOGIN_RECHECK_'+service+'_'+field for service in ('AGENT','GUARDRAIL','REDIS')
