@@ -182,24 +182,29 @@ class StagedAdmission:
     def finish_after_drain(self,drain_guard):
         """CI callback is not itself evidence of a real drain or production fence."""
         try:
+            self.failure_phase='FINISH_GUARD'
             if self.phase!='auth-disabled' or not callable(drain_guard) or drain_guard() is not True:raise ValueError
+            self.failure_phase='FINISH_OBSERVE'
             self._observe(disabled=True)
+            self.failure_phase='FINISH_CLIENTS'
             current=_clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=False)
             if not current.issubset(self.writer_clients) or self.intent('kill-writer-clients') is not True:raise ValueError
             self.phase='uncertain'
+            self.failure_phase='FINISH_REOBSERVE'
             self._observe(disabled=True)
             if (_clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=False)!=current
                     or self.guard() is not True or drain_guard() is not True):raise ValueError
-            count=self.execute('CLIENT','KILL','USER',WRITER,'SKIPME','yes')
+            self.failure_phase='FINISH_KILL';count=self.execute('CLIENT','KILL','USER',WRITER,'SKIPME','yes')
             if type(count) is not int or count<0:raise ValueError
-            self._observe(disabled=True)
+            self.failure_phase='FINISH_POST_OBSERVE';self._observe(disabled=True)
+            self.failure_phase='FINISH_POST_CLIENTS'
             _clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=True)
-            self._observe(disabled=True)
+            self.failure_phase='FINISH_RECEIPT';self._observe(disabled=True)
             if drain_guard() is not True or self.receipt('writer-clients-killed') is not True:raise ValueError
-            self._observe(disabled=True)
+            self.failure_phase='FINISH_FINAL_OBSERVE';self._observe(disabled=True)
             if (_clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=True)
                     or self.guard() is not True or drain_guard() is not True):raise ValueError
-            self.phase='finished'
+            self.phase='finished';self.failure_phase='COMPLETE'
             return {'writer_auth_disabled':True,'writer_clients_killed':count,
                     'safe_to_backup':False,'safe_to_update':False}
         except Exception:

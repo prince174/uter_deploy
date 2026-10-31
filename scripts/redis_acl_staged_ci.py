@@ -205,7 +205,10 @@ def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
                     or restart_intents or any(command[:2]==('CLIENT','KILL') for command in calls)):raise ValueError
         else:
             PHASE='FINISH'
-            result=session.finish_after_drain(lambda:True)  # Synthetic drain, not Uter.
+            try:result=session.finish_after_drain(lambda:True)  # Synthetic drain, not Uter.
+            except staged.StagedError:
+                DETAIL=session.failure_phase;OBSERVATION=session.observe_phase
+                raise
             if result['writer_clients_killed']!=1 or result['safe_to_update']:raise ValueError
             try:writer.call('PING')
             except (OSError,ValueError):pass
@@ -268,7 +271,9 @@ if __name__=='__main__':
         allowed={'INITIAL','PROFILE','PULL','REDIS_START','REDIS_PORT','ADMIN_AUTH','WRITER_AUTH','DISABLE',
                  'OLD_WRITER','NEW_AUTH','FINISH','RESTART','RESTART_REAUTH','RESTART_IDENTITY','RESTART_STALE','CLEANUP'}
         details={'NONE','INITIAL','OBSERVE_ON','CLIENTS_ON','REOBSERVE_ON','DURABLE_PREPARE',
-                 'DURABLE_REOBSERVE_ON','ACL_OFF','OBSERVE_OFF','CLIENTS_OFF','FINAL_OBSERVE','COMPLETE'}
+                 'DURABLE_REOBSERVE_ON','ACL_OFF','OBSERVE_OFF','CLIENTS_OFF','FINAL_OBSERVE','COMPLETE',
+                 'FINISH_GUARD','FINISH_OBSERVE','FINISH_CLIENTS','FINISH_REOBSERVE','FINISH_KILL',
+                 'FINISH_POST_OBSERVE','FINISH_POST_CLIENTS','FINISH_RECEIPT','FINISH_FINAL_OBSERVE'}
         observations={'NONE','INITIAL','GUARD_BEFORE','INFO_SERVER','INFO_REPLICATION','INFO_PERSISTENCE',
                       'REDIS_IDENTITY','ACL_USERS','ACL_DEFAULT','ACL_WRITER','ACL_ADMIN','IDENTITY_AFTER',
                       'PROFILE_AFTER','DURABLE_AFTER','COMPLETE'}
