@@ -101,7 +101,7 @@ def create(bundle,publisher,directory,backup_key,site,backend):
             os.close(fd)
 
 
-def read(bundle,publisher,directory,backup_key,site,backend):
+def _load(bundle,publisher,directory,backup_key,site,backend):
     """Authenticate a draft in memory; never publish files or start Redis."""
     directory_fd=None;file_fd=None
     try:
@@ -127,8 +127,13 @@ def read(bundle,publisher,directory,backup_key,site,backend):
         if payload['acl']!=expected:raise ValueError
         _same_directory(directory,directory_fd,info)
         if redis_acl_staged.verify_profile(bundle,publisher)!=manifest:raise ValueError
-        return payload
+        return payload,hashlib.sha256(raw).hexdigest()
     except Exception:raise CapsuleError('REDIS_ACL_CAPSULE_UNVERIFIED') from None
     finally:
         if file_fd is not None:os.close(file_fd)
         if directory_fd is not None:os.close(directory_fd)
+
+
+def read(bundle,publisher,directory,backup_key,site,backend):
+    """Return verified draft secrets only to the trusted caller."""
+    return _load(bundle,publisher,directory,backup_key,site,backend)[0]
