@@ -111,13 +111,13 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         request_thread=threading.Thread(target=complete_request,args=(login['access_token'],),daemon=True)
         state['threads'].append(request_thread)
         redis_id=pinned['redis']['id']
-        mapping=product._docker('port',redis_id,'6379/tcp')
+        state['phase']='REDIS_PORT';mapping=product._docker('port',redis_id,'6379/tcp')
         if not re.fullmatch(r'127\.0\.0\.1:[1-9][0-9]{0,4}',mapping):raise ValueError
         port=int(mapping.rsplit(':',1)[1])
         if not 1<=port<=65535:raise ValueError
-        admin=redis_acl_experiment_ci.Client(port);state['clients'].append(admin)
+        state['phase']='REDIS_ADMIN_AUTH';admin=redis_acl_experiment_ci.Client(port);state['clients'].append(admin)
         if redis_acl_staged_ci.auth(admin,'uter-maint-test',acl_admin_password) is not True:raise ValueError
-        writer=redis_acl_experiment_ci.Client(port);state['clients'].append(writer)
+        state['phase']='REDIS_WRITER_AUTH';writer=redis_acl_experiment_ci.Client(port);state['clients'].append(writer)
         if redis_acl_staged_ci.auth(writer,'uter-writer',writer_password) is not True:raise ValueError
         state['phase']='ACCEPT_REQUEST';request_thread.start();deadline=time.monotonic()+40
         while not (signals/'entered').exists():
@@ -233,7 +233,8 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
     except Exception:
         allowed={'INITIAL','PIN','LOGIN_HTTP','LOGIN_HTTP_OTHER','LOGIN_RESPONSE','LOGIN_RECHECK',
                  'LOGIN_HTTP_400','LOGIN_HTTP_401','LOGIN_HTTP_403','LOGIN_HTTP_404','LOGIN_HTTP_429',
-                 'LOGIN_HTTP_500','LOGIN_HTTP_503','ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
+                 'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_PORT','REDIS_ADMIN_AUTH','REDIS_WRITER_AUTH',
+                 'ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}
         allowed|={'LOGIN_RECHECK_'+service+'_'+field for service in ('AGENT','GUARDRAIL','REDIS')
                   for field in ('ID','IMAGE','RUNNING','STARTED','RESTARTS','PROJECT','SERVICE')}
