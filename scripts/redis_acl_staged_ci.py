@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 IMAGE='ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc'
 LABEL='uter.staged-acl.fixture'
+PHASE='INITIAL'
 
 
 def docker(*args,env):
@@ -40,6 +41,7 @@ def auth(client,user,password):
 
 
 def exercise(private,env,profile_bundle,publisher,*,restart):
+    global PHASE
     nonce=secrets.token_hex(16);name='uter-staged-acl-'+nonce;ident=None;attempted=False
     connected=[];restart_observation=None;writer_password=secrets.token_hex(32);admin_password=secrets.token_hex(32)
     config=private/('redis-'+nonce+'.conf')
@@ -59,12 +61,12 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
         return recorder._read(name)==value
     try:
         if docker('ps','-aq','--no-trunc','--filter','name=^/'+name+'$',env=env):raise ValueError
-        attempted=True
+        PHASE='REDIS_START';attempted=True
         ident=docker('run','-d','--name',name,'--label',LABEL+'='+nonce,'--restart','no','--user','0:0',
             '--publish','127.0.0.1::6379','--mount','type=bind,source='+str(config)+',target=/tmp/uter-redis.conf,readonly',
             '--entrypoint','redis-server',IMAGE,'/tmp/uter-redis.conf',env=env)
         if not re.fullmatch(r'[0-9a-f]{64}',ident):ident=None;raise ValueError
-        mapping=docker('port',ident,'6379/tcp',env=env)
+        PHASE='REDIS_PORT';mapping=docker('port',ident,'6379/tcp',env=env)
         if not re.fullmatch(r'127\.0\.0\.1:[1-9][0-9]{0,4}',mapping):raise ValueError
         port=int(mapping.rsplit(':',1)[1])
         if not 1<=port<=65535:raise ValueError
@@ -73,8 +75,10 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
             except OSError:
                 if attempt==59:raise
                 time.sleep(.25)
+        PHASE='ADMIN_AUTH'
         if auth(admin,'uter-maint-test',admin_password) is not True:raise ValueError
         writer=clients.Client(port);connected.append(writer)
+        PHASE='WRITER_AUTH'
         if auth(writer,'uter-writer',writer_password) is not True:raise ValueError
         writer.call('SET','ci-initial','ok')
         run_id=next(x.split(':',1)[1] for x in admin.call('INFO','SERVER').splitlines() if x.startswith('run_id:'))
@@ -83,19 +87,23 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
             admin_user='uter-maint-test',run_id=run_id,client_id=client_id,
             record_intent=lambda stage:record('intent',stage),record_receipt=lambda stage:record('receipt',stage),
             identity_guard=lambda:True)  # Synthetic fixture; no production Docker identity proof.
-        first=session.disable_new_auth()
+        PHASE='DISABLE';first=session.disable_new_auth()
         if first['prior_writer_connections_retained']!=1 or first['safe_to_update']:raise ValueError
         # Redis ACL off must leave an already authenticated connection usable.
+        PHASE='OLD_WRITER';
         if writer.call('SET','ci-after-disable','ok')!='OK':raise ValueError
         newcomer=clients.Client(port);connected.append(newcomer)
+        PHASE='NEW_AUTH'
         if auth(newcomer,'uter-writer',writer_password) is not False:raise ValueError
         newcomer.close();connected.remove(newcomer)
         if restart:
+            PHASE='RESTART'
             docker('restart',ident,env=env)
             try:session.finish_after_drain(lambda:True)
             except staged.StagedError:pass
             else:raise ValueError
             if session.phase!='uncertain':raise ValueError
+            PHASE='RESTART_REAUTH'
             for attempt in range(60):
                 try:
                     new_admin=clients.Client(port);connected.append(new_admin)
@@ -104,7 +112,7 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
                 except (OSError,ValueError):
                     if attempt==59:raise
                     time.sleep(.25)
-            new_run=next(x.split(':',1)[1] for x in new_admin.call('INFO','SERVER').splitlines() if x.startswith('run_id:'))
+            PHASE='RESTART_IDENTITY';new_run=next(x.split(':',1)[1] for x in new_admin.call('INFO','SERVER').splitlines() if x.startswith('run_id:'))
             if new_run==run_id:raise ValueError
             info=new_admin.call('ACL','GETUSER','uter-writer');flags=info.get('flags')
             if not isinstance(flags,list) or ('on' in flags)==('off' in flags):raise ValueError
@@ -120,7 +128,7 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
                 return result
             def restart_intent(stage):
                 restart_intents.append(stage);return record('restart-intent',stage)
-            stale=staged.StagedAdmission(restarted_call,bundle=profile_bundle,publisher=publisher,
+            PHASE='RESTART_STALE';stale=staged.StagedAdmission(restarted_call,bundle=profile_bundle,publisher=publisher,
                 admin_user='uter-maint-test',run_id=run_id,client_id=str(new_admin.call('CLIENT','ID')),
                 record_intent=restart_intent,
                 record_receipt=lambda stage:record('restart-receipt',stage),identity_guard=lambda:True)
@@ -131,13 +139,14 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
             if (len(server_reads)!=1 or 'run_id:'+new_run not in server_reads[0].splitlines()
                     or restart_intents or any(command[:2]==('CLIENT','KILL') for command in calls)):raise ValueError
         else:
+            PHASE='FINISH'
             result=session.finish_after_drain(lambda:True)  # Synthetic drain, not Uter.
             if result['writer_clients_killed']!=1 or result['safe_to_update']:raise ValueError
             try:writer.call('PING')
             except (OSError,ValueError):pass
             else:raise ValueError
     finally:
-        cleanup_failed=False
+        PHASE_FAILURE=PHASE;PHASE='CLEANUP';cleanup_failed=False
         for client in connected:
             for item in (client.file,client.sock):
                 try:item.close()
@@ -152,10 +161,12 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
             docker('rm','-f','-v',ident,env=env)
             if docker('ps','-aq','--no-trunc','--filter','id='+ident,env=env):raise ValueError('CLEANUP_UNCERTAIN')
         if cleanup_failed:raise ValueError('CLEANUP_UNCERTAIN')
+        PHASE=PHASE_FAILURE
     return restart_observation
 
 
 def main():
+    global PHASE
     if (sys.platform!='linux' or os.environ.get('GITHUB_ACTIONS')!='true'
             or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted' or os.environ.get('RUNNER_OS')!='Linux'
             or os.environ.get('UTER_CI_STAGED_ACL')!='true' or os.environ.get('DOCKER_HOST')):
@@ -172,9 +183,9 @@ def main():
             'images':{name:'example/'+name+'@sha256:'+'b'*64 for name in ('guardrail','agent','redis')},
             'maintenance_protocol':{'version':1,'services':['agent','guardrail']}}
         manifest_path=private/'fixture-manifest.json';manifest_path.write_text(json.dumps(manifest))
-        profile_bundle=private/'fixture-bundle';bundle.build(manifest_path,profile_bundle,private_key)
+        PHASE='PROFILE';profile_bundle=private/'fixture-bundle';bundle.build(manifest_path,profile_bundle,private_key)
         if staged.verify_profile(profile_bundle,publisher)!=manifest:raise ValueError
-        docker('pull',IMAGE,env=env)
+        PHASE='PULL';docker('pull',IMAGE,env=env)
         exercise(private,env,profile_bundle,publisher,restart=False)
         restart_observation=exercise(private,env,profile_bundle,publisher,restart=True)
         if restart_observation not in ('RESTART_WRITER_AUTH_ALLOWED','RESTART_WRITER_AUTH_DENIED'):raise ValueError
@@ -185,4 +196,6 @@ def main():
 if __name__=='__main__':
     try:main()
     except Exception:
-        print('STAGED_ACL_REDIS_CI_UNVERIFIED',file=sys.stderr);sys.exit(1)
+        allowed={'INITIAL','PROFILE','PULL','REDIS_START','REDIS_PORT','ADMIN_AUTH','WRITER_AUTH','DISABLE',
+                 'OLD_WRITER','NEW_AUTH','FINISH','RESTART','RESTART_REAUTH','RESTART_IDENTITY','RESTART_STALE','CLEANUP'}
+        print('STAGED_ACL_REDIS_CI_'+(PHASE if PHASE in allowed else 'UNKNOWN')+'_UNVERIFIED',file=sys.stderr);sys.exit(1)
