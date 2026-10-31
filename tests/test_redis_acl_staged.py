@@ -160,3 +160,12 @@ class StagedAdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'AUTH_RESPONSE_UNVERIFIED') as error:
                 ci.auth(client,'user','key')
             self.assertNotIn('retry',str(error.exception))
+
+    def test_ci_identity_mount_order_is_normalized_without_masking_changes(self):
+        left={'mounts':[{'Destination':'/b','RW':False},{'Destination':'/a','RW':True}],'pid':1}
+        right={'mounts':list(reversed(left['mounts'])),'pid':1}
+        self.assertEqual(ci.normalize_mounts(left),ci.normalize_mounts(right))
+        right['mounts'][0]={'Destination':'/a','RW':False}
+        self.assertNotEqual(ci.normalize_mounts(left),ci.normalize_mounts(right))
+        with self.assertRaises(ValueError):
+            ci.normalize_mounts({'mounts':[{'Destination':'/a'},{'Destination':'/a'}]})

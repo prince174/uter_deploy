@@ -45,6 +45,17 @@ def auth(client,user,password):
     raise ValueError('AUTH_RESPONSE_UNVERIFIED')
 
 
+def normalize_mounts(value):
+    """Normalize only unordered mounts; never discard or merge fields."""
+    if not isinstance(value,dict) or not isinstance(value.get('mounts'),list):raise ValueError
+    mounts=value['mounts'];destinations=[]
+    for item in mounts:
+        if not isinstance(item,dict) or not isinstance(item.get('Destination'),str):raise ValueError
+        destinations.append(item['Destination'])
+    if len(destinations)!=len(set(destinations)):raise ValueError
+    return dict(value,mounts=sorted(mounts,key=lambda item:item['Destination']))
+
+
 def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
     global PHASE,CASE,DETAIL,OBSERVATION,IDENTITY
     CASE='DURABLE' if durable else 'LEGACY'
@@ -110,7 +121,7 @@ def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
             fmt=('{"id":{{json .Id}},"running":{{json .State.Running}},"pid":{{json .State.Pid}},'
                  '"started":{{json .State.StartedAt}},"restarts":{{json .RestartCount}},'
                  '"restart":{{json .HostConfig.RestartPolicy.Name}},"mounts":{{json .Mounts}}}')
-            return json.loads(docker('inspect','--format',fmt,ident,env=env))
+            return normalize_mounts(json.loads(docker('inspect','--format',fmt,ident,env=env)))
         pinned=redis_snapshot()
         if (pinned.get('id')!=ident or pinned.get('running') is not True or pinned.get('restart')!='no'
                 or type(pinned.get('pid')) is not int or pinned['pid']<=1):raise ValueError
