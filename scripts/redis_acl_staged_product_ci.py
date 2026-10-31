@@ -153,6 +153,8 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
                 if isinstance(result,tuple) and result[0] in ('HTTP_400','HTTP_401','HTTP_403','HTTP_404',
                     'HTTP_429','HTTP_500','HTTP_503','HTTP_OTHER','REQUEST_ERROR'):
                     state['phase']='ACCEPT_'+result[0]
+                elif result==(200,True):state['phase']='ACCEPT_EARLY_ALLOWED'
+                elif result==(200,False):state['phase']='ACCEPT_EARLY_BLOCKED'
                 else:state['phase']='ACCEPT_ENDED'
                 raise ValueError
             if time.monotonic()>=deadline:state['phase']='ACCEPT_TIMEOUT';raise ValueError
@@ -272,7 +274,8 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
                  'LOGIN_HTTP_400','LOGIN_HTTP_401','LOGIN_HTTP_403','LOGIN_HTTP_404','LOGIN_HTTP_429',
                  'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_NETWORK',
                  'REDIS_ADMIN_AUTH','REDIS_WRITER_AUTH',
-                 'ACCEPT_REQUEST','ACCEPT_ENDED','ACCEPT_TIMEOUT','ACCEPT_STABILITY',
+                 'ACCEPT_REQUEST','ACCEPT_ENDED','ACCEPT_EARLY_ALLOWED','ACCEPT_EARLY_BLOCKED',
+                 'ACCEPT_TIMEOUT','ACCEPT_STABILITY',
                  'REDIS_CONFIG','REDIS_MOUNT','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}
         allowed|={'ACCEPT_'+code for code in ('HTTP_400','HTTP_401','HTTP_403','HTTP_404',
