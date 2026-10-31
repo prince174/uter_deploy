@@ -125,6 +125,12 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         redis_id=pinned['redis']['id']
         state['phase']='REDIS_PORT_QUERY'
         bindings=json.loads(product._docker('inspect','--format','{{json .NetworkSettings.Ports}}',redis_id))
+        # Fixed categories only; never publish raw Docker metadata.
+        if not isinstance(bindings,dict):state['phase']='REDIS_PORT_NON_OBJECT';raise ValueError
+        if '6379/tcp' not in bindings:state['phase']='REDIS_PORT_MISSING';raise ValueError
+        if bindings['6379/tcp'] is None:state['phase']='REDIS_PORT_UNPUBLISHED';raise ValueError
+        if not isinstance(bindings['6379/tcp'],list):state['phase']='REDIS_PORT_NON_LIST';raise ValueError
+        if len(bindings['6379/tcp'])!=1:state['phase']='REDIS_PORT_BINDING_COUNT';raise ValueError
         state['phase']='REDIS_PORT_FORMAT'
         port=_redis_loopback_port(bindings)
         state['phase']='REDIS_ADMIN_AUTH';admin=redis_acl_experiment_ci.Client(port);state['clients'].append(admin)
@@ -246,6 +252,8 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         allowed={'INITIAL','PIN','LOGIN_HTTP','LOGIN_HTTP_OTHER','LOGIN_RESPONSE','LOGIN_RECHECK',
                  'LOGIN_HTTP_400','LOGIN_HTTP_401','LOGIN_HTTP_403','LOGIN_HTTP_404','LOGIN_HTTP_429',
                  'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_PORT_QUERY','REDIS_PORT_FORMAT',
+                 'REDIS_PORT_NON_OBJECT','REDIS_PORT_MISSING','REDIS_PORT_UNPUBLISHED',
+                 'REDIS_PORT_NON_LIST','REDIS_PORT_BINDING_COUNT',
                  'REDIS_ADMIN_AUTH','REDIS_WRITER_AUTH',
                  'ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}
