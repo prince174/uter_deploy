@@ -26,6 +26,7 @@ PHASE='INITIAL'
 CASE='NONE'
 DETAIL='NONE'
 OBSERVATION='NONE'
+IDENTITY='NONE'
 
 
 def docker(*args,env):
@@ -45,9 +46,9 @@ def auth(client,user,password):
 
 
 def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
-    global PHASE,CASE,DETAIL,OBSERVATION
+    global PHASE,CASE,DETAIL,OBSERVATION,IDENTITY
     CASE='DURABLE' if durable else 'LEGACY'
-    DETAIL='NONE';OBSERVATION='NONE'
+    DETAIL='NONE';OBSERVATION='NONE';IDENTITY='NONE'
     nonce=secrets.token_hex(16);name='uter-staged-acl-'+nonce;ident=None;attempted=False
     connected=[];restart_observation=None;writer_password=secrets.token_hex(32);admin_password=secrets.token_hex(32)
     config=private/('redis-'+nonce+'.conf');acl_dir=None
@@ -118,7 +119,17 @@ def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
             if (len(mount)!=1 or mount[0].get('Type')!='bind' or mount[0].get('RW') is not False
                     or mount[0].get('Source')!=str(acl_dir)
                     or admin.call('CONFIG','GET','aclfile')!=['aclfile','/acl/users.acl']):raise ValueError
-        def identity_guard():return redis_snapshot()==pinned
+        def identity_guard():
+            global IDENTITY
+            try:observed=redis_snapshot()
+            except Exception:
+                IDENTITY='QUERY_FAILED';return False
+            for field in ('id','running','pid','started','restarts','restart','mounts'):
+                if observed.get(field)!=pinned.get(field):
+                    IDENTITY=field.upper();return False
+            if observed!=pinned:
+                IDENTITY='OTHER';return False
+            return True
         durable_prepare=None
         if durable:
             durable_prepare=redis_acl_durable.DurablePrepare(bundle=profile_bundle,publisher=publisher,directory=acl_dir,
@@ -274,9 +285,11 @@ if __name__=='__main__':
                  'DURABLE_REOBSERVE_ON','ACL_OFF','OBSERVE_OFF','CLIENTS_OFF','FINAL_OBSERVE','COMPLETE',
                  'FINISH_GUARD','FINISH_OBSERVE','FINISH_CLIENTS','FINISH_REOBSERVE','FINISH_KILL',
                  'FINISH_POST_OBSERVE','FINISH_POST_CLIENTS','FINISH_RECEIPT','FINISH_FINAL_OBSERVE'}
-        observations={'NONE','INITIAL','GUARD_BEFORE','INFO_SERVER','INFO_REPLICATION','INFO_PERSISTENCE',
+        observations={'NONE','INITIAL','IDENTITY_BEFORE','PROFILE_BEFORE','DURABLE_BEFORE','INFO_SERVER','INFO_REPLICATION','INFO_PERSISTENCE',
                       'REDIS_IDENTITY','ACL_USERS','ACL_DEFAULT','ACL_WRITER','ACL_ADMIN','IDENTITY_AFTER',
                       'PROFILE_AFTER','DURABLE_AFTER','COMPLETE'}
+        identities={'NONE','QUERY_FAILED','ID','RUNNING','PID','STARTED','RESTARTS','RESTART','MOUNTS','OTHER'}
         print('STAGED_ACL_REDIS_CI_'+(CASE if CASE in {'NONE','LEGACY','DURABLE'} else 'UNKNOWN')+'_'
               +(PHASE if PHASE in allowed else 'UNKNOWN')+'_'+(DETAIL if DETAIL in details else 'UNKNOWN')+'_'
-              +(OBSERVATION if OBSERVATION in observations else 'UNKNOWN')+'_UNVERIFIED',file=sys.stderr);sys.exit(1)
+              +(OBSERVATION if OBSERVATION in observations else 'UNKNOWN')+'_'
+              +(IDENTITY if IDENTITY in identities else 'UNKNOWN')+'_UNVERIFIED',file=sys.stderr);sys.exit(1)

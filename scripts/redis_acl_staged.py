@@ -102,9 +102,12 @@ class StagedAdmission:
         self.phase='new';self.writer_clients=frozenset()
 
     def _observe(self,*,disabled):
-        self.observe_phase='GUARD_BEFORE'
-        if (self.guard() is not True or verify_profile(self.bundle,self.publisher)!=self.manifest
-                or self.durable_ready and self.durable.verify_off() is not True):raise ValueError
+        self.observe_phase='IDENTITY_BEFORE'
+        if self.guard() is not True:raise ValueError
+        self.observe_phase='PROFILE_BEFORE'
+        if verify_profile(self.bundle,self.publisher)!=self.manifest:raise ValueError
+        self.observe_phase='DURABLE_BEFORE'
+        if self.durable_ready and self.durable.verify_off() is not True:raise ValueError
         self.observe_phase='INFO_SERVER'
         server=redis_acl_experiment._fields(self.execute('INFO','SERVER'))
         self.observe_phase='INFO_REPLICATION'
