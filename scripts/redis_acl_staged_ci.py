@@ -23,6 +23,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 IMAGE='ghcr.io/prince174/uter-redis@sha256:b4a3dd93f2f7e276b98131e947d2c30e4b237d964c87a948cf808f160eef2fcc'
 LABEL='uter.staged-acl.fixture'
 PHASE='INITIAL'
+CASE='NONE'
+DETAIL='NONE'
 
 
 def docker(*args,env):
@@ -42,7 +44,9 @@ def auth(client,user,password):
 
 
 def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
-    global PHASE
+    global PHASE,CASE,DETAIL
+    CASE='DURABLE' if durable else 'LEGACY'
+    DETAIL='NONE'
     nonce=secrets.token_hex(16);name='uter-staged-acl-'+nonce;ident=None;attempted=False
     connected=[];restart_observation=None;writer_password=secrets.token_hex(32);admin_password=secrets.token_hex(32)
     config=private/('redis-'+nonce+'.conf');acl_dir=None
@@ -124,7 +128,11 @@ def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
             admin_user='uter-maint-test',run_id=run_id,client_id=client_id,
             record_intent=lambda stage:record('intent',stage),record_receipt=lambda stage:record('receipt',stage),
             identity_guard=identity_guard,durable_prepare=durable_prepare)
-        PHASE='DISABLE';first=session.disable_new_auth()
+        PHASE='DISABLE'
+        try:first=session.disable_new_auth()
+        except staged.StagedError:
+            DETAIL=session.failure_phase
+            raise
         if first['prior_writer_connections_retained']!=1 or first['safe_to_update']:raise ValueError
         if durable:
             if first['host_acl_file_verified'] is not True or durable_prepare.verify_off() is not True:raise ValueError
@@ -258,4 +266,7 @@ if __name__=='__main__':
     except Exception:
         allowed={'INITIAL','PROFILE','PULL','REDIS_START','REDIS_PORT','ADMIN_AUTH','WRITER_AUTH','DISABLE',
                  'OLD_WRITER','NEW_AUTH','FINISH','RESTART','RESTART_REAUTH','RESTART_IDENTITY','RESTART_STALE','CLEANUP'}
-        print('STAGED_ACL_REDIS_CI_'+(PHASE if PHASE in allowed else 'UNKNOWN')+'_UNVERIFIED',file=sys.stderr);sys.exit(1)
+        details={'NONE','INITIAL','OBSERVE_ON','CLIENTS_ON','REOBSERVE_ON','DURABLE_PREPARE',
+                 'DURABLE_REOBSERVE_ON','ACL_OFF','OBSERVE_OFF','CLIENTS_OFF','FINAL_OBSERVE','COMPLETE'}
+        print('STAGED_ACL_REDIS_CI_'+(CASE if CASE in {'NONE','LEGACY','DURABLE'} else 'UNKNOWN')+'_'
+              +(PHASE if PHASE in allowed else 'UNKNOWN')+'_'+(DETAIL if DETAIL in details else 'UNKNOWN')+'_UNVERIFIED',file=sys.stderr);sys.exit(1)

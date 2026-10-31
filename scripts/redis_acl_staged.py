@@ -98,6 +98,7 @@ class StagedAdmission:
             if (type(durable_prepare) is not redis_acl_durable.DurablePrepare or durable_prepare.manifest!=self.manifest
                     or durable_prepare.admin_user!=self.admin):raise StagedError('REDIS_STAGED_ARGUMENT_INVALID')
         self.durable=durable_prepare;self.durable_ready=False
+        self.failure_phase='INITIAL'
         self.phase='new';self.writer_clients=frozenset()
 
     def _observe(self,*,disabled):
@@ -130,27 +131,36 @@ class StagedAdmission:
     def disable_new_auth(self):
         try:
             if self.phase!='new':raise ValueError
+            self.failure_phase='OBSERVE_ON'
             self._observe(disabled=False)
+            self.failure_phase='CLIENTS_ON'
             before=_clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=False)
             if not before or self.intent('disable-writer-auth') is not True:raise ValueError
             self.phase='uncertain'
+            self.failure_phase='REOBSERVE_ON'
             self._observe(disabled=False)
             if (_clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=False)!=before
                     or self.guard() is not True):raise ValueError
             if self.durable is not None:
+                self.failure_phase='DURABLE_PREPARE'
                 prepared=self.durable.prepare_off()
                 if (prepared.get('disk_off_prepared') is not True or prepared.get('safe_to_update') is not False
                         or self.durable.verify_off() is not True):raise ValueError
                 self.durable_ready=True
+                self.failure_phase='DURABLE_REOBSERVE_ON'
                 self._observe(disabled=False)
+            self.failure_phase='ACL_OFF'
             if self.execute('ACL','SETUSER',WRITER,'off')!='OK':raise ValueError
+            self.failure_phase='OBSERVE_OFF'
             self._observe(disabled=True)
+            self.failure_phase='CLIENTS_OFF'
             after=_clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=False)
             if not after.issubset(before) or self.receipt('writer-auth-disabled') is not True:raise ValueError
+            self.failure_phase='FINAL_OBSERVE'
             self._observe(disabled=True)
             if (_clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=False)!=after
                     or self.guard() is not True):raise ValueError
-            self.writer_clients=after;self.phase='auth-disabled'
+            self.writer_clients=after;self.phase='auth-disabled';self.failure_phase='COMPLETE'
             return {'new_writer_auth_disabled':True,'prior_writer_connections_retained':len(after),
                     'host_acl_file_verified':self.durable_ready,'redis_acl_source_verified':False,
                     'safe_to_backup':False,'safe_to_update':False}
