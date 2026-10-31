@@ -7,6 +7,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -84,6 +85,10 @@ def main():
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("Disposable GitHub runner required; do not run on the active workstation")
     acl_test = os.environ.get('UTER_CI_REDIS_ACL') == 'true'
+    staged_product = os.environ.get('UTER_CI_STAGED_PRODUCT') == 'true'
+    acl_temp = None
+    if staged_product and (not acl_test or os.environ.get('UTER_CI_MAINTENANCE') != 'true'):
+        raise SystemExit('Staged CI requires disposable ACL and maintenance fixtures')
     if acl_test:
         if (os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted' or os.environ.get('RUNNER_OS') != 'Linux'
                 or os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT')):
@@ -112,12 +117,25 @@ def main():
         "AGENT_INTERNAL_SHARED_SECRET": shared, "UPSTREAM_MODE": "litellm_openai", "UPSTREAM_URL": "http://fixture:8080",
         "UPSTREAM_OPENAI_MODEL": "test-model", "JUDGE_ENABLED": "false", "TOXICITY_FAIL_CLOSED": "true",
         "CI_ADMIN_PASSWORD": admin}
+    if staged_product:values['REDIS_USERNAME']='uter-writer'
     (home / "guardrail.env").write_text("".join(f"{k}={v}\n" for k, v in values.items()))
     (home / "agent.env").write_text(f"AGENT_INTERNAL_SHARED_SECRET={shared}\nGUARDRAIL_SERVICE_PASSWORD={service}\n")
     (home / "redis-password").write_text(redis_password)
     (home / "audit-hmac-key").write_text(hmac)
     redis_config = "bind 0.0.0.0\nappendonly yes\ndir /data\n"
-    if acl_test:
+    if staged_product:
+        import hashlib
+        sys.path.insert(0,str(ROOT))
+        from scripts import redis_acl_durable
+        acl_temp=tempfile.TemporaryDirectory(prefix='uter-product-acl-')
+        acl_dir=Path(acl_temp.name)/'acl';acl_dir.mkdir();os.chown(acl_dir,0,1000);acl_dir.chmod(0o710)
+        acl_file=acl_dir/'users.acl'
+        acl_file.write_bytes(redis_acl_durable.render(admin_user='uter-maint-test',
+            writer_hash=hashlib.sha256(redis_password.encode()).hexdigest(),
+            admin_hash=hashlib.sha256(acl_admin.encode()).hexdigest(),writer_on=True))
+        os.chown(acl_file,999,1000);acl_file.chmod(0o400)
+        redis_config += 'aclfile /acl/users.acl\n'
+    elif acl_test:
         commands = ('ping get set del eval incr ttl expire lpush ltrim lrange multi exec discard '
                     'smembers sismember scard sadd srem hgetall hexists hlen hset hdel client|setinfo')
         redis_config += 'user default on >'+redis_password+' ~* &* -@all ' + ' '.join('+'+x for x in commands.split()) + '\n'
@@ -131,6 +149,14 @@ def main():
             "command": ["python", "/fixture.py"], "volumes": [str(ROOT / "tests/fixtures/upstream.py") + ":/fixture.py:ro"], "networks": ["outbound"]},
         "guardrail": {"cpus": 2,
             "depends_on": {"fixture": {"condition": "service_started"}}}}}
+    if staged_product:
+        signals=home/'staged-signals';signals.mkdir(mode=0o700)
+        override['services']['fixture']['volumes']=[str(ROOT/'tests/fixtures/staged_upstream.py')+':/fixture.py:ro',
+                                                     str(signals)+':/signals:rw']
+        override['services']['fixture']['environment']={'UTER_STAGED_SIGNALS':'/signals'}
+        override['services']['redis']={'volumes':[str(acl_dir)+':/acl:ro'],'ports':['127.0.0.1::6379'],
+            'healthcheck':{'test':['CMD-SHELL','REDISCLI_AUTH=$$(cat /run/secrets/redis_password) redis-cli --user uter-writer ping | grep -q PONG'],
+                           'interval':'300s','start_period':'10s','start_interval':'1s','timeout':'5s','retries':5}}
     maintenance = os.environ.get('UTER_CI_MAINTENANCE') == 'true'
     if maintenance:
         if os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted' or os.environ.get('RUNNER_OS') != 'Linux':
@@ -179,7 +205,12 @@ def main():
         run(cmd + ["up", "-d", "--no-build", "--wait", "--wait-timeout", "180"], env=env)
         run(cmd + ["exec", "-T", "guardrail", "python", "-"], input=check, stdout=subprocess.PIPE, env=env)
         (evidence / "restart.txt").write_text("Guardrail restart + repeated acceptance + audit continuity passed\n")
-        if maintenance:
+        if staged_product:
+            sys.path.insert(0,str(ROOT))
+            from scripts import redis_acl_staged_product_ci
+            phase='STAGED_PRODUCT'
+            redis_acl_staged_product_ci.exercise(home,project,admin,acl_admin,redis_password,acl_dir)
+        elif maintenance:
             sys.path.insert(0, str(ROOT))
             from scripts import maintenance_compose_product_ci
             try:
@@ -212,6 +243,8 @@ def main():
         except Exception:
             if acl_test: (evidence/'redis-acl-product-failure.txt').write_text('CLEANUP_UNCERTAIN\n',encoding='ascii')
             raise
+        finally:
+            if acl_temp is not None:acl_temp.cleanup()
 
 
 if __name__ == "__main__":

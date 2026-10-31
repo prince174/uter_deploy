@@ -255,6 +255,21 @@ def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
     return restart_observation
 
 
+def make_fixture_profile(private):
+    """Create CI-only signed declaration, not a signed product image."""
+    signing=Ed25519PrivateKey.generate();private_key=private/'fixture-private.pem';publisher=private/'fixture-public.pem'
+    private_key.write_bytes(signing.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
+    publisher.write_bytes(signing.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo))
+    manifest={'schema':1,'config_schema':1,'tooling_schema':1,'status':'released','version':'1.0.0',
+        'source_commit':'a'*40,'data_epoch':1,'upgrade_from':[],
+        'images':{name:'example/'+name+'@sha256:'+'b'*64 for name in ('guardrail','agent','redis')},
+        'maintenance_protocol':{'version':1,'services':['agent','guardrail']}}
+    manifest_path=private/'fixture-manifest.json';manifest_path.write_text(json.dumps(manifest))
+    profile_bundle=private/'fixture-bundle';bundle.build(manifest_path,profile_bundle,private_key)
+    if staged.verify_profile(profile_bundle,publisher)!=manifest:raise ValueError
+    return profile_bundle,publisher
+
+
 def main():
     global PHASE
     if (sys.platform!='linux' or os.environ.get('GITHUB_ACTIONS')!='true'
@@ -265,16 +280,7 @@ def main():
         private=Path(tmp);private.chmod(0o700)
         env={'PATH':'/usr/bin:/bin','HOME':str(private),'DOCKER_CONFIG':str(private),'LANG':'C'}
         if docker('context','inspect','default','--format','{{.Endpoints.docker.Host}}',env=env)!='unix:///var/run/docker.sock':raise ValueError
-        signing=Ed25519PrivateKey.generate();private_key=private/'fixture-private.pem';publisher=private/'fixture-public.pem'
-        private_key.write_bytes(signing.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
-        publisher.write_bytes(signing.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo))
-        manifest={'schema':1,'config_schema':1,'tooling_schema':1,'status':'released','version':'1.0.0',
-            'source_commit':'a'*40,'data_epoch':1,'upgrade_from':[],
-            'images':{name:'example/'+name+'@sha256:'+'b'*64 for name in ('guardrail','agent','redis')},
-            'maintenance_protocol':{'version':1,'services':['agent','guardrail']}}
-        manifest_path=private/'fixture-manifest.json';manifest_path.write_text(json.dumps(manifest))
-        PHASE='PROFILE';profile_bundle=private/'fixture-bundle';bundle.build(manifest_path,profile_bundle,private_key)
-        if staged.verify_profile(profile_bundle,publisher)!=manifest:raise ValueError
+        PHASE='PROFILE';profile_bundle,publisher=make_fixture_profile(private)
         PHASE='PULL';docker('pull',IMAGE,env=env)
         exercise(private,env,profile_bundle,publisher,restart=False)
         restart_observation=exercise(private,env,profile_bundle,publisher,restart=True)

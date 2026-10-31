@@ -26,14 +26,22 @@ def _docker(*args):
     return result.stdout.decode('utf-8').strip()
 
 
-def exercise(home):
+def exercise(home, *, project=None, before_collect=None, after_collect=None):
     if (os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted'
             or os.environ.get('RUNNER_OS') != 'Linux' or os.environ.get('UTER_CI_MAINTENANCE') != 'true'):
         raise ProbeError('MAINTENANCE_CI_ENVIRONMENT_UNVERIFIED')
     home = Path(home).resolve(strict=True)
     if home.name != 'integration' or home.parent.name != 'work':
         raise ProbeError('MAINTENANCE_CI_PATH_UNVERIFIED')
-    project = 'uter-compiled-ci'
+    if project is None:
+        project = 'uter-compiled-ci'
+    elif (os.environ.get('UTER_CI_STAGED_PRODUCT') != 'true'
+          or not re.fullmatch(r'uter-acl-[0-9a-f]{32}',project)):
+        raise ProbeError('MAINTENANCE_CI_ENVIRONMENT_UNVERIFIED')
+    if ((before_collect is None) != (after_collect is None)
+            or before_collect is not None and (not callable(before_collect) or not callable(after_collect)
+                or os.environ.get('UTER_CI_STAGED_PRODUCT') != 'true')):
+        raise ProbeError('MAINTENANCE_CI_ENVIRONMENT_UNVERIFIED')
     def inspect():
         result = {}
         for service in ('agent', 'guardrail', 'redis'):
@@ -72,12 +80,19 @@ def exercise(home):
     # CI fixture only: no production lock or external-writer fence is asserted.
     recorder = maintenance_evidence.Recorder(proof, secrets.token_bytes(32), operation=operation,
                                              backend='compose', plan_sha256=plan, lock_guard=lambda: True)
+    if before_collect is not None:
+        before_collect(recorder,pinned,stable)
     def request(service, instance, method, timeout):
         return maintenance_transport.request(service=service, method=method, container_id=instance, identity_guard=stable)
     result = maintenance_protocol.collect(identities, observe_inventory=inventory, request=request,
                                           record_intent=recorder.intent, record_receipt=recorder.receipt)
     if set(result) != {pinned['agent']['id'], pinned['guardrail']['id']} or not stable():
         raise ProbeError('MAINTENANCE_CI_RECEIPTS_UNVERIFIED')
+    if after_collect is not None:
+        after_collect(recorder,pinned,result,stable)
+        # The staged fixture has its own post-receipt assertions. Never stop
+        # a writer here after a staged scenario deliberately changed identity.
+        return
     # Simulate a lost process after both receipts. This runs only in the
     # disposable CI project and does not establish continuous fencing.
     _docker('stop', '--time', '5', pinned['agent']['id'])

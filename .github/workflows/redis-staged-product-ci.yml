@@ -1,0 +1,83 @@
+name: Experimental staged Redis admission with Uter
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful authenticated private snapshot image build run
+        required: true
+        type: string
+      patch_sha256:
+        description: Exact authenticated source snapshot digest
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  product:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [drain, restart]
+    env:
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      PATCH_SHA256: ${{ inputs.patch_sha256 }}
+      GH_TOKEN: ${{ github.token }}
+      UTER_CI_REDIS_ACL: 'true'
+      UTER_CI_MAINTENANCE: 'true'
+      UTER_CI_STAGED_PRODUCT: 'true'
+      UTER_CI_STAGED_SCENARIO: ${{ matrix.scenario }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Check source image build identity
+        run: |
+          python - <<'PY'
+          import json,os,re,subprocess
+          run_id=os.environ['BUILD_RUN_ID']; patch=os.environ['PATCH_SHA256'];repo=os.environ['GITHUB_REPOSITORY']
+          assert re.fullmatch(r'[1-9][0-9]{0,19}',run_id) and re.fullmatch(r'[0-9a-f]{64}',patch)
+          assert re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repo)
+          run=json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/actions/runs/{run_id}']))
+          assert run['path']=='.github/workflows/snapshot-protected-images.yml' and run['conclusion']=='success'
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: protected-*
+          path: work/images
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify provenance and exact image IDs
+        run: |
+          python - <<'PY'
+          import json,os,pathlib,re
+          base=json.loads(pathlib.Path('candidates/source.json').read_text())['source_commit']
+          for service in ('agent','guardrail'):
+              root=pathlib.Path('work/images')/('protected-'+service)/'evidence'
+              assert json.loads((root/'source-state.json').read_text())=={'kind':'uncommitted_patch','baseline_commit':base,'patch_sha256':os.environ['PATCH_SHA256']}
+              assert re.fullmatch(r'sha256:[0-9a-f]{64}',(root/'image-id.txt').read_text().strip())
+          PY
+          for service in guardrail agent; do
+            docker load -i "work/images/protected-$service/image.tar.gz" > /dev/null
+            test "$(docker image inspect "uter-$service-protected" --format '{{.Id}}')" = "$(cat "work/images/protected-$service/evidence/image-id.txt")"
+          done
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt > /dev/null
+      - name: Check fixture guards
+        run: python -m unittest tests.test_redis_acl_staged_product_ci tests.test_maintenance_compose_product_ci tests.test_redis_acl_staged -q
+      - name: Exercise actual Uter request and staged admission
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS,UTER_CI_REDIS_ACL,UTER_CI_MAINTENANCE,UTER_CI_STAGED_PRODUCT,UTER_CI_STAGED_SCENARIO "$(command -v python)" scripts/image_integration.py > /dev/null 2>&1 || { echo 'Staged Uter product experiment failed'; exit 1; }
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: staged-uter-product-evidence-${{ matrix.scenario }}
+          path: |
+            work/integration-evidence/maintenance.txt
+            work/integration-evidence/staged-product-${{ matrix.scenario }}.txt
+            work/integration-evidence/staged-product-${{ matrix.scenario }}-failure.txt
+            work/integration-evidence/redis-acl-product.txt
+            work/integration-evidence/redis-acl-product-failure.txt
+          retention-days: 7
+          if-no-files-found: warn
