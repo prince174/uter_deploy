@@ -132,9 +132,12 @@ class StagedAdmission:
         if hmac.compare_digest(writer_password_hash,admin['passwords'][0]):raise ValueError
         if self.durable is not None and (not hmac.compare_digest(writer_password_hash,self.durable.writer_hash)
                 or not hmac.compare_digest(admin['passwords'][0],self.durable.admin_hash)):raise ValueError
-        self.observe_phase='GUARD_AFTER'
-        if (self.guard() is not True or verify_profile(self.bundle,self.publisher)!=self.manifest
-                or self.durable_ready and self.durable.verify_off() is not True):raise ValueError
+        self.observe_phase='IDENTITY_AFTER'
+        if self.guard() is not True:raise ValueError
+        self.observe_phase='PROFILE_AFTER'
+        if verify_profile(self.bundle,self.publisher)!=self.manifest:raise ValueError
+        self.observe_phase='DURABLE_AFTER'
+        if self.durable_ready and self.durable.verify_off() is not True:raise ValueError
         self.observe_phase='COMPLETE'
 
     def disable_new_auth(self):

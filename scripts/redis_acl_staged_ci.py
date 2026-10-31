@@ -270,7 +270,8 @@ if __name__=='__main__':
         details={'NONE','INITIAL','OBSERVE_ON','CLIENTS_ON','REOBSERVE_ON','DURABLE_PREPARE',
                  'DURABLE_REOBSERVE_ON','ACL_OFF','OBSERVE_OFF','CLIENTS_OFF','FINAL_OBSERVE','COMPLETE'}
         observations={'NONE','INITIAL','GUARD_BEFORE','INFO_SERVER','INFO_REPLICATION','INFO_PERSISTENCE',
-                      'REDIS_IDENTITY','ACL_USERS','ACL_DEFAULT','ACL_WRITER','ACL_ADMIN','GUARD_AFTER','COMPLETE'}
+                      'REDIS_IDENTITY','ACL_USERS','ACL_DEFAULT','ACL_WRITER','ACL_ADMIN','IDENTITY_AFTER',
+                      'PROFILE_AFTER','DURABLE_AFTER','COMPLETE'}
         print('STAGED_ACL_REDIS_CI_'+(CASE if CASE in {'NONE','LEGACY','DURABLE'} else 'UNKNOWN')+'_'
               +(PHASE if PHASE in allowed else 'UNKNOWN')+'_'+(DETAIL if DETAIL in details else 'UNKNOWN')+'_'
               +(OBSERVATION if OBSERVATION in observations else 'UNKNOWN')+'_UNVERIFIED',file=sys.stderr);sys.exit(1)
