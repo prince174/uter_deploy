@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "mode": "experimental-staged-admission",
+  "writer_user": "uter-writer",
+  "default_user": "off",
+  "admin_user_prefix": "uter-maint-",
+  "writer_command_profile": "uter-selected-ci",
+  "worker_authorized": false,
+  "backup_authorized": false,
+  "update_authorized": false
+}
