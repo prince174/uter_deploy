@@ -118,6 +118,8 @@ Uter. Текущий протокол такого устойчивого реж
 
 Подробное [задание агенту Uter](uter-durable-maintenance-task.md) описывает
 требования к состоянию, сбоям, receipt и приёмочным испытаниям.
+Отдельный [проект Redis ACL для Kubernetes](kubernetes-redis-acl-design.md)
+фиксирует требования к Secret, устойчивому файлу ACL, backup и восстановлению.
 
 ## Проверка в одноразовом kind
 
