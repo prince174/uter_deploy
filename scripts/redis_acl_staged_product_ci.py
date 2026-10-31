@@ -90,9 +90,10 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
             return response.status,json.loads(raw)
     def complete_request(token):
         try:
-            status,body=request('/chat',{'message':'What does TechCorp do? fixture-staged-drain',
+            status,body=request('/chat',{'message':'What does TechCorp do?',
                                         'user_id':'staged-fixture'},token=token)
             state['result']=(status,isinstance(body,dict) and body.get('blocked') is False)
+            state['block_reason']=body.get('block_reason') if isinstance(body,dict) else None
         except urllib.error.HTTPError as exc:
             state['result']=('HTTP_'+str(exc.code) if exc.code in (400,401,403,404,429,500,503) else 'HTTP_OTHER',False)
         except Exception:state['result']=('REQUEST_ERROR',False)
@@ -146,7 +147,8 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         state['phase']='REDIS_WRITER_AUTH';writer=redis_acl_experiment_ci.Client(6379,host=redis_address);state['clients'].append(writer)
         if redis_acl_staged_ci.auth(writer,'uter-writer',writer_password) is not True:raise ValueError
         if not stable() or backend(redis_id)!=(redis_address,network_id):raise ValueError
-        state['phase']='ACCEPT_REQUEST';request_thread.start();deadline=time.monotonic()+40
+        state['phase']='ACCEPT_REQUEST';(signals/'arm').write_text('armed',encoding='ascii')
+        request_thread.start();deadline=time.monotonic()+40
         while not (signals/'entered').exists():
             if not request_thread.is_alive():
                 result=state['result']
@@ -154,7 +156,9 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
                     'HTTP_429','HTTP_500','HTTP_503','HTTP_OTHER','REQUEST_ERROR'):
                     state['phase']='ACCEPT_'+result[0]
                 elif result==(200,True):state['phase']='ACCEPT_EARLY_ALLOWED'
-                elif result==(200,False):state['phase']='ACCEPT_EARLY_BLOCKED'
+                elif result==(200,False):
+                    reason=state.get('block_reason')
+                    state['phase']='ACCEPT_BLOCK_'+reason.upper() if reason in ('input_guard','output_guard') else 'ACCEPT_EARLY_BLOCKED'
                 else:state['phase']='ACCEPT_ENDED'
                 raise ValueError
             if time.monotonic()>=deadline:state['phase']='ACCEPT_TIMEOUT';raise ValueError
@@ -275,6 +279,7 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
                  'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_NETWORK',
                  'REDIS_ADMIN_AUTH','REDIS_WRITER_AUTH',
                  'ACCEPT_REQUEST','ACCEPT_ENDED','ACCEPT_EARLY_ALLOWED','ACCEPT_EARLY_BLOCKED',
+                 'ACCEPT_BLOCK_INPUT_GUARD','ACCEPT_BLOCK_OUTPUT_GUARD',
                  'ACCEPT_TIMEOUT','ACCEPT_STABILITY',
                  'REDIS_CONFIG','REDIS_MOUNT','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}

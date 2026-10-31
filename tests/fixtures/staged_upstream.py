@@ -23,7 +23,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(raw)!=size:raise ValueError
         data=json.loads(raw)
         messages=json.dumps(data)
-        if 'fixture-staged-drain' in messages:
+        if (SIGNALS/'arm').exists():
             (SIGNALS/'entered').write_text('entered',encoding='ascii')
             deadline=time.monotonic()+55
             while not (SIGNALS/'release').exists():
