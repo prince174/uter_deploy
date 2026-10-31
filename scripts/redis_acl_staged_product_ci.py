@@ -20,6 +20,18 @@ from scripts import (maintenance_compose_product_ci as product, maintenance_prot
 class ProductStageError(ValueError):pass
 
 
+def _redis_loopback_port(bindings):
+    if not isinstance(bindings,dict):raise ValueError
+    binding=bindings.get('6379/tcp')
+    if not isinstance(binding,list) or len(binding)!=1 or not isinstance(binding[0],dict):raise ValueError
+    if binding[0].get('HostIp')!='127.0.0.1':raise ValueError
+    host_port=binding[0].get('HostPort')
+    if not isinstance(host_port,str) or not re.fullmatch(r'[1-9][0-9]{0,4}',host_port):raise ValueError
+    port=int(host_port)
+    if not 1<=port<=65535:raise ValueError
+    return port
+
+
 def _guardrail_auth_denied(entries,address):
     if not isinstance(entries,list) or len(entries)>100:raise ValueError
     for entry in entries:
@@ -111,12 +123,10 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         request_thread=threading.Thread(target=complete_request,args=(login['access_token'],),daemon=True)
         state['threads'].append(request_thread)
         redis_id=pinned['redis']['id']
-        state['phase']='REDIS_PORT_QUERY';mapping=product._docker('port',redis_id,'6379/tcp')
+        state['phase']='REDIS_PORT_QUERY'
+        bindings=json.loads(product._docker('inspect','--format','{{json .NetworkSettings.Ports}}',redis_id))
         state['phase']='REDIS_PORT_FORMAT'
-        if not re.fullmatch(r'127\.0\.0\.1:[1-9][0-9]{0,4}',mapping):raise ValueError
-        state['phase']='REDIS_PORT_RANGE'
-        port=int(mapping.rsplit(':',1)[1])
-        if not 1<=port<=65535:raise ValueError
+        port=_redis_loopback_port(bindings)
         state['phase']='REDIS_ADMIN_AUTH';admin=redis_acl_experiment_ci.Client(port);state['clients'].append(admin)
         if redis_acl_staged_ci.auth(admin,'uter-maint-test',acl_admin_password) is not True:raise ValueError
         state['phase']='REDIS_WRITER_AUTH';writer=redis_acl_experiment_ci.Client(port);state['clients'].append(writer)
@@ -235,7 +245,7 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
     except Exception:
         allowed={'INITIAL','PIN','LOGIN_HTTP','LOGIN_HTTP_OTHER','LOGIN_RESPONSE','LOGIN_RECHECK',
                  'LOGIN_HTTP_400','LOGIN_HTTP_401','LOGIN_HTTP_403','LOGIN_HTTP_404','LOGIN_HTTP_429',
-                 'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_PORT_QUERY','REDIS_PORT_FORMAT','REDIS_PORT_RANGE',
+                 'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_PORT_QUERY','REDIS_PORT_FORMAT',
                  'REDIS_ADMIN_AUTH','REDIS_WRITER_AUTH',
                  'ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}

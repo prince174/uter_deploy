@@ -10,6 +10,17 @@ from scripts import redis_acl_staged_product_ci as product, maintenance_compose_
 
 
 class ProductStagedCIGuards(unittest.TestCase):
+    def test_redis_port_requires_exact_single_ipv4_loopback_binding(self):
+        self.assertEqual(product._redis_loopback_port({'6379/tcp':[{'HostIp':'127.0.0.1','HostPort':'32768'}]}),32768)
+        for binding in (None,{}, {'6379/tcp':None},
+                        {'6379/tcp':[{'HostIp':'0.0.0.0','HostPort':'32768'}]},
+                        {'6379/tcp':[{'HostIp':'::1','HostPort':'32768'}]},
+                        {'6379/tcp':[{'HostIp':'127.0.0.1','HostPort':'65536'}]},
+                        {'6379/tcp':[{'HostIp':'127.0.0.1','HostPort':'0'}]},
+                        {'6379/tcp':[{'HostIp':'127.0.0.1','HostPort':'32768'}]*2}):
+            with self.subTest(binding=binding),self.assertRaises(ValueError):
+                product._redis_loopback_port(binding)
+
     def test_requires_hosted_fixture_before_network_or_docker(self):
         with patch.dict(os.environ,{},clear=True),patch.object(product.urllib.request,'urlopen') as http, \
              patch.object(product.product,'exercise') as engine:
