@@ -25,6 +25,7 @@ LABEL='uter.staged-acl.fixture'
 PHASE='INITIAL'
 CASE='NONE'
 DETAIL='NONE'
+OBSERVATION='NONE'
 
 
 def docker(*args,env):
@@ -44,9 +45,9 @@ def auth(client,user,password):
 
 
 def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
-    global PHASE,CASE,DETAIL
+    global PHASE,CASE,DETAIL,OBSERVATION
     CASE='DURABLE' if durable else 'LEGACY'
-    DETAIL='NONE'
+    DETAIL='NONE';OBSERVATION='NONE'
     nonce=secrets.token_hex(16);name='uter-staged-acl-'+nonce;ident=None;attempted=False
     connected=[];restart_observation=None;writer_password=secrets.token_hex(32);admin_password=secrets.token_hex(32)
     config=private/('redis-'+nonce+'.conf');acl_dir=None
@@ -131,7 +132,7 @@ def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
         PHASE='DISABLE'
         try:first=session.disable_new_auth()
         except staged.StagedError:
-            DETAIL=session.failure_phase
+            DETAIL=session.failure_phase;OBSERVATION=session.observe_phase
             raise
         if first['prior_writer_connections_retained']!=1 or first['safe_to_update']:raise ValueError
         if durable:
@@ -268,5 +269,8 @@ if __name__=='__main__':
                  'OLD_WRITER','NEW_AUTH','FINISH','RESTART','RESTART_REAUTH','RESTART_IDENTITY','RESTART_STALE','CLEANUP'}
         details={'NONE','INITIAL','OBSERVE_ON','CLIENTS_ON','REOBSERVE_ON','DURABLE_PREPARE',
                  'DURABLE_REOBSERVE_ON','ACL_OFF','OBSERVE_OFF','CLIENTS_OFF','FINAL_OBSERVE','COMPLETE'}
+        observations={'NONE','INITIAL','GUARD_BEFORE','INFO_SERVER','INFO_REPLICATION','INFO_PERSISTENCE',
+                      'REDIS_IDENTITY','ACL_USERS','ACL_DEFAULT','ACL_WRITER','ACL_ADMIN','GUARD_AFTER','COMPLETE'}
         print('STAGED_ACL_REDIS_CI_'+(CASE if CASE in {'NONE','LEGACY','DURABLE'} else 'UNKNOWN')+'_'
-              +(PHASE if PHASE in allowed else 'UNKNOWN')+'_'+(DETAIL if DETAIL in details else 'UNKNOWN')+'_UNVERIFIED',file=sys.stderr);sys.exit(1)
+              +(PHASE if PHASE in allowed else 'UNKNOWN')+'_'+(DETAIL if DETAIL in details else 'UNKNOWN')+'_'
+              +(OBSERVATION if OBSERVATION in observations else 'UNKNOWN')+'_UNVERIFIED',file=sys.stderr);sys.exit(1)

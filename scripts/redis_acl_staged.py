@@ -98,25 +98,32 @@ class StagedAdmission:
             if (type(durable_prepare) is not redis_acl_durable.DurablePrepare or durable_prepare.manifest!=self.manifest
                     or durable_prepare.admin_user!=self.admin):raise StagedError('REDIS_STAGED_ARGUMENT_INVALID')
         self.durable=durable_prepare;self.durable_ready=False
-        self.failure_phase='INITIAL'
+        self.failure_phase='INITIAL';self.observe_phase='INITIAL'
         self.phase='new';self.writer_clients=frozenset()
 
     def _observe(self,*,disabled):
+        self.observe_phase='GUARD_BEFORE'
         if (self.guard() is not True or verify_profile(self.bundle,self.publisher)!=self.manifest
                 or self.durable_ready and self.durable.verify_off() is not True):raise ValueError
+        self.observe_phase='INFO_SERVER'
         server=redis_acl_experiment._fields(self.execute('INFO','SERVER'))
+        self.observe_phase='INFO_REPLICATION'
         replication=redis_acl_experiment._fields(self.execute('INFO','REPLICATION'))
+        self.observe_phase='INFO_PERSISTENCE'
         persistence=redis_acl_experiment._fields(self.execute('INFO','PERSISTENCE'))
+        self.observe_phase='REDIS_IDENTITY'
         if (server.get('run_id')!=self.run_id or replication.get('role')!='master'
                 or replication.get('connected_slaves')!='0' or persistence.get('loading')!='0'
                 or persistence.get('aof_enabled')!='1' or persistence.get('aof_last_write_status')!='ok'
                 or persistence.get('aof_rewrite_in_progress')!='0' or persistence.get('rdb_bgsave_in_progress')!='0'
                 or self.execute('MODULE','LIST')!=[] or self.execute('FUNCTION','LIST')!=[]
                 or str(self.execute('CLIENT','ID'))!=self.client_id):raise ValueError
-        users=self.execute('ACL','USERS')
+        self.observe_phase='ACL_USERS';users=self.execute('ACL','USERS')
         if not isinstance(users,list) or sorted(users)!=sorted(['default',WRITER,self.admin]):raise ValueError
-        _acl(self.execute,'default',enabled=False,commands=frozenset(),default=True)
+        self.observe_phase='ACL_DEFAULT';_acl(self.execute,'default',enabled=False,commands=frozenset(),default=True)
+        self.observe_phase='ACL_WRITER'
         writer_password_hash=_acl(self.execute,WRITER,enabled=not disabled,commands=redis_acl_experiment._UTER_TEST)
+        self.observe_phase='ACL_ADMIN'
         admin=self.execute('ACL','GETUSER',self.admin)
         if (not isinstance(admin,dict) or 'on' not in admin.get('flags',[]) or 'off' in admin.get('flags',[])
                 or 'nopass' in admin.get('flags',[]) or len(admin.get('passwords',[]))!=1
@@ -125,8 +132,10 @@ class StagedAdmission:
         if hmac.compare_digest(writer_password_hash,admin['passwords'][0]):raise ValueError
         if self.durable is not None and (not hmac.compare_digest(writer_password_hash,self.durable.writer_hash)
                 or not hmac.compare_digest(admin['passwords'][0],self.durable.admin_hash)):raise ValueError
+        self.observe_phase='GUARD_AFTER'
         if (self.guard() is not True or verify_profile(self.bundle,self.publisher)!=self.manifest
                 or self.durable_ready and self.durable.verify_off() is not True):raise ValueError
+        self.observe_phase='COMPLETE'
 
     def disable_new_auth(self):
         try:
