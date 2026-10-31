@@ -96,7 +96,18 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         state['phase']='LOGIN_RESPONSE'
         if status!=200 or not isinstance(login,dict) or not isinstance(login.get('access_token'),str):raise ValueError
         state['phase']='LOGIN_RECHECK'
-        if not stable():raise ValueError
+        try:unchanged=stable()
+        except product.ProbeError as exc:
+            code=str(exc)
+            state['phase']='LOGIN_RECHECK_'+code if code in ('MAINTENANCE_CI_IDENTITY_UNVERIFIED',
+                'MAINTENANCE_CI_IMAGE_UNVERIFIED','MAINTENANCE_CI_INSPECT_UNVERIFIED') else 'LOGIN_RECHECK_QUERY'
+            raise
+        except Exception:
+            state['phase']='LOGIN_RECHECK_QUERY';raise
+        if not unchanged:
+            candidate='LOGIN_RECHECK_'+getattr(stable,'changed','OTHER')
+            state['phase']=candidate
+            raise ValueError
         request_thread=threading.Thread(target=complete_request,args=(login['access_token'],),daemon=True)
         state['threads'].append(request_thread)
         redis_id=pinned['redis']['id']
@@ -224,6 +235,10 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
                  'LOGIN_HTTP_400','LOGIN_HTTP_401','LOGIN_HTTP_403','LOGIN_HTTP_404','LOGIN_HTTP_429',
                  'LOGIN_HTTP_500','LOGIN_HTTP_503','ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}
+        allowed|={'LOGIN_RECHECK_'+service+'_'+field for service in ('AGENT','GUARDRAIL','REDIS')
+                  for field in ('ID','IMAGE','RUNNING','STARTED','RESTARTS','PROJECT','SERVICE')}
+        allowed|={'LOGIN_RECHECK_QUERY','LOGIN_RECHECK_MAINTENANCE_CI_IDENTITY_UNVERIFIED',
+                  'LOGIN_RECHECK_MAINTENANCE_CI_IMAGE_UNVERIFIED','LOGIN_RECHECK_MAINTENANCE_CI_INSPECT_UNVERIFIED'}
         try:
             (home.parent/'integration-evidence'/('staged-product-'+scenario+'-failure.txt')).write_text(
                 (state['phase'] if state['phase'] in allowed else 'UNKNOWN')+'\n',encoding='ascii')

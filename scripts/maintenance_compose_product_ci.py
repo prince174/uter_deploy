@@ -67,7 +67,15 @@ def exercise(home, *, project=None, before_collect=None, after_collect=None):
     pinned = inspect()
     identities = {'agent': (pinned['agent']['id'],), 'guardrail': (pinned['guardrail']['id'],)}
     def stable():
-        return inspect() == pinned
+        observed=inspect()
+        for service in ('agent','guardrail','redis'):
+            for field in ('id','image','running','started','restarts','project','service'):
+                if observed[service].get(field)!=pinned[service].get(field):
+                    stable.changed=service.upper()+'_'+field.upper()
+                    return False
+        stable.changed='NONE'
+        return observed == pinned
+    stable.changed='NONE'
     def inventory():
         if not stable():
             raise ProbeError('MAINTENANCE_CI_IDENTITY_CHANGED')
