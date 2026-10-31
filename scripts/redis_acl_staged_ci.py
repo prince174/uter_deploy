@@ -104,6 +104,11 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
             else:raise ValueError
             if session.phase!='uncertain':raise ValueError
             PHASE='RESTART_REAUTH'
+            # An ephemeral host port may change after Docker restarts a container.
+            mapping=docker('port',ident,'6379/tcp',env=env)
+            if not re.fullmatch(r'127\.0\.0\.1:[1-9][0-9]{0,4}',mapping):raise ValueError
+            port=int(mapping.rsplit(':',1)[1])
+            if not 1<=port<=65535:raise ValueError
             for attempt in range(60):
                 try:
                     new_admin=clients.Client(port);connected.append(new_admin)
