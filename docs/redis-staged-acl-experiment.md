@@ -47,5 +47,9 @@ off`. Файловый helper связывает writer/admin hashes с набл
 без отдельного startup/recovery gate автоматически запускать Redis и writers
 нельзя. CI с `SIGKILL` и последующим стартом Redis проверяет только конкретный
 контейнер и файловую систему, а не выключение питания, сбой хоста, AOF,
-восстановление клиентов или production fence. Пока результат CI не получен,
-устойчивость нового варианта не подтверждена.
+восстановление клиентов или production fence. [Disposable CI](https://github.com/prince174/uter_deploy/actions/runs/41149212367)
+подтвердил: после SIGKILL и повторного запуска конкретного Redis с read-only
+ACL directory новый AUTH writer запрещён; в варианте с inline-конфигурацией
+AUTH снова разрешён. Версия OFF-файла проверена до и после запуска, а старый
+`run_id` не принят до intent/KILL. Это проверка синтетического сценария; Uter
+и настоящие guard/drain в ней не участвовали.
