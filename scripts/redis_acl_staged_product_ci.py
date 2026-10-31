@@ -93,7 +93,9 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
             status,body=request('/chat',{'message':'What does TechCorp do? fixture-staged-drain',
                                         'user_id':'staged-fixture'},token=token)
             state['result']=(status,isinstance(body,dict) and body.get('blocked') is False)
-        except Exception:state['result']=('error',False)
+        except urllib.error.HTTPError as exc:
+            state['result']=('HTTP_'+str(exc.code) if exc.code in (400,401,403,404,429,500,503) else 'HTTP_OTHER',False)
+        except Exception:state['result']=('REQUEST_ERROR',False)
     def before(recorder,pinned,stable):
         state['phase']='PIN'
         state.update(recorder=recorder,pinned=pinned)
@@ -146,10 +148,20 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         if not stable() or backend(redis_id)!=(redis_address,network_id):raise ValueError
         state['phase']='ACCEPT_REQUEST';request_thread.start();deadline=time.monotonic()+40
         while not (signals/'entered').exists():
-            if not request_thread.is_alive() or time.monotonic()>=deadline:raise ValueError
+            if not request_thread.is_alive():
+                result=state['result']
+                if isinstance(result,tuple) and result[0] in ('HTTP_400','HTTP_401','HTTP_403','HTTP_404',
+                    'HTTP_429','HTTP_500','HTTP_503','HTTP_OTHER','REQUEST_ERROR'):
+                    state['phase']='ACCEPT_'+result[0]
+                else:state['phase']='ACCEPT_ENDED'
+                raise ValueError
+            if time.monotonic()>=deadline:state['phase']='ACCEPT_TIMEOUT';raise ValueError
             time.sleep(.05)
+        state['phase']='ACCEPT_STABILITY'
         if not request_thread.is_alive() or not stable():raise ValueError
+        state['phase']='REDIS_CONFIG'
         if admin.call('CONFIG','GET','aclfile')!=['aclfile','/acl/users.acl']:raise ValueError
+        state['phase']='REDIS_MOUNT'
         info=json.loads(product._docker('inspect','--format','{{json .Mounts}}',redis_id))
         mounts=[x for x in info if x.get('Destination')=='/acl']
         if (len(mounts)!=1 or mounts[0].get('Type')!='bind' or mounts[0].get('RW') is not False
@@ -260,8 +272,11 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
                  'LOGIN_HTTP_400','LOGIN_HTTP_401','LOGIN_HTTP_403','LOGIN_HTTP_404','LOGIN_HTTP_429',
                  'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_NETWORK',
                  'REDIS_ADMIN_AUTH','REDIS_WRITER_AUTH',
-                 'ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
+                 'ACCEPT_REQUEST','ACCEPT_ENDED','ACCEPT_TIMEOUT','ACCEPT_STABILITY',
+                 'REDIS_CONFIG','REDIS_MOUNT','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}
+        allowed|={'ACCEPT_'+code for code in ('HTTP_400','HTTP_401','HTTP_403','HTTP_404',
+                  'HTTP_429','HTTP_500','HTTP_503','HTTP_OTHER','REQUEST_ERROR')}
         allowed|={'LOGIN_RECHECK_'+service+'_'+field for service in ('AGENT','GUARDRAIL','REDIS')
                   for field in ('ID','IMAGE','RUNNING','STARTED','RESTARTS','PROJECT','SERVICE')}
         allowed|={'LOGIN_RECHECK_QUERY','LOGIN_RECHECK_MAINTENANCE_CI_IDENTITY_UNVERIFIED',
