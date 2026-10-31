@@ -20,8 +20,8 @@ PHASE = 'INITIAL'
 
 
 class Client:
-    def __init__(self, port):
-        self.sock = socket.create_connection(('127.0.0.1', port), timeout=5)
+    def __init__(self, port, host='127.0.0.1'):
+        self.sock = socket.create_connection((host, port), timeout=5)
         self.file = self.sock.makefile('rb')
     def close(self):
         self.file.close(); self.sock.close()

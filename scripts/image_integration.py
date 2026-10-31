@@ -154,7 +154,7 @@ def main():
         override['services']['fixture']['volumes']=[str(ROOT/'tests/fixtures/staged_upstream.py')+':/fixture.py:ro',
                                                      str(signals)+':/signals:rw']
         override['services']['fixture']['environment']={'UTER_STAGED_SIGNALS':'/signals'}
-        override['services']['redis']={'volumes':[str(acl_dir)+':/acl:ro'],'ports':['127.0.0.1::6379'],
+        override['services']['redis']={'volumes':[str(acl_dir)+':/acl:ro'],
             'healthcheck':{'test':['CMD-SHELL','REDISCLI_AUTH=$$(cat /run/secrets/redis_password) redis-cli --user uter-writer ping | grep -q PONG'],
                            'interval':'300s','start_period':'10s','start_interval':'1s','timeout':'5s','retries':5}}
     maintenance = os.environ.get('UTER_CI_MAINTENANCE') == 'true'

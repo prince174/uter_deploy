@@ -20,16 +20,26 @@ from scripts import (maintenance_compose_product_ci as product, maintenance_prot
 class ProductStageError(ValueError):pass
 
 
-def _redis_loopback_port(bindings):
-    if not isinstance(bindings,dict):raise ValueError
-    binding=bindings.get('6379/tcp')
-    if not isinstance(binding,list) or len(binding)!=1 or not isinstance(binding[0],dict):raise ValueError
-    if binding[0].get('HostIp')!='127.0.0.1':raise ValueError
-    host_port=binding[0].get('HostPort')
-    if not isinstance(host_port,str) or not re.fullmatch(r'[1-9][0-9]{0,4}',host_port):raise ValueError
-    port=int(host_port)
-    if not 1<=port<=65535:raise ValueError
-    return port
+def _redis_backend_address(network,network_id,address,project):
+    if (not isinstance(network,dict) or network.get('Id')!=network_id or network.get('Name')!=project+'_backend'
+            or network.get('Driver')!='bridge' or network.get('Internal') is not True):raise ValueError
+    try:
+        ip=ipaddress.IPv4Address(address)
+        configs=network['IPAM']['Config']
+        if not isinstance(configs,list) or not configs or len(configs)>8:raise ValueError
+        if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:raise ValueError
+        matches=[]
+        for item in configs:
+            if not isinstance(item,dict):raise ValueError
+            if 'Subnet' not in item:continue
+            subnet=ipaddress.ip_network(item['Subnet'],strict=True)
+            if subnet.version==4 and ip in subnet:
+                gateway=ipaddress.IPv4Address(item['Gateway'])
+                if gateway not in subnet or ip in (subnet.network_address,subnet.broadcast_address,gateway):raise ValueError
+                matches.append(subnet)
+        if len(matches)!=1:raise ValueError
+    except (KeyError,TypeError,ValueError):raise ValueError('REDIS_BACKEND_UNVERIFIED') from None
+    return str(ip)
 
 
 def _guardrail_auth_denied(entries,address):
@@ -95,7 +105,12 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
                     or not isinstance(network_id,str) or not re.fullmatch(r'[0-9a-f]{64}',network_id)):raise ValueError
             return address,network_id
         guardrail_address,network_id=backend(pinned['guardrail']['id'])
-        if backend(pinned['redis']['id'])[1]!=network_id:raise ValueError
+        redis_address,redis_network=backend(pinned['redis']['id'])
+        if redis_network!=network_id:raise ValueError
+        state['phase']='REDIS_NETWORK'
+        network=json.loads(product._docker('network','inspect','--format','{{json .}}',network_id))
+        redis_address=_redis_backend_address(network,network_id,redis_address,project)
+        if not stable() or backend(pinned['redis']['id'])!=(redis_address,network_id):raise ValueError
         state.update(guardrail_address=guardrail_address,network_id=network_id,backend=backend)
         ports=json.loads(product._docker('inspect','--format','{{json .NetworkSettings.Ports}}',pinned['guardrail']['id']))
         if (not isinstance(ports,dict) or ports.get('8000/tcp')!=[{'HostIp':'127.0.0.1','HostPort':'18000'}]
@@ -123,20 +138,12 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         request_thread=threading.Thread(target=complete_request,args=(login['access_token'],),daemon=True)
         state['threads'].append(request_thread)
         redis_id=pinned['redis']['id']
-        state['phase']='REDIS_PORT_QUERY'
-        bindings=json.loads(product._docker('inspect','--format','{{json .NetworkSettings.Ports}}',redis_id))
-        # Fixed categories only; never publish raw Docker metadata.
-        if not isinstance(bindings,dict):state['phase']='REDIS_PORT_NON_OBJECT';raise ValueError
-        if '6379/tcp' not in bindings:state['phase']='REDIS_PORT_MISSING';raise ValueError
-        if bindings['6379/tcp'] is None:state['phase']='REDIS_PORT_UNPUBLISHED';raise ValueError
-        if not isinstance(bindings['6379/tcp'],list):state['phase']='REDIS_PORT_NON_LIST';raise ValueError
-        if len(bindings['6379/tcp'])!=1:state['phase']='REDIS_PORT_BINDING_COUNT';raise ValueError
-        state['phase']='REDIS_PORT_FORMAT'
-        port=_redis_loopback_port(bindings)
-        state['phase']='REDIS_ADMIN_AUTH';admin=redis_acl_experiment_ci.Client(port);state['clients'].append(admin)
+        state['phase']='REDIS_ADMIN_AUTH';admin=redis_acl_experiment_ci.Client(6379,host=redis_address);state['clients'].append(admin)
         if redis_acl_staged_ci.auth(admin,'uter-maint-test',acl_admin_password) is not True:raise ValueError
-        state['phase']='REDIS_WRITER_AUTH';writer=redis_acl_experiment_ci.Client(port);state['clients'].append(writer)
+        if not stable() or backend(redis_id)!=(redis_address,network_id):raise ValueError
+        state['phase']='REDIS_WRITER_AUTH';writer=redis_acl_experiment_ci.Client(6379,host=redis_address);state['clients'].append(writer)
         if redis_acl_staged_ci.auth(writer,'uter-writer',writer_password) is not True:raise ValueError
+        if not stable() or backend(redis_id)!=(redis_address,network_id):raise ValueError
         state['phase']='ACCEPT_REQUEST';request_thread.start();deadline=time.monotonic()+40
         while not (signals/'entered').exists():
             if not request_thread.is_alive() or time.monotonic()>=deadline:raise ValueError
@@ -170,7 +177,7 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         if (outcome['host_acl_file_verified'] is not True or outcome['prior_writer_connections_retained']<1
                 or not request_thread.is_alive() or writer.call('SET','ci-staged-before-drain','ok')!='OK'):
             raise ValueError
-        state['phase']='NEW_AUTH';fresh=redis_acl_experiment_ci.Client(port);state['clients'].append(fresh)
+        state['phase']='NEW_AUTH';fresh=redis_acl_experiment_ci.Client(6379,host=redis_address);state['clients'].append(fresh)
         if redis_acl_staged_ci.auth(fresh,'uter-writer',writer_password) is not False:raise ValueError
         fresh.close();state['clients'].remove(fresh)
         # Redis must process the closed unauthorized socket before client inventory.
@@ -251,9 +258,7 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
     except Exception:
         allowed={'INITIAL','PIN','LOGIN_HTTP','LOGIN_HTTP_OTHER','LOGIN_RESPONSE','LOGIN_RECHECK',
                  'LOGIN_HTTP_400','LOGIN_HTTP_401','LOGIN_HTTP_403','LOGIN_HTTP_404','LOGIN_HTTP_429',
-                 'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_PORT_QUERY','REDIS_PORT_FORMAT',
-                 'REDIS_PORT_NON_OBJECT','REDIS_PORT_MISSING','REDIS_PORT_UNPUBLISHED',
-                 'REDIS_PORT_NON_LIST','REDIS_PORT_BINDING_COUNT',
+                 'LOGIN_HTTP_500','LOGIN_HTTP_503','REDIS_NETWORK',
                  'REDIS_ADMIN_AUTH','REDIS_WRITER_AUTH',
                  'ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}

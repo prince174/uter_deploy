@@ -10,16 +10,16 @@ from scripts import redis_acl_staged_product_ci as product, maintenance_compose_
 
 
 class ProductStagedCIGuards(unittest.TestCase):
-    def test_redis_port_requires_exact_single_ipv4_loopback_binding(self):
-        self.assertEqual(product._redis_loopback_port({'6379/tcp':[{'HostIp':'127.0.0.1','HostPort':'32768'}]}),32768)
-        for binding in (None,{}, {'6379/tcp':None},
-                        {'6379/tcp':[{'HostIp':'0.0.0.0','HostPort':'32768'}]},
-                        {'6379/tcp':[{'HostIp':'::1','HostPort':'32768'}]},
-                        {'6379/tcp':[{'HostIp':'127.0.0.1','HostPort':'65536'}]},
-                        {'6379/tcp':[{'HostIp':'127.0.0.1','HostPort':'0'}]},
-                        {'6379/tcp':[{'HostIp':'127.0.0.1','HostPort':'32768'}]*2}):
-            with self.subTest(binding=binding),self.assertRaises(ValueError):
-                product._redis_loopback_port(binding)
+    def test_redis_address_requires_pinned_internal_bridge_and_subnet(self):
+        network={'Id':'a'*64,'Name':'fixture_backend','Driver':'bridge','Internal':True,'IPAM':{'Config':[{'Subnet':'172.18.0.0/16','Gateway':'172.18.0.1'}]}}
+        self.assertEqual(product._redis_backend_address(network,'a'*64,'172.18.0.3','fixture'),'172.18.0.3')
+        for change,address in (({'Id':'b'*64},'172.18.0.3'),({'Driver':'host'},'172.18.0.3'),
+                               ({'Name':'other'},'172.18.0.3'),
+                               ({'Internal':False},'172.18.0.3'),({},'192.0.2.1'),({},'::1'),
+                               ({},'172.18.0.0'),({},'172.18.0.1'),({},'172.18.255.255'),
+                               ({'IPAM':{'Config':[{'Subnet':'172.18.0.0/16','Gateway':'172.18.0.1'}]*2}},'172.18.0.3')):
+            with self.subTest(change=change,address=address),self.assertRaises(ValueError):
+                product._redis_backend_address({**network,**change},'a'*64,address,'fixture')
 
     def test_requires_hosted_fixture_before_network_or_docker(self):
         with patch.dict(os.environ,{},clear=True),patch.object(product.urllib.request,'urlopen') as http, \
