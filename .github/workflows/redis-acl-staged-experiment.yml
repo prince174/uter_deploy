@@ -16,6 +16,6 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt > /dev/null
       - name: Check staged fail-closed cases
-        run: python -m unittest tests.test_redis_acl_staged tests.test_redis_acl_staged_profile -q
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS,UTER_CI_STAGED_ACL "$(command -v python)" -m unittest tests.test_redis_acl_staged tests.test_redis_acl_staged_profile tests.test_redis_acl_durable -q
       - name: Test staged admission and Redis restart on isolated fixture
-        run: python scripts/redis_acl_staged_ci.py
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS,UTER_CI_STAGED_ACL "$(command -v python)" scripts/redis_acl_staged_ci.py

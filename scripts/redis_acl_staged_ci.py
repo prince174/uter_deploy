@@ -5,6 +5,7 @@ shared daemon; this cannot authorize production maintenance or updates.
 """
 import os
 import json
+import hashlib
 from pathlib import Path
 import re
 import secrets
@@ -13,7 +14,7 @@ import tempfile
 import time
 
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-from scripts import (install_recovery, maintenance_evidence, redis_acl_experiment as base,
+from scripts import (install_recovery, maintenance_evidence, redis_acl_durable, redis_acl_experiment as base,
                      redis_acl_experiment_ci as clients, redis_acl_staged as staged, redis_fence_journal)
 from scripts import bundle
 from cryptography.hazmat.primitives import serialization
@@ -40,31 +41,47 @@ def auth(client,user,password):
     raise ValueError('AUTH_RESPONSE_UNVERIFIED')
 
 
-def exercise(private,env,profile_bundle,publisher,*,restart):
+def exercise(private,env,profile_bundle,publisher,*,restart,durable=False):
     global PHASE
     nonce=secrets.token_hex(16);name='uter-staged-acl-'+nonce;ident=None;attempted=False
     connected=[];restart_observation=None;writer_password=secrets.token_hex(32);admin_password=secrets.token_hex(32)
-    config=private/('redis-'+nonce+'.conf')
+    config=private/('redis-'+nonce+'.conf');acl_dir=None
     rules=' '.join(sorted(base._UTER_TEST))
-    config.write_text('bind 0.0.0.0\nprotected-mode yes\nappendonly yes\ndir /data\n'
-        'user default off -@all\nuser uter-writer on >'+writer_password+' ~* &* -@all '+rules+'\n'
-        'user uter-maint-test on >'+admin_password+' ~* &* +@all\n')
-    config.chmod(0o600)
+    writer_hash=hashlib.sha256(writer_password.encode('ascii')).hexdigest()
+    admin_hash=hashlib.sha256(admin_password.encode('ascii')).hexdigest()
+    if durable:
+        acl_dir=private/('acl-'+nonce);acl_dir.mkdir();os.chown(acl_dir,0,1000);acl_dir.chmod(0o710)
+        acl_file=acl_dir/redis_acl_durable.NAME
+        acl_file.write_bytes(redis_acl_durable.render(admin_user='uter-maint-test',writer_hash=writer_hash,
+                                                       admin_hash=admin_hash,writer_on=True))
+        os.chown(acl_file,999,1000);acl_file.chmod(0o400)
+        config.write_text('bind 0.0.0.0\nprotected-mode yes\nappendonly yes\ndir /data\naclfile /acl/users.acl\n')
+        config.chmod(0o644)
+    else:
+        config.write_text('bind 0.0.0.0\nprotected-mode yes\nappendonly yes\ndir /data\n'
+            'user default off -@all\nuser uter-writer on >'+writer_password+' ~* &* -@all '+rules+'\n'
+            'user uter-maint-test on >'+admin_password+' ~* &* +@all\n')
+        config.chmod(0o600)
     home=private/('home-'+nonce);home.mkdir(mode=0o700)
     key=secrets.token_bytes(32);operation=secrets.token_hex(16);plan=secrets.token_hex(32)
     redis_fence_journal.create(home,backend='compose',site='uter-ci',resource='a'*64,plan_sha256=plan,operation=operation)
     recorder=maintenance_evidence.Recorder(home,key,operation=operation,backend='compose',plan_sha256=plan,lock_guard=lambda:True)
-    def record(kind,stage):
+    def record(kind,stage,digest=None):
         name='redis-staged-'+kind+'-'+stage+'.json'
         value={'schema':1,'kind':kind,'stage':stage,'operation':operation,'plan_sha256':plan}
+        if digest is not None:value['version_sha256']=digest
         recorder._write(name,value)
         return recorder._read(name)==value
     try:
         if docker('ps','-aq','--no-trunc','--filter','name=^/'+name+'$',env=env):raise ValueError
         PHASE='REDIS_START';attempted=True
-        ident=docker('run','-d','--name',name,'--label',LABEL+'='+nonce,'--restart','no','--user','0:0',
-            '--publish','127.0.0.1::6379','--mount','type=bind,source='+str(config)+',target=/tmp/uter-redis.conf,readonly',
-            '--entrypoint','redis-server',IMAGE,'/tmp/uter-redis.conf',env=env)
+        command=['run','-d','--name',name,'--label',LABEL+'='+nonce,'--restart','no',
+                 '--user','999:1000' if durable else '0:0','--publish','127.0.0.1::6379',
+                 '--mount','type=bind,source='+str(config)+',target=/tmp/uter-redis.conf,readonly']
+        if durable:
+            command+=['--mount','type=bind,source='+str(acl_dir)+',target=/acl,readonly',
+                      '--tmpfs','/data:uid=999,gid=1000,mode=0700']
+        ident=docker(*command,'--entrypoint','redis-server',IMAGE,'/tmp/uter-redis.conf',env=env)
         if not re.fullmatch(r'[0-9a-f]{64}',ident):ident=None;raise ValueError
         PHASE='REDIS_PORT';mapping=docker('port',ident,'6379/tcp',env=env)
         if not re.fullmatch(r'127\.0\.0\.1:[1-9][0-9]{0,4}',mapping):raise ValueError
@@ -83,12 +100,36 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
         writer.call('SET','ci-initial','ok')
         run_id=next(x.split(':',1)[1] for x in admin.call('INFO','SERVER').splitlines() if x.startswith('run_id:'))
         client_id=str(admin.call('CLIENT','ID'))
+        def redis_snapshot():
+            fmt=('{"id":{{json .Id}},"running":{{json .State.Running}},"pid":{{json .State.Pid}},'
+                 '"started":{{json .State.StartedAt}},"restarts":{{json .RestartCount}},'
+                 '"restart":{{json .HostConfig.RestartPolicy.Name}},"mounts":{{json .Mounts}}}')
+            return json.loads(docker('inspect','--format',fmt,ident,env=env))
+        pinned=redis_snapshot()
+        if (pinned.get('id')!=ident or pinned.get('running') is not True or pinned.get('restart')!='no'
+                or type(pinned.get('pid')) is not int or pinned['pid']<=1):raise ValueError
+        if durable:
+            mount=[x for x in pinned.get('mounts',[]) if x.get('Destination')=='/acl']
+            if (len(mount)!=1 or mount[0].get('Type')!='bind' or mount[0].get('RW') is not False
+                    or mount[0].get('Source')!=str(acl_dir)
+                    or admin.call('CONFIG','GET','aclfile')!=['aclfile','/acl/users.acl']):raise ValueError
+        def identity_guard():return redis_snapshot()==pinned
+        durable_prepare=None
+        if durable:
+            durable_prepare=redis_acl_durable.DurablePrepare(bundle=profile_bundle,publisher=publisher,directory=acl_dir,
+                admin_user='uter-maint-test',writer_hash=writer_hash,admin_hash=admin_hash,
+                lock_guard=identity_guard,record_intent=lambda stage:record('intent',stage),
+                record_receipt=lambda stage,digest:record('receipt',stage,digest))
         session=staged.StagedAdmission(admin.call,bundle=profile_bundle,publisher=publisher,
             admin_user='uter-maint-test',run_id=run_id,client_id=client_id,
             record_intent=lambda stage:record('intent',stage),record_receipt=lambda stage:record('receipt',stage),
-            identity_guard=lambda:True)  # Synthetic fixture; no production Docker identity proof.
+            identity_guard=identity_guard,durable_prepare=durable_prepare)
         PHASE='DISABLE';first=session.disable_new_auth()
         if first['prior_writer_connections_retained']!=1 or first['safe_to_update']:raise ValueError
+        if durable:
+            if first['host_acl_file_verified'] is not True or durable_prepare.verify_off() is not True:raise ValueError
+            durable_record=recorder._read('redis-staged-receipt-writer-off-file-durable.json')
+            if durable_record.get('version_sha256')!=durable_prepare.prepared[0]:raise ValueError
         # Redis ACL off must leave an already authenticated connection usable.
         PHASE='OLD_WRITER';
         if writer.call('SET','ci-after-disable','ok')!='OK':raise ValueError
@@ -98,7 +139,10 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
         newcomer.close();connected.remove(newcomer)
         if restart:
             PHASE='RESTART'
-            docker('restart',ident,env=env)
+            if durable:
+                docker('kill','--signal','KILL',ident,env=env)
+                docker('start',ident,env=env)
+            else:docker('restart',ident,env=env)
             try:session.finish_after_drain(lambda:True)
             except staged.StagedError:pass
             else:raise ValueError
@@ -124,7 +168,14 @@ def exercise(private,env,profile_bundle,publisher,*,restart):
             attempt_client=clients.Client(port);connected.append(attempt_client)
             allowed=auth(attempt_client,'uter-writer',writer_password)
             if allowed!=('on' in flags):raise ValueError
-            restart_observation='RESTART_WRITER_AUTH_ALLOWED' if allowed else 'RESTART_WRITER_AUTH_DENIED'
+            if durable:
+                directory,_=redis_acl_durable._directory(acl_dir)
+                try:raw_acl,_=redis_acl_durable._read(directory)
+                finally:os.close(directory)
+                if (allowed or raw_acl!=durable_prepare.after
+                        or hashlib.sha256(raw_acl).hexdigest()!=durable_record.get('version_sha256')):raise ValueError
+            prefix='DURABLE_' if durable else ''
+            restart_observation=prefix+('RESTART_WRITER_AUTH_ALLOWED' if allowed else 'RESTART_WRITER_AUTH_DENIED')
             attempt_client.close();connected.remove(attempt_client)
             calls=[];server_reads=[];restart_intents=[]
             def restarted_call(*args):
@@ -174,7 +225,7 @@ def main():
     global PHASE
     if (sys.platform!='linux' or os.environ.get('GITHUB_ACTIONS')!='true'
             or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted' or os.environ.get('RUNNER_OS')!='Linux'
-            or os.environ.get('UTER_CI_STAGED_ACL')!='true' or os.environ.get('DOCKER_HOST')):
+            or os.environ.get('UTER_CI_STAGED_ACL')!='true' or os.environ.get('DOCKER_HOST') or os.geteuid()!=0):
         raise ValueError('STAGED_ACL_FIXTURE_ENVIRONMENT_UNVERIFIED')
     with tempfile.TemporaryDirectory(prefix='uter-staged-acl-') as tmp:
         private=Path(tmp);private.chmod(0o700)
@@ -194,7 +245,11 @@ def main():
         exercise(private,env,profile_bundle,publisher,restart=False)
         restart_observation=exercise(private,env,profile_bundle,publisher,restart=True)
         if restart_observation not in ('RESTART_WRITER_AUTH_ALLOWED','RESTART_WRITER_AUTH_DENIED'):raise ValueError
+        exercise(private,env,profile_bundle,publisher,restart=False,durable=True)
+        durable_restart=exercise(private,env,profile_bundle,publisher,restart=True,durable=True)
+        if durable_restart!='DURABLE_RESTART_WRITER_AUTH_DENIED':raise ValueError
     print(restart_observation)
+    print(durable_restart)
     print('STAGED_ACL_REDIS_CI_PASS: synthetic drain; no Uter, fence or update verified')
 
 

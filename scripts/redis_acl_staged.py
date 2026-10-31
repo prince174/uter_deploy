@@ -82,7 +82,8 @@ def _clients(raw,admin_user,admin_id,*,only_admin):
 
 class StagedAdmission:
     """One in-memory attempt only; injected evidence callbacks are experimental."""
-    def __init__(self,execute,*,bundle,publisher,admin_user,run_id,client_id,record_intent,record_receipt,identity_guard):
+    def __init__(self,execute,*,bundle,publisher,admin_user,run_id,client_id,record_intent,record_receipt,identity_guard,
+                 durable_prepare=None):
         if (not callable(execute) or not callable(record_intent) or not callable(record_receipt)
                 or not callable(identity_guard) or not isinstance(admin_user,str)
                 or not re.fullmatch(r'uter-maint-[a-z0-9]{1,24}',admin_user)
@@ -92,10 +93,16 @@ class StagedAdmission:
         self.execute=execute;self.admin=admin_user;self.run_id=run_id;self.client_id=client_id
         self.intent=record_intent;self.receipt=record_receipt;self.guard=identity_guard
         self.bundle=Path(bundle);self.publisher=Path(publisher);self.manifest=verify_profile(self.bundle,self.publisher)
+        if durable_prepare is not None:
+            from scripts import redis_acl_durable
+            if (type(durable_prepare) is not redis_acl_durable.DurablePrepare or durable_prepare.manifest!=self.manifest
+                    or durable_prepare.admin_user!=self.admin):raise StagedError('REDIS_STAGED_ARGUMENT_INVALID')
+        self.durable=durable_prepare;self.durable_ready=False
         self.phase='new';self.writer_clients=frozenset()
 
     def _observe(self,*,disabled):
-        if self.guard() is not True or verify_profile(self.bundle,self.publisher)!=self.manifest:raise ValueError
+        if (self.guard() is not True or verify_profile(self.bundle,self.publisher)!=self.manifest
+                or self.durable_ready and self.durable.verify_off() is not True):raise ValueError
         server=redis_acl_experiment._fields(self.execute('INFO','SERVER'))
         replication=redis_acl_experiment._fields(self.execute('INFO','REPLICATION'))
         persistence=redis_acl_experiment._fields(self.execute('INFO','PERSISTENCE'))
@@ -115,7 +122,10 @@ class StagedAdmission:
                 or not isinstance(admin['passwords'][0],str) or not re.fullmatch(r'[0-9a-f]{64}',admin['passwords'][0])
                 or admin.get('selectors')!=[] or admin.get('commands')!='+@all'):raise ValueError
         if hmac.compare_digest(writer_password_hash,admin['passwords'][0]):raise ValueError
-        if self.guard() is not True or verify_profile(self.bundle,self.publisher)!=self.manifest:raise ValueError
+        if self.durable is not None and (not hmac.compare_digest(writer_password_hash,self.durable.writer_hash)
+                or not hmac.compare_digest(admin['passwords'][0],self.durable.admin_hash)):raise ValueError
+        if (self.guard() is not True or verify_profile(self.bundle,self.publisher)!=self.manifest
+                or self.durable_ready and self.durable.verify_off() is not True):raise ValueError
 
     def disable_new_auth(self):
         try:
@@ -127,6 +137,12 @@ class StagedAdmission:
             self._observe(disabled=False)
             if (_clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=False)!=before
                     or self.guard() is not True):raise ValueError
+            if self.durable is not None:
+                prepared=self.durable.prepare_off()
+                if (prepared.get('disk_off_prepared') is not True or prepared.get('safe_to_update') is not False
+                        or self.durable.verify_off() is not True):raise ValueError
+                self.durable_ready=True
+                self._observe(disabled=False)
             if self.execute('ACL','SETUSER',WRITER,'off')!='OK':raise ValueError
             self._observe(disabled=True)
             after=_clients(self.execute('CLIENT','LIST'),self.admin,self.client_id,only_admin=False)
@@ -136,6 +152,7 @@ class StagedAdmission:
                     or self.guard() is not True):raise ValueError
             self.writer_clients=after;self.phase='auth-disabled'
             return {'new_writer_auth_disabled':True,'prior_writer_connections_retained':len(after),
+                    'host_acl_file_verified':self.durable_ready,'redis_acl_source_verified':False,
                     'safe_to_backup':False,'safe_to_update':False}
         except Exception:
             self.phase='uncertain';raise StagedError('REDIS_STAGED_DISABLE_UNCERTAIN') from None
