@@ -9,6 +9,7 @@ import threading
 import tempfile
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 
 from scripts import (maintenance_compose_product_ci as product, maintenance_protocol, maintenance_transport,
@@ -87,9 +88,15 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         ports=json.loads(product._docker('inspect','--format','{{json .NetworkSettings.Ports}}',pinned['guardrail']['id']))
         if (not isinstance(ports,dict) or ports.get('8000/tcp')!=[{'HostIp':'127.0.0.1','HostPort':'18000'}]
                 or not stable()):raise ValueError
-        state['phase']='LOGIN';status,login=request('/auth/token',{'username':'admin','password':admin_password},form=True)
-        if (status!=200 or not isinstance(login,dict) or not isinstance(login.get('access_token'),str)
-                or not stable()):raise ValueError
+        state['phase']='LOGIN_HTTP'
+        try:status,login=request('/auth/token',{'username':'admin','password':admin_password},form=True)
+        except urllib.error.HTTPError as exc:
+            state['phase']='LOGIN_HTTP_'+str(exc.code) if exc.code in (400,401,403,404,429,500,503) else 'LOGIN_HTTP_OTHER'
+            raise
+        state['phase']='LOGIN_RESPONSE'
+        if status!=200 or not isinstance(login,dict) or not isinstance(login.get('access_token'),str):raise ValueError
+        state['phase']='LOGIN_RECHECK'
+        if not stable():raise ValueError
         request_thread=threading.Thread(target=complete_request,args=(login['access_token'],),daemon=True)
         state['threads'].append(request_thread)
         redis_id=pinned['redis']['id']
@@ -213,7 +220,9 @@ def exercise(home,project,admin_password,acl_admin_password,writer_password,acl_
         if state['result']!=('restart-rejected' if scenario=='restart' else 'drain-and-kill-verified'):raise ValueError
         passed=True
     except Exception:
-        allowed={'INITIAL','PIN','LOGIN','ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
+        allowed={'INITIAL','PIN','LOGIN_HTTP','LOGIN_HTTP_OTHER','LOGIN_RESPONSE','LOGIN_RECHECK',
+                 'LOGIN_HTTP_400','LOGIN_HTTP_401','LOGIN_HTTP_403','LOGIN_HTTP_404','LOGIN_HTTP_429',
+                 'LOGIN_HTTP_500','LOGIN_HTTP_503','ACCEPT_REQUEST','ACL_OFF','NEW_AUTH','DRAIN','RECEIPTS',
                  'RESTART','RESTART_AUTH_LOG','KILL'}
         try:
             (home.parent/'integration-evidence'/('staged-product-'+scenario+'-failure.txt')).write_text(
