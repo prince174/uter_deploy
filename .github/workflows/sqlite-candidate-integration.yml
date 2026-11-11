@@ -74,6 +74,12 @@ jobs:
           output: work/security/guardrail.json
           exit-code: '0'
           timeout: 10m
+      - name: Record evidence-only SQLite assessment
+        run: |
+          for service in agent guardrail; do
+            test "$(docker image inspect "uter-$service-protected" --format '{{.Id}}')" = "$(cat "work/security/$service-image-id.txt")"
+            python scripts/sqlite_candidate_assessment.py "work/security/$service.json" "work/security/$service-image-id.txt" "work/security/$service-sqlite.json" "work/security/$service-assessment.json"
+          done
       - name: Enforce existing security gate without exclusions
         run: |
           python scripts/security_gate.py work/security/agent.json work/security/agent-summary.json
