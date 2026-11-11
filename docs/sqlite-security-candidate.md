@@ -12,6 +12,15 @@ reported three SQLite High findings against installed version 3.54.1-2 without a
 Debian's security tracker reports those CVEs fixed in sid, while trixie has no fix;
 that difference is not an exemption and the gate must not be bypassed.
 
+An independent recheck downloaded `libsqlite3-0=3.54.1-2` from the signed
+Debian sid repository and compared its unpacked library SHA-256 to the library
+inside both local candidate images. Both matched
+`225ceb839db2c1dd484cfcaa5ef9fbdd429eb1d5f1e0c39fbd50150bca5fc7bc`.
+The tracker marks 3.54.1-2 fixed for CVE-2026-119373, CVE-2026-119374 and
+CVE-2026-119379. This is provenance and version evidence for those CVEs only;
+it does not establish full image safety, stable support, application compatibility,
+or permission to bypass the release gate.
+
 Both images require full integration testing and independent review of package
 provenance and compatibility before publication. Existing source, release artifacts,
 and deployment gates remain unchanged. The candidate can be reproduced using
