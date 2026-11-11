@@ -30,6 +30,26 @@ jobs:
           mkdir -p work/security
           docker image inspect uter-agent-protected --format '{{.Id}}' > work/security/agent-image-id.txt
           docker image inspect uter-guardrail-protected --format '{{.Id}}' > work/security/guardrail-image-id.txt
+      - name: Verify the actual loaded SQLite library
+        run: |
+          for service in agent guardrail; do
+            expected=$(cat "work/security/$service-image-id.txt")
+            test "$(docker image inspect "uter-$service-protected" --format '{{.Id}}')" = "$expected"
+            docker run --rm --network none -i --entrypoint python "uter-$service-protected" - > "work/security/$service-sqlite.json" <<'PY'
+          import hashlib, json, sqlite3
+          db = sqlite3.connect(':memory:')
+          db.execute('create virtual table docs using fts5(content)')
+          db.execute('insert into docs values (?)', ('security update',))
+          assert db.execute('select count(*) from docs where docs match ?', ('security',)).fetchone()[0] == 1
+          assert sqlite3.sqlite_version == '3.54.1'
+          paths = {line.split()[-1] for line in open('/proc/self/maps') if 'libsqlite3.so' in line}
+          assert len(paths) == 1
+          digest = hashlib.sha256(open(paths.pop(), 'rb').read()).hexdigest()
+          assert digest == '225ceb839db2c1dd484cfcaa5ef9fbdd429eb1d5f1e0c39fbd50150bca5fc7bc'
+          print(json.dumps({'sqlite_version': sqlite3.sqlite_version, 'library_sha256': digest, 'fts5': 'pass'}))
+          PY
+            test "$(docker image inspect "uter-$service-protected" --format '{{.Id}}')" = "$expected"
+          done
       - name: Exercise both candidates in disposable Compose
         run: python scripts/image_integration.py > /dev/null 2>&1 || { echo 'Candidate Compose integration failed'; exit 1; }
       - name: Scan Agent candidate
