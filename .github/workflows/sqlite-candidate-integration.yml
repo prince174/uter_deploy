@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  packages: write
 jobs:
   integration:
     runs-on: ubuntu-24.04
@@ -81,16 +82,38 @@ jobs:
             python scripts/sqlite_candidate_assessment.py "work/security/$service.json" "work/security/$service-image-id.txt" "work/security/$service-sqlite.json" "work/security/$service-assessment.json"
           done
       - name: Enforce existing security gate without exclusions
+        id: strict_gate
+        continue-on-error: true
         run: |
           python scripts/security_gate.py work/security/agent.json work/security/agent-summary.json
           python scripts/security_gate.py work/security/guardrail.json work/security/guardrail-summary.json
+      - name: Enforce explicitly scoped SQLite VEX gate
+        run: |
+          for service in agent guardrail; do
+            test "$(docker image inspect "uter-$service-protected" --format '{{.Id}}')" = "$(cat "work/security/$service-image-id.txt")"
+            python scripts/sqlite_vex_gate.py "work/security/$service.json" "work/security/$service-image-id.txt" "work/security/$service-sqlite.json" "work/security/$service-vex-summary.json"
+          done
+      - name: Check both image archives for exposed source
+        run: |
+          mkdir -p work/image-audit
+          for service in agent guardrail; do
+            test "$(docker image inspect "uter-$service-protected" --format '{{.Id}}')" = "$(cat "work/security/$service-image-id.txt")"
+            docker save "uter-$service-protected" -o "work/image-audit/$service.tar"
+            python scripts/scan_image_archive.py "work/image-audit/$service.tar" --report "work/security/$service-source-audit.json"
+            rm "work/image-audit/$service.tar"
+          done
+      - name: Publish exactly the checked candidates
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          RAW_GATE_OUTCOME: ${{ steps.strict_gate.outcome }}
+        run: python scripts/publish_sqlite_candidates.py
+      - name: Prepare public-safe evidence
+        if: always()
+        run: python scripts/export_sqlite_ci_evidence.py work
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
           name: sqlite-candidate-integration-evidence
-          path: |
-            work/security/
-            work/integration-evidence/acceptance.json
-            work/integration-evidence/restart.txt
+          path: work/public-evidence/
           retention-days: 14
           if-no-files-found: warn

@@ -21,11 +21,17 @@ CVE-2026-119379. This is provenance and version evidence for those CVEs only;
 it does not establish full image safety, stable support, application compatibility,
 or permission to bypass the release gate.
 
-The experimental CI also writes a separate evidence-only assessment for each image.
+The experimental CI also writes a separate assessment for each image.
 It binds the raw Trivy image ID to the loaded SQLite version and exact library hash,
 rejects any other High/Critical or secret finding, and retains all three raw High
 findings. Its `release_gate_passed` field is always false. The existing strict gate
-is unchanged; neither the assessment nor a successful integration test publishes an image.
+remains unchanged and is recorded as failed. On explicit manual dispatch only, a
+separate, authorised VEX gate may publish unique candidate tags after the exact
+image ID, loaded SQLite version and library SHA-256, all raw findings, source
+archive audit, and Compose acceptance and restart tests have been checked. Only the
+three documented SQLite CVEs qualify; any other High, Critical or secret fails.
+Raw Trivy reports and the per-image OpenVEX records are retained. These tags are
+not a signed deployment release and do not change the published stable manifest.
 
 Both images require full integration testing and independent review of package
 provenance and compatibility before publication. Existing source, release artifacts,
