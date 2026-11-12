@@ -29,8 +29,8 @@ sys.path.insert(0, str(ROOT))
 import uterctl
 from scripts import extract_release_inputs, fetch_release, preflight, workload_preflight
 
-DEFAULT_TAG = 'deploy-2026.10.29-signed-4'
-DEFAULT_VERSION = '0.1.6'
+DEFAULT_TAG = 'deploy-2026.11.12-sqlite-1'
+DEFAULT_VERSION = '0.1.8'
 FINGERPRINT = re.compile(r'[0-9a-fA-F]{64}\Z')
 NAME = re.compile(r'[a-z][a-z0-9-]{0,38}[a-z0-9]\Z')
 

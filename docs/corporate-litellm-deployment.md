@@ -1,5 +1,8 @@
 # Развёртывание Uter с существующими LiteLLM и vLLM
 
+> Выпуск `0.1.8` предназначен для новой установки. Автоматическое обновление с предыдущих версий не заявлено. Образы Agent и Guardrail содержат SQLite из Debian sid; Trivy сообщает три High, для которых применено узкое VEX-исключение по проверенным образам и библиотеке. Подробнее: [отчёты и проверка](https://github.com/prince174/uter_deploy/actions/runs/43076826180). Исторические результаты ниже относятся только к явно указанным выпускам.
+
+
 Этот сценарий рассчитан на окружение, где LiteLLM и vLLM уже установлены и
 администрируются отдельно. Uter поставляется из готовых образов: исходный код и
 сборка Uter на целевой машине не нужны. Выберите **один** вариант установки —
@@ -7,7 +10,7 @@ Compose или Kubernetes — и выполните проверку до отк
 
 Для интерактивной установки и обновления можно использовать [мастер Uter](wizard.md).
 Ниже сохранён подробный ручной порядок для проверки отдельных этапов. Руководство
-использует выпуск `deploy-2026.10.29-signed-4` / `0.1.6`. Проверьте подпись и
+использует выпуск `deploy-2026.11.12-sqlite-1` / `0.1.8`. Проверьте подпись и
 отпечаток издателя по независимому каналу. Ранее опубликован [кандидат signed-2](https://github.com/prince174/uter_deploy/releases/tag/deploy-2026.10.29-signed-2).
 [Проверка мастеров signed-2 в изолированном CI](https://github.com/prince174/uter_deploy/actions/runs/40911282844)
 прошла для Compose и Kubernetes; при установке использовалась HTTP-заглушка LLM,
@@ -98,14 +101,14 @@ Redis 2 GiB и аудит 10 GiB по умолчанию. Для действи�
 
 ## 2. Получить и проверить выпуск
 
-Это руководство использует `deploy-2026.10.29-signed-4`. Ранее опубликованный
+Это руководство использует `deploy-2026.11.12-sqlite-1`. Ранее опубликованный
 `0.1.4` не содержит описанные здесь дополнительные команды.
 
 Сначала выполните раздел **«1. Получить установочные файлы»** в [README](../README.md).
-Он создаёт `.venv`, загружает `deploy-2026.10.29-signed-4`, проверяет подпись
+Он создаёт `.venv`, загружает `deploy-2026.11.12-sqlite-1`, проверяет подпись
 комплекта `0.1.6` и подписанный хеш входных данных до распаковки. Дальнейшие команды
 предполагают, что текущий каталог — полученный `uter_deploy`, а результаты находятся в
-`signed/0.1.6`, `signed/publisher-public.pem` и `incoming/inputs`.
+`signed/0.1.8`, `signed/publisher-public.pem` и `incoming/inputs`.
 
 **Отпечаток ключа издателя необходимо получить и сверить по независимому доверенному
 каналу.** Отпечаток из того же репозитория, что архив, не устанавливает доверие к
@@ -222,8 +225,8 @@ README; сама проверка отсутствует в `0.1.4`. Перед 
 
 ```bash
 install -d -m 700 "$HOME/.local/state/uter-preflight"
-.venv/bin/python signed/0.1.6/scripts/workload_preflight.py probe \
-  --bundle ./signed/0.1.6 \
+.venv/bin/python signed/0.1.8/scripts/workload_preflight.py probe \
+  --bundle ./signed/0.1.8 \
   --publisher-key ./signed/publisher-public.pem \
   --fingerprint "$UTER_PUBLISHER_SHA256" \
   --state-dir "$HOME/.local/state/uter-preflight" \
@@ -236,7 +239,7 @@ Uter; будущая Compose-сеть, Kubernetes/CNI и корпоративн�
 Она проверяет TLS, HTTP health и реальный короткий запрос, передавая ключ через stdin;
 текст ответа и ключ не выводятся. Само приложение всё равно проверяется после установки.
 После прерывания может остаться журнал без секрета: сохраните показанный путь и
-используйте `.venv/bin/python signed/0.1.6/scripts/workload_preflight.py cleanup --operation-dir PATH`.
+используйте `.venv/bin/python signed/0.1.8/scripts/workload_preflight.py cleanup --operation-dir PATH`.
 Удаляются только ресурсы с совпадающими identity и метками. При SIGKILL или потере
 питания автоматическая очистка не гарантируется; при несовпадении daemon или identity
 команда откажется удалять ресурсы. В уже опубликованном `0.1.4` этой команды нет.
@@ -260,12 +263,12 @@ Desktop/WSL используют group-writable путь CLI: проверка �
 Из каталога `uter_deploy`:
 
 ```bash
-sudo .venv/bin/python signed/0.1.6/scripts/install.py prepare \
+sudo .venv/bin/python signed/0.1.8/scripts/install.py prepare \
   --home /srv/uter-instance --backend compose --name uter-instance \
   --inputs "$PWD/incoming/inputs" \
   --llm-url "$LLM_URL" --llm-model "$LLM_MODEL" --llm-key-file "$LLM_KEY_FILE"
-sudo .venv/bin/python signed/0.1.6/scripts/install.py check --home /srv/uter-instance
-sudo .venv/bin/python signed/0.1.6/scripts/install.py install --home /srv/uter-instance
+sudo .venv/bin/python signed/0.1.8/scripts/install.py check --home /srv/uter-instance
+sudo .venv/bin/python signed/0.1.8/scripts/install.py install --home /srv/uter-instance
 curl --fail http://127.0.0.1:18000/ready
 ```
 
@@ -289,7 +292,7 @@ NetworkPolicy, включая Secret, используемый Helm для со�
 `--storage-class YOUR_CLASS`.
 
 ```bash
-.venv/bin/python signed/0.1.6/scripts/install.py prepare \
+.venv/bin/python signed/0.1.8/scripts/install.py prepare \
   --home "$HOME/uter-k8s" --backend kubernetes --name uter-instance \
   --context MY_CONTEXT --inputs "$PWD/incoming/inputs" \
   --llm-url "$LLM_URL" --llm-model "$LLM_MODEL" --llm-key-file "$LLM_KEY_FILE"
@@ -303,8 +306,8 @@ NetworkPolicy, включая Secret, используемый Helm для со�
 namespace, укажите его точное имя в этом файле. Затем выполните:
 
 ```bash
-.venv/bin/python signed/0.1.6/scripts/install.py check --home "$HOME/uter-k8s"
-.venv/bin/python signed/0.1.6/scripts/install.py install --home "$HOME/uter-k8s"
+.venv/bin/python signed/0.1.8/scripts/install.py check --home "$HOME/uter-k8s"
+.venv/bin/python signed/0.1.8/scripts/install.py install --home "$HOME/uter-k8s"
 kubectl --context MY_CONTEXT -n uter-instance get pods,pvc
 kubectl --context MY_CONTEXT -n uter-instance port-forward svc/uter-instance-guardrail 18000:8000
 ```
@@ -329,7 +332,7 @@ egress. По умолчанию вход к Guardrail разрешается и�
 пересылайте его и не записывайте значения в журнал. Из каталога `uter_deploy`:
 
 ```bash
-.venv/bin/python signed/0.1.6/scripts/smoke_http.py --url http://127.0.0.1:18000
+.venv/bin/python signed/0.1.8/scripts/smoke_http.py --url http://127.0.0.1:18000
 ```
 
 Для Kubernetes предварительно оставьте `port-forward` работающим в другом терминале;

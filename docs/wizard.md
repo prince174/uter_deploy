@@ -1,9 +1,12 @@
 # Мастер установки и обновления Uter
 
+> Выпуск `0.1.8` предназначен для новой установки. Автоматическое обновление с предыдущих версий не заявлено. Образы Agent и Guardrail содержат SQLite из Debian sid; Trivy сообщает три High, для которых применено узкое VEX-исключение по проверенным образам и библиотеке. Подробнее: [отчёты и проверка](https://github.com/prince174/uter_deploy/actions/runs/43076826180). Исторические результаты ниже относятся только к явно указанным выпускам.
+
+
 Мастер объединяет получение и проверку подписанного комплекта, подготовку установки,
 проверки и запуск. Для обновления он проверяет переход, показывает план и вызывает
 инструмент из подписанного целевого комплекта с зашифрованной резервной копией.
-Инструкция использует выпуск `deploy-2026.10.29-signed-4` / `0.1.6`. Перед
+Инструкция использует выпуск `deploy-2026.11.12-sqlite-1` / `0.1.8`. Перед
 установкой проверьте его подпись и отпечаток издателя по независимому каналу.
 Подтверждения ниже относятся к `signed-3` и `signed-2`; они не подтверждают
 проверку `signed-4`. Ранее опубликован
@@ -85,7 +88,7 @@ Python-окружению и их родительским каталогам д
 `/srv/uter-wizard-private`; при их существовании выберите другие, не удаляя данные:
 
 ```bash
-sudo git clone --branch deploy-2026.10.29-signed-4 --single-branch \
+sudo git clone --branch deploy-2026.11.12-sqlite-1 --single-branch \
   https://github.com/prince174/uter_deploy.git /srv/uter-deploy-tooling
 sudo mkdir -m 700 /srv/uter-wizard-private
 cd /srv/uter-deploy-tooling
@@ -130,7 +133,7 @@ sudo python3 -I scripts/bootstrap_wizard.py
 
 ```bash
 mkdir -m 700 "$HOME/uter-wizard-private"
-git clone --branch deploy-2026.10.29-signed-4 --single-branch \
+git clone --branch deploy-2026.11.12-sqlite-1 --single-branch \
   https://github.com/prince174/uter_deploy.git "$HOME/uter-deploy-tooling"
 kubectl config get-contexts
 CONTEXT='укажите-имя-контекста'
@@ -241,7 +244,7 @@ HTTP 504; проверьте также доступность LLM, ресурс
 ```bash
 sudo python3 -I /srv/uter-deploy-tooling/scripts/bootstrap_wizard.py update \
   --home /srv/uter-instance \
-  --release deploy-2026.10.29-signed-4 --version 0.1.6 \
+  --release deploy-2026.11.12-sqlite-1 --version 0.1.8 \
   --download-to /srv/uter-wizard-private/release-016-update \
   --fingerprint "$UTER_PUBLISHER_SHA256" \
   --current-bundle /srv/uter-wizard-private/release-015/bundle \

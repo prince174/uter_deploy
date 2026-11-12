@@ -29,7 +29,7 @@ class InstallWizardTests(unittest.TestCase):
         with mock.patch('builtins.input', side_effect=AssertionError('unexpected prompt')):
             wizard.collect(data)
         self.assertEqual(data.release,wizard.DEFAULT_TAG)
-        self.assertEqual(data.release,'deploy-2026.10.29-signed-4')
+        self.assertEqual(data.release,'deploy-2026.11.12-sqlite-1')
         self.assertEqual(data.version,wizard.DEFAULT_VERSION)
         self.assertEqual(data.backend,'compose')
 
