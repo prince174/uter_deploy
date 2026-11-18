@@ -111,9 +111,9 @@ jobs:
         run: |
           test "$(git -C source rev-parse HEAD)" = 2b9590aa2b03d94de94f0db1e63144a0e87aafff
           python3 -m pip install --disable-pip-version-check 'semgrep==1.185.0' > /tmp/semgrep-install.log 2>&1
-          test -d source/llm-guardrail/agent
-          test -d source/llm-guardrail/guardrail
-          semgrep scan --config p/security-audit --json --metrics=off --disable-version-check --no-git-ignore source/llm-guardrail/agent source/llm-guardrail/guardrail > /tmp/semgrep-source.json 2>/tmp/semgrep-source.log || echo failed > /tmp/semgrep-source-exit
+          test -d source/agent
+          test -d source/guardrail
+          semgrep scan --config p/security-audit --json --metrics=off --disable-version-check --no-git-ignore source/agent source/guardrail > /tmp/semgrep-source.json 2>/tmp/semgrep-source.log || echo failed > /tmp/semgrep-source-exit
           mkdir -p work/evidence
           python3 - <<'PY'
           import collections, json
