@@ -10,6 +10,7 @@ permissions:
   contents: read
 jobs:
   audit:
+    if: inputs.build_run_id != 'source-only'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -90,6 +91,44 @@ jobs:
         if: always()
         with:
           name: image-audit-${{ matrix.service }}
+          path: work/evidence/
+          retention-days: 14
+          if-no-files-found: warn
+  source-audit:
+    if: inputs.build_run_id == 'source-only'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Obtain exact source baseline from signed release
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: prince174/uter
+          ref: 2b9590aa2b03d94de94f0db1e63144a0e87aafff
+          token: ${{ secrets.SOURCE_READ_TOKEN }}
+          persist-credentials: false
+          path: source
+      - name: Run Semgrep on application source
+        run: |
+          test "$(git -C source rev-parse HEAD)" = 2b9590aa2b03d94de94f0db1e63144a0e87aafff
+          python3 -m pip install --disable-pip-version-check 'semgrep==1.185.0' > /tmp/semgrep-install.log 2>&1
+          test -d source/llm-guardrail/agent
+          test -d source/llm-guardrail/guardrail
+          semgrep scan --config p/security-audit --json --metrics=off --disable-version-check --no-git-ignore source/llm-guardrail/agent source/llm-guardrail/guardrail > /tmp/semgrep-source.json 2>/tmp/semgrep-source.log || echo failed > /tmp/semgrep-source-exit
+          mkdir -p work/evidence
+          python3 - <<'PY'
+          import collections, json
+          from pathlib import Path
+          data=json.loads(Path('/tmp/semgrep-source.json').read_text())
+          findings=collections.Counter((str(r.get('check_id')),str(r.get('extra',{}).get('severity'))) for r in data.get('results',[]))
+          errors=collections.Counter((str(e.get('type')),str(e.get('code'))) for e in data.get('errors',[]))
+          summary={'source_commit':'2b9590aa2b03d94de94f0db1e63144a0e87aafff','findings':[{'rule':k[0],'severity':k[1],'count':v} for k,v in findings.items()],'errors':[{'type':k[0],'code':k[1],'count':v} for k,v in errors.items()],'scanned_files':len(data.get('paths',{}).get('scanned',[])),'scope':'Agent and Guardrail source baseline, not compiled binaries','exit_state':'failed' if Path('/tmp/semgrep-source-exit').exists() else 'success'}
+          Path('work/evidence/source-semgrep-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+          if summary['exit_state'] != 'success': raise SystemExit('Semgrep did not complete')
+          PY
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: source-semgrep-summary
           path: work/evidence/
           retention-days: 14
           if-no-files-found: warn
