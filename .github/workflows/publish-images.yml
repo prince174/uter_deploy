@@ -53,6 +53,13 @@ jobs:
           path: work/published/
           retention-days: 30
           if-no-files-found: error
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: publication-security-evidence
+          path: work/publication-evidence/
+          retention-days: 30
+          if-no-files-found: warn
   install:
     needs: publish
     uses: ./.github/workflows/verify-installation.yml

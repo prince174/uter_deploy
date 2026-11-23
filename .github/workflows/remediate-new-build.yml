@@ -310,6 +310,7 @@ jobs:
             work/evidence/vulnerability-summary.json
             work/evidence/sqlite-measurement.json
             work/evidence/openssl-measurement.json
+            work/evidence/openssl-control.txt
             work/evidence/openssl-tls-check.json
             work/evidence/sqlite-vex-summary.json
             work/evidence/trivy-vuln-report.json

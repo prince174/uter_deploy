@@ -13,7 +13,7 @@ import urllib.parse
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts import source_provenance
+from scripts import candidate_publication_evidence, source_provenance, sqlite_vex_gate
 
 REDIS = 'redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf'
 
@@ -60,8 +60,39 @@ def snapshot_identity(images_root):
     return states[0] if states else None
 
 
+def preflight_candidates(images_root):
+    """Validate every image and evidence before the first registry write."""
+    selected = json.loads(Path('candidates/source.json').read_text())['source_commit']
+    validated = {}
+    for service in ('guardrail', 'agent', 'redis'):
+        folder = Path(images_root)/('protected-'+service)
+        evidence = folder/'evidence'
+        archive = folder/'image.tar.gz'
+        with archive.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        if digest != (evidence/'archive.sha256').read_text().split()[0]:
+            raise ValueError('PUBLICATION_ARCHIVE_UNVERIFIED')
+        subprocess.run([sys.executable, 'scripts/scan_image_archive.py', str(archive)], check=True)
+        subprocess.run(['docker', 'load', '-i', str(archive)], check=True)
+        image = 'uter-'+service+'-protected'
+        actual = run(['docker', 'image', 'inspect', image, '--format', '{{.Id}}'])
+        if (actual != (evidence/'image-id.txt').read_text().strip()
+                or (evidence/'source-sha.txt').read_text().strip() != selected):
+            raise ValueError('PUBLICATION_IMAGE_IDENTITY_UNVERIFIED')
+        runtime = None
+        if service != 'redis':
+            script = Path('scripts/measure_candidate_runtime.py').resolve()
+            runtime = json.loads(run(['docker', 'run', '--rm', '--network', 'none', '--read-only',
+                                      '--entrypoint', 'python', '-v', str(script)+':/checks/measure.py:ro',
+                                      image, '/checks/measure.py']))
+        validated[service] = candidate_publication_evidence.verify(folder, service, actual, runtime)
+    return validated
+
+
 def main():
-    if os.environ.get('GITHUB_ACTIONS') != 'true':
+    if (os.environ.get('GITHUB_ACTIONS') != 'true'
+            or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted'
+            or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'):
         raise SystemExit('GitHub-hosted CI only')
     owner = os.environ['GITHUB_REPOSITORY_OWNER'].lower()
     visibility = os.environ.get('PACKAGE_VISIBILITY', 'private')
@@ -73,6 +104,7 @@ def main():
     assert identity['path'] in ('.github/workflows/harden-image-artifacts.yml', '.github/workflows/remediate-images.yml', '.github/workflows/remediate-new-build.yml') and identity['conclusion'] == 'success'
     remediated = identity['path'] in ('.github/workflows/remediate-images.yml', '.github/workflows/remediate-new-build.yml')
     snapshot_identity('work/images')
+    validated = preflight_candidates('work/images') if identity['path'].endswith('/remediate-new-build.yml') else None
     images, metadata = {}, {}
     snapshot_states = []
     output = Path('work/published')
@@ -84,7 +116,10 @@ def main():
             folder = Path(f'work/images/protected-{service}')
             if remediated:
                 gate = json.loads((folder / 'evidence/security-summary.json').read_text())
-                assert gate['critical_high'] == 0 and gate['secrets'] == 0
+                if validated is None:
+                    assert gate['critical_high'] == 0 and gate['secrets'] == 0
+                elif gate != validated[service]['security']:
+                    raise ValueError('PUBLICATION_GATE_CHANGED')
             archive = folder / 'image.tar.gz'
             expected = (folder / 'evidence/archive.sha256').read_text().split()[0]
             with archive.open('rb') as stream:
@@ -105,6 +140,10 @@ def main():
                 snapshot_states.append(state)
             if remediated:
                 metadata[service]['security'] = gate
+                if validated is not None and service != 'redis':
+                    metadata[service]['sqlite_vex'] = validated[service]['sqlite_vex']
+                    metadata[service]['vendor_openssl'] = validated[service]['vendor_openssl']
+                    metadata[service]['openssl_measurement'] = validated[service]['openssl_measurement']
                 if service == 'redis':
                     metadata[service]['application_commit'] = metadata[service].pop('source_commit')
                     metadata[service]['upstream'] = (folder / 'evidence/parent-image.txt').read_text().strip()
@@ -112,7 +151,7 @@ def main():
             local = REDIS
             subprocess.run(['docker', 'pull', '--platform', 'linux/amd64', local], check=True)
             metadata[service] = dict(upstream=REDIS)
-        tag = f'ghcr.io/{package}:build-{build}'
+        tag = f'ghcr.io/{package}:build-{build}-{os.environ["GITHUB_RUN_ID"]}-{os.environ["GITHUB_RUN_ATTEMPT"]}'
         subprocess.run(['docker', 'tag', local, tag], check=True)
         subprocess.run(['docker', 'push', tag], check=True)
         refs = json.loads(run(['docker', 'image', 'inspect', tag, '--format', '{{json .RepoDigests}}']))
@@ -120,6 +159,20 @@ def main():
         # Verify the requested visibility using an isolated client configuration.
         subprocess.run(['docker', 'pull', images[service]], check=True)
         verify_visibility(package, images[service], visibility)
+        if remediated and run(['docker','image','inspect',images[service],'--format','{{.Id}}']) != metadata[service]['image_id']:
+            raise ValueError('PUBLICATION_PULLED_IMAGE_MISMATCH')
+        if validated is not None and service != 'redis':
+            evidence = folder/'evidence'
+            vex, checked = sqlite_vex_gate.build_vex(
+                json.loads((evidence/'trivy-vuln-report.json').read_text()), metadata[service]['image_id'],
+                json.loads((evidence/'sqlite-measurement.json').read_text()), images[service])
+            if checked != validated[service]['sqlite_vex']:
+                raise ValueError('PUBLICATION_VEX_CHANGED')
+            security_output = Path('work/publication-evidence'); security_output.mkdir(parents=True, exist_ok=True)
+            (security_output/(service+'-vex.json')).write_text(json.dumps(vex,indent=2)+'\n')
+            for item in ('trivy-vuln-report.json','vendor-openssl-report.json','vendor-openssl-control-report.json',
+                         'vendor-openssl-summary.json','openssl-measurement.json','openssl-tls-check.json'):
+                shutil.copyfile(evidence/item, security_output/(service+'-'+item))
     assert metadata['agent']['source_commit'] == metadata['guardrail']['source_commit']
     if snapshot_states:
         if len(snapshot_states) != 3 or any(state != snapshot_states[0] for state in snapshot_states):

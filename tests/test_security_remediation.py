@@ -49,6 +49,7 @@ class SecurityGateTests(unittest.TestCase):
                     'work/evidence/security-summary.json', 'work/evidence/parent-image.txt',
                     'work/evidence/vulnerability-summary.json', 'work/evidence/sqlite-measurement.json',
                     'work/evidence/openssl-measurement.json', 'work/evidence/openssl-tls-check.json', 'work/evidence/vendor-openssl-summary.json',
+                    'work/evidence/openssl-control.txt',
                     'work/evidence/sqlite-vex-summary.json', 'work/evidence/trivy-vuln-report.json',
                     'work/evidence/vendor-openssl-report.json', 'work/evidence/vendor-openssl-control-report.json',
                     'work/evidence/policies/default.toml', 'work/evidence/profiles/model_profiles.toml'}

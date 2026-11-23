@@ -14,6 +14,7 @@ def prepare(measurement, control, root):
                   if ': ' in line and not line.startswith((' ', '\t')))
     if (data.get('package') != 'libssl3' or data.get('package_version') != VERSION
             or data.get('package_sha256') != PACKAGE_SHA256
+            or data.get('distribution') != 'debian-12-bookworm'
             or not str(data.get('version', '')).startswith('OpenSSL 3.0.22 ')
             or fields.get('Package') != 'libssl3' or fields.get('Version') != VERSION
             or fields.get('Source', '').split(' ')[0] != 'openssl'

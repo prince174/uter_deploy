@@ -15,6 +15,7 @@ class VendorOpenSSLTests(unittest.TestCase):
         self.control = self.root/'control.txt'
         self.data = {'package':'libssl3', 'package_version':gate.VERSION,
                      'package_sha256':gate.PACKAGE_SHA256, 'version':'OpenSSL 3.0.22 2026',
+                     'distribution':'debian-12-bookworm',
                      'libraries':{'libssl.so.3':'a'*64, 'libcrypto.so.3':'b'*64}}
         self.measurement.write_text(json.dumps(self.data))
         self.control.write_text('Package: libssl3\nVersion: '+gate.VERSION+'\nSource: openssl\n')
