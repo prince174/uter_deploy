@@ -226,6 +226,17 @@ containerdConfigPatches:
             image_id = pod['status']['containerStatuses'][0].get('imageID', '')
             if not isinstance(image_id, str) or not (image_id.endswith(expected) or image_id.endswith(images[service].split('@')[1])):
                 raise ProbeError('MAINTENANCE_KUBE_IMAGE_UNVERIFIED')
+        if os.environ.get('UTER_CI_CANDIDATE_INSTALL_ONLY') == 'true':
+            PHASE = 'CANDIDATE_ACCEPTANCE'
+            credentials = json.loads((home/'credentials.json').read_text())
+            code = ('import os\nos.environ["CI_ADMIN_PASSWORD"]='+repr(credentials['admin'])+'\n').encode()
+            code += (ROOT/'scripts/container_acceptance.py').read_bytes()
+            first = json.loads(run(kube+['-n',SITE,'exec','-i','deployment/'+SITE+'-guardrail','--','python','-'], data=code, timeout=300))
+            if not isinstance(first, dict) or not first.get('audit_first_sha256'):
+                raise ProbeError('CANDIDATE_KUBE_ACCEPTANCE_UNVERIFIED')
+            evidence = ROOT/'work/maintenance-kubernetes-evidence'; evidence.mkdir(mode=0o700)
+            (evidence/'maintenance.txt').write_text('Candidate images matched exact IDs; installer and in-cluster acceptance passed using a fixture LLM and local registry. Not a published release verification.\n',encoding='utf-8')
+            return
         identities = {s: (pinned[s]['uid']+'/'+pinned[s]['container_id'],) for s in ('agent', 'guardrail')}
         def stable(): return snapshot() == pinned
         def inventory():
