@@ -47,6 +47,7 @@ class SecurityGateTests(unittest.TestCase):
         required = {'work/image.tar.gz', 'work/evidence/image-id.txt', 'work/evidence/source-sha.txt',
                     'work/evidence/source-state.json', 'work/evidence/archive.sha256',
                     'work/evidence/security-summary.json', 'work/evidence/parent-image.txt',
+                    'work/evidence/vulnerability-summary.json', 'work/evidence/sqlite-measurement.json',
                     'work/evidence/policies/default.toml', 'work/evidence/profiles/model_profiles.toml'}
         self.assertEqual(paths, required)
         self.assertNotIn('work/evidence/', paths)

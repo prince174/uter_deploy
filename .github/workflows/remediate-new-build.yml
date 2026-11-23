@@ -197,7 +197,7 @@ jobs:
                   for item in result.get('Vulnerabilities') or []:
                       if item.get('Severity') in ('HIGH','CRITICAL'):
                           findings.append({key:item.get(key) for key in ('VulnerabilityID','Severity','PkgName','InstalledVersion','FixedVersion')})
-              Path('work/evidence/findings-safe.json').write_text(json.dumps({'findings':findings,'secret_count':secrets},indent=2)+'\n')
+              Path('work/evidence/vulnerability-summary.json').write_text(json.dumps({'findings':findings,'secret_count':secrets},indent=2)+'\n')
           PY
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
@@ -211,7 +211,7 @@ jobs:
             work/evidence/archive.sha256
             work/evidence/parent-image.txt
             work/evidence/security-summary.json
-            work/evidence/findings-safe.json
+            work/evidence/vulnerability-summary.json
             work/evidence/sqlite-measurement.json
             work/evidence/policies/default.toml
             work/evidence/profiles/model_profiles.toml
