@@ -243,6 +243,9 @@ jobs:
       - name: Enforce vendor package security check
         if: matrix.service != 'redis'
         run: python scripts/vendor_openssl_gate.py verify work/evidence/vendor-openssl-report.json work/evidence/vendor-openssl-control-report.json work/evidence/vendor-openssl-summary.json
+      - name: Include vendor OpenSSL in image SBOM
+        if: matrix.service != 'redis'
+        run: python scripts/add_vendor_openssl_sbom.py work/evidence/sbom.cdx.json work/evidence/openssl-measurement.json work/evidence/vendor-openssl-summary.json work/evidence/sbom-with-vendor.cdx.json
       - name: Export source-scanned candidate for isolated verification
         env:
           SERVICE: ${{ matrix.service }}
@@ -317,6 +320,8 @@ jobs:
             work/evidence/vendor-openssl-summary.json
             work/evidence/vendor-openssl-report.json
             work/evidence/vendor-openssl-control-report.json
+            work/evidence/sbom.cdx.json
+            work/evidence/sbom-with-vendor.cdx.json
             work/evidence/policies/default.toml
             work/evidence/profiles/model_profiles.toml
           retention-days: 14

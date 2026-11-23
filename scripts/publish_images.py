@@ -171,8 +171,12 @@ def main():
             security_output = Path('work/publication-evidence'); security_output.mkdir(parents=True, exist_ok=True)
             (security_output/(service+'-vex.json')).write_text(json.dumps(vex,indent=2)+'\n')
             for item in ('trivy-vuln-report.json','vendor-openssl-report.json','vendor-openssl-control-report.json',
-                         'vendor-openssl-summary.json','openssl-measurement.json','openssl-tls-check.json'):
+                         'vendor-openssl-summary.json','openssl-measurement.json','openssl-tls-check.json',
+                         'openssl-control.txt','sqlite-measurement.json','sbom-with-vendor.cdx.json'):
                 shutil.copyfile(evidence/item, security_output/(service+'-'+item))
+        if validated is not None and service == 'redis':
+            security_output = Path('work/publication-evidence'); security_output.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(folder/'evidence/sbom.cdx.json', security_output/'redis-sbom.cdx.json')
     assert metadata['agent']['source_commit'] == metadata['guardrail']['source_commit']
     if snapshot_states:
         if len(snapshot_states) != 3 or any(state != snapshot_states[0] for state in snapshot_states):

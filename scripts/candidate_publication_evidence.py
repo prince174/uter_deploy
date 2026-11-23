@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 
-from scripts import security_gate, sqlite_vex_gate, vendor_openssl_gate
+from scripts import add_vendor_openssl_sbom, security_gate, sqlite_vex_gate, vendor_openssl_gate
 
 
 def read(path):
@@ -38,6 +38,9 @@ def verify(folder, service, image_id, runtime=None):
                                         evidence/'vendor-openssl-control-report.json')
     if read(evidence/'vendor-openssl-summary.json') != vendor:
         raise ValueError('PUBLICATION_OPENSSL_SCAN_UNVERIFIED')
+    expected_sbom = add_vendor_openssl_sbom.combine(read(evidence/'sbom.cdx.json'), openssl, vendor)
+    if read(evidence/'sbom-with-vendor.cdx.json') != expected_sbom:
+        raise ValueError('PUBLICATION_OPENSSL_SBOM_UNVERIFIED')
     tls = read(evidence/'openssl-tls-check.json')
     if (tls.get('valid_tls') != 'pass' or tls.get('hostname_rejection') != 'pass'
             or tls.get('untrusted_ca_rejection') != 'pass' or tls.get('openssl') != openssl['version']):

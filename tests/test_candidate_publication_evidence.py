@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from scripts import candidate_publication_evidence as publication, security_gate, sqlite_vex_gate, vendor_openssl_gate
+from scripts import add_vendor_openssl_sbom, candidate_publication_evidence as publication, security_gate, sqlite_vex_gate, vendor_openssl_gate
 from tests.test_sqlite_vex_gate import SQLiteVexGateTests
 from tests.test_vendor_openssl_gate import VendorOpenSSLTests
 
@@ -30,6 +30,10 @@ class CandidatePublicationTests(unittest.TestCase):
                  'openssl-tls-check.json':{'valid_tls':'pass','hostname_rejection':'pass',
                                            'untrusted_ca_rejection':'pass','openssl':self.openssl['version']}}
         for name, value in files.items(): (self.evidence/name).write_text(json.dumps(value))
+        raw_sbom={'bomFormat':'CycloneDX','components':[]}
+        (self.evidence/'sbom.cdx.json').write_text(json.dumps(raw_sbom))
+        merged=add_vendor_openssl_sbom.combine(raw_sbom,self.openssl,files['vendor-openssl-summary.json'])
+        (self.evidence/'sbom-with-vendor.cdx.json').write_text(json.dumps(merged))
         (self.evidence/'openssl-control.txt').write_text('Package: libssl3\nVersion: '+vendor_openssl_gate.VERSION+'\nSource: openssl\n')
         self.runtime = {'sqlite':sample.measure, 'openssl':{'version':self.openssl['version'],'libraries':self.openssl['libraries']}}
 

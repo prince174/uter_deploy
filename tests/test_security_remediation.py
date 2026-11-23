@@ -52,6 +52,7 @@ class SecurityGateTests(unittest.TestCase):
                     'work/evidence/openssl-control.txt',
                     'work/evidence/sqlite-vex-summary.json', 'work/evidence/trivy-vuln-report.json',
                     'work/evidence/vendor-openssl-report.json', 'work/evidence/vendor-openssl-control-report.json',
+                    'work/evidence/sbom.cdx.json', 'work/evidence/sbom-with-vendor.cdx.json',
                     'work/evidence/policies/default.toml', 'work/evidence/profiles/model_profiles.toml'}
         self.assertEqual(paths, required)
         self.assertNotIn('work/evidence/', paths)
