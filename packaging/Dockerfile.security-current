@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && apt-get upgrade -y --no-install-recommends \
     && echo 'deb http://deb.debian.org/debian sid main' > /etc/apt/sources.list.d/uter-sid.list \
     && apt-get update && apt-get install -y --no-install-recommends libsqlite3-0=3.54.1-2 \
-    && echo '225ceb839db2c1dd484cfcaa5ef9fbdd429eb1d5f1e0c39fbd50150bca5fc7bc  /usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6' | sha256sum -c - \
+    && python -c "import hashlib,sqlite3; p={line.split()[-1] for line in open('/proc/self/maps') if 'libsqlite3.so' in line}; assert sqlite3.sqlite_version=='3.54.1' and len(p)==1 and hashlib.sha256(open(p.pop(),'rb').read()).hexdigest()=='225ceb839db2c1dd484cfcaa5ef9fbdd429eb1d5f1e0c39fbd50150bca5fc7bc'" \
     && rm /etc/apt/sources.list.d/uter-sid.list && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 uter && useradd -u 10001 -g 10001 -m uter \
     && mkdir -p /app /var/lib/uter/audit && chown -R 10001:10001 /app /home/uter /var/lib/uter

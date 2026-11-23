@@ -172,16 +172,22 @@ jobs:
           output: work/evidence/sbom.cdx.json
           exit-code: '0'
           timeout: 10m
-      - name: Require zero Critical High and secret findings
-        run: python scripts/security_gate.py work/evidence/findings.json work/evidence/security-summary.json
-      - name: Export source-scanned candidate
+      - name: Export source-scanned candidate for isolated verification
         env:
           SERVICE: ${{ matrix.service }}
         run: |
+          python - <<'PY'
+          import json
+          from scripts.security_gate import summary
+          with open('work/evidence/findings.json') as stream: report=summary(json.load(stream))
+          if report['secrets'] != 0: raise SystemExit('Refusing export with secret findings')
+          PY
           docker save "uter-$SERVICE-protected" -o work/image.tar
           python scripts/scan_image_archive.py work/image.tar --report work/evidence/source-scan.json > work/evidence/source-scan.txt
           gzip -1 work/image.tar
           sha256sum work/image.tar.gz > work/evidence/archive.sha256
+      - name: Require zero Critical High and secret findings
+        run: python scripts/security_gate.py work/evidence/findings.json work/evidence/security-summary.json
       - name: Record sanitized vulnerability diagnostics
         if: always()
         run: |
