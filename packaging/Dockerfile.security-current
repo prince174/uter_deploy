@@ -2,6 +2,15 @@
 ARG PROTECTED_IMAGE
 ARG SERVICE=guardrail
 FROM ${PROTECTED_IMAGE} AS compiled
+FROM python:3.12-slim-bookworm@sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4 AS openssl-package
+USER root
+RUN apt-get update && cd /tmp \
+    && apt-get download 'libssl3=3.0.22-1~deb12u2' \
+    && echo 'cb4784740daa9b3b0eaea2b444bbefa686794afbbf3d678d238c1fd9875f2efd  libssl3_3.0.22-1~deb12u2_amd64.deb' | sha256sum -c - \
+    && dpkg-deb -x 'libssl3_3.0.22-1~deb12u2_amd64.deb' /vendor \
+    && mkdir -p /vendor-evidence \
+    && dpkg-deb -f 'libssl3_3.0.22-1~deb12u2_amd64.deb' > /vendor-evidence/control.txt \
+    && cp /vendor/usr/share/doc/libssl3/copyright /vendor-evidence/copyright
 FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS builder
 ARG SERVICE
 USER root
@@ -16,6 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
 COPY --from=compiled /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=compiled --chown=10001:10001 /app /app
 COPY --from=compiled --chown=10001:10001 /home/uter/.cache/huggingface /home/uter/.cache/huggingface
+COPY --from=openssl-package /vendor/usr/lib/x86_64-linux-gnu/libssl.so.3 /usr/local/lib/libssl.so.3
+COPY --from=openssl-package /vendor/usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/local/lib/libcrypto.so.3
+COPY --from=openssl-package /vendor/usr/lib/x86_64-linux-gnu/ossl-modules /usr/local/lib/ossl-modules
+COPY --from=openssl-package /vendor-evidence /usr/local/share/uter-openssl-package
+ENV LD_LIBRARY_PATH=/usr/local/lib OPENSSL_MODULES=/usr/local/lib/ossl-modules
+RUN python -c "import ssl; assert ssl.OPENSSL_VERSION.startswith('OpenSSL 3.0.22 '), ssl.OPENSSL_VERSION"
 RUN python -m ensurepip && case "$SERVICE" in \
       guardrail) python -m pip install --no-cache-dir PyJWT==2.14.0 certifi==2026.10.19 ;; \
       agent) python -m pip install --no-cache-dir Pillow==13.0.0 certifi==2026.10.19 ;; \
@@ -31,7 +46,7 @@ FROM scratch AS guardrail-runtime
 COPY --from=builder /runtime-rootfs /
 ENV PATH=/usr/local/bin LD_LIBRARY_PATH=/usr/local/lib HOME=/home/uter \
     HF_HOME=/home/uter/.cache/huggingface PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UVICORN_PORT=8000 \
-    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt OPENSSL_MODULES=/usr/local/lib/ossl-modules
 LABEL io.uter.security-overlay="2026-10-28.1"
 WORKDIR /app
 USER 10001:10001
