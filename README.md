@@ -1,6 +1,6 @@
 # Uter Deploy
 
-> Выпуск `0.1.8` предназначен для новой установки. Автоматическое обновление с предыдущих версий не заявлено. Образы Agent и Guardrail содержат SQLite из Debian sid; Trivy сообщает три High, для которых применено узкое VEX-исключение по проверенным образам и библиотеке. Подробнее: [отчёты и проверка](https://github.com/prince174/uter_deploy/actions/runs/43076826180). Исторические результаты ниже относятся только к явно указанным выпускам.
+> Выпуск `0.1.9` предназначен только для новой установки. Переход с других версий и миграция истории не заявлены. SQLite из Debian sid проверяется по версии и хэшу; три исходные находки Trivy учитываются узким VEX. OpenSSL 3.0 взят из проверенного пакета Debian и сканируется отдельно; ограничения описаны в релизе. Исторические проверки ниже относятся только к указанным выпускам.
 
 
 Самостоятельное развёртывание Guardrail + Agent + Redis через Docker Compose или
@@ -11,7 +11,7 @@ Kubernetes/Helm. Для запуска нужны готовые образы, �
 [подробной инструкции подключения и развёртывания](docs/corporate-litellm-deployment.md).
 В ней описаны сетевые требования, входные данные, Compose, Kubernetes, проверки и
 ограничения автоматизации. Инструкция использует выпуск
-`deploy-2026.11.12-sqlite-1` / `0.1.8`. Перед установкой проверьте его подпись
+`deploy-2026.11.23-openssl-1` / `0.1.9`. Перед установкой проверьте его подпись
 и отпечаток издателя по независимому каналу. Ранее опубликован [кандидат signed-2](https://github.com/prince174/uter_deploy/releases/tag/deploy-2026.10.29-signed-2).
 
 Для интерактивной установки или обновления используйте [мастер Uter](docs/wizard.md).
@@ -20,13 +20,13 @@ Kubernetes/Helm. Для запуска нужны готовые образы, �
 пример запуска из нового root-owned checkout:
 
 ```bash
-sudo git clone --branch deploy-2026.11.12-sqlite-1 --single-branch \
+sudo git clone --branch deploy-2026.11.23-openssl-1 --single-branch \
   https://github.com/prince174/uter_deploy.git /srv/uter-deploy-tooling
 cd /srv/uter-deploy-tooling
 sudo python3 -I scripts/bootstrap_wizard.py
 ```
 
-Выберите установку или обновление и следуйте подсказкам. Для Kubernetes выполните
+Выберите новую установку и следуйте подсказкам. Переходы с существующих установок не заявлены. Для Kubernetes выполните
 аналогичные команды от пользователя с доступом к выбранному контексту; подробности,
 безопасные пути, существующая установка и восстановление описаны в инструкции.
 Git checkout, Python, источник зависимостей, Docker/Compose или kubectl/Helm и
@@ -155,25 +155,25 @@ kind использует стандартный CNI без применения
 ```bash
 git clone https://github.com/prince174/uter_deploy.git
 cd uter_deploy
-git checkout deploy-2026.11.12-sqlite-1
+git checkout deploy-2026.11.23-openssl-1
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p incoming signed
 curl -fL -o signed/publisher-public.pem \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.11.12-sqlite-1/publisher-public.pem
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.11.23-openssl-1/publisher-public.pem
 curl -fL -o signed/signed-bundle.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.11.12-sqlite-1/signed-bundle.tar.gz
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.11.23-openssl-1/signed-bundle.tar.gz
 echo '65be6fd9613fa7e879735fe5b453bfcb8c0e38911cd7429c9aac9c9afba676a2  signed/publisher-public.pem' | sha256sum -c -
 .venv/bin/python scripts/extract_signed_bundle.py \
   --archive signed/signed-bundle.tar.gz --key signed/publisher-public.pem \
-  --output signed/0.1.8
+  --output signed/0.1.9
 curl -fL -o incoming/installation-inputs.tar.gz \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.11.12-sqlite-1/installation-inputs.tar.gz
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.11.23-openssl-1/installation-inputs.tar.gz
 curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
-  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.11.12-sqlite-1/installation-inputs.tar.gz.sha256
-.venv/bin/python signed/0.1.8/scripts/extract_release_inputs.py \
+  https://github.com/prince174/uter_deploy/releases/download/deploy-2026.11.23-openssl-1/installation-inputs.tar.gz.sha256
+.venv/bin/python signed/0.1.9/scripts/extract_release_inputs.py \
   incoming/installation-inputs.tar.gz incoming/installation-inputs.tar.gz.sha256 incoming/inputs \
-  --bundle signed/0.1.8 --key signed/publisher-public.pem
+  --bundle signed/0.1.9 --key signed/publisher-public.pem
 ```
 
 Команда проверяет подпись комплекта и подписанный SHA-256 архива **до** его
@@ -191,8 +191,8 @@ curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
 Из доверенного checkout с `scripts/fetch_release.py` выпуск можно также получить одной командой:
 
 ```bash
-.venv/bin/python scripts/fetch_release.py --release deploy-2026.11.12-sqlite-1 \
-  --version 0.1.8 --fingerprint "$UTER_PUBLISHER_SHA256" --output ./verified-release
+.venv/bin/python scripts/fetch_release.py --release deploy-2026.11.23-openssl-1 \
+  --version 0.1.9 --fingerprint "$UTER_PUBLISHER_SHA256" --output ./verified-release
 ```
 
 Переменная `UTER_PUBLISHER_SHA256` должна содержать отпечаток, полученный и
@@ -201,7 +201,7 @@ curl -fL -o incoming/installation-inputs.tar.gz.sha256 \
 пользователей; проверяются и родительские каталоги. В Windows оператор отдельно
 проверяет ACL родительского каталога: команда не умеет подтверждать его приватность.
 Результат содержит `bundle/`, `inputs/` и `downloads/publisher-public.pem`;
-для команд установки укажите эти пути вместо `signed/0.1.8` и `incoming/inputs`.
+для команд установки укажите эти пути вместо `signed/0.1.9` и `incoming/inputs`.
 Команда принимает выпуски с подписанным хешем входного архива и не заменяет доверие
 к самой копии tooling, Python и зависимостям. В ранее выпущенном `0.1.4` её нет.
 
@@ -228,11 +228,11 @@ CPU, лимиты контейнеров суммарно 5 GiB RAM плюс з�
 Для публичных образов вход в GHCR и токен не требуются.
 
 ```bash
-sudo .venv/bin/python signed/0.1.8/scripts/install.py prepare \
+sudo .venv/bin/python signed/0.1.9/scripts/install.py prepare \
   --home /srv/uter-instance --backend compose --name uter-instance \
   --inputs "$PWD/incoming/inputs"
-sudo .venv/bin/python signed/0.1.8/scripts/install.py check --home /srv/uter-instance
-sudo .venv/bin/python signed/0.1.8/scripts/install.py install --home /srv/uter-instance
+sudo .venv/bin/python signed/0.1.9/scripts/install.py check --home /srv/uter-instance
+sudo .venv/bin/python signed/0.1.9/scripts/install.py install --home /srv/uter-instance
 curl --fail http://127.0.0.1:18000/ready
 ```
 
@@ -261,11 +261,11 @@ PVC, Deployment, Service и NetworkPolicy. Ingress и TLS настраивают
 Публичные образы не требуют файла доступа к registry:
 
 ```bash
-.venv/bin/python signed/0.1.8/scripts/install.py prepare \
+.venv/bin/python signed/0.1.9/scripts/install.py prepare \
   --home "$HOME/uter-k8s" --backend kubernetes --name uter-instance \
   --context MY_CONTEXT --inputs "$PWD/incoming/inputs"
-.venv/bin/python signed/0.1.8/scripts/install.py check --home "$HOME/uter-k8s"
-.venv/bin/python signed/0.1.8/scripts/install.py install --home "$HOME/uter-k8s"
+.venv/bin/python signed/0.1.9/scripts/install.py check --home "$HOME/uter-k8s"
+.venv/bin/python signed/0.1.9/scripts/install.py install --home "$HOME/uter-k8s"
 kubectl --context MY_CONTEXT -n uter-instance get pods,pvc
 kubectl --context MY_CONTEXT -n uter-instance port-forward svc/uter-instance-guardrail 18000:8000
 # В другом терминале:
@@ -289,7 +289,7 @@ curl --fail http://127.0.0.1:18000/ready
 Возьмите пароль admin в защищённом терминале/редакторе и выполните:
 
 ```bash
-.venv/bin/python signed/0.1.8/scripts/smoke_http.py --url http://127.0.0.1:18000
+.venv/bin/python signed/0.1.9/scripts/smoke_http.py --url http://127.0.0.1:18000
 ```
 
 Скрипт спросит пароль скрыто, проверит readiness, вход, зависимости и обычный `/chat`
@@ -324,7 +324,7 @@ Toxicity-модель, проверки ввода/вывода и аудит р
 оператора:
 
 ```bash
-.venv/bin/python signed/0.1.8/scripts/preflight.py --backend compose --llm-url "$LLM_URL" \
+.venv/bin/python signed/0.1.9/scripts/preflight.py --backend compose --llm-url "$LLM_URL" \
   --llm-model "$LLM_MODEL" --llm-key-file "$LLM_KEY_FILE"
 ```
 
@@ -388,7 +388,7 @@ Pod. В Kubernetes: `kubectl --context MY_CONTEXT -n uter-instance get events` �
 установки, например:
 
 ```bash
-.venv/bin/python signed/0.1.8/scripts/install_recovery.py --home /srv/uter-instance \
+.venv/bin/python signed/0.1.9/scripts/install_recovery.py --home /srv/uter-instance \
   --expected-backend compose --expected-name uter-instance --expected-context default
 ```
 
