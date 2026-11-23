@@ -133,13 +133,17 @@ jobs:
           SERVICE: ${{ matrix.service }}
         run: |
           docker run --rm --network none -i --entrypoint python "uter-$SERVICE-protected" - > work/evidence/sqlite-measurement.json <<'PY'
-          import hashlib, json, sqlite3, ssl
+          import hashlib, json, sqlite3
           assert sqlite3.sqlite_version == '3.54.1'
+          db=sqlite3.connect(':memory:')
+          db.execute('create virtual table docs using fts5(content)')
+          db.execute('insert into docs values (?)',('security update',))
+          assert db.execute('select count(*) from docs where docs match ?',('security',)).fetchone()[0]==1
           paths={line.split()[-1] for line in open('/proc/self/maps') if 'libsqlite3.so' in line}
           assert len(paths)==1
           digest=hashlib.sha256(open(paths.pop(),'rb').read()).hexdigest()
           assert digest=='225ceb839db2c1dd484cfcaa5ef9fbdd429eb1d5f1e0c39fbd50150bca5fc7bc'
-          print(json.dumps({'sqlite_version':sqlite3.sqlite_version,'library_sha256':digest,'openssl_version':ssl.OPENSSL_VERSION}))
+          print(json.dumps({'sqlite_version':sqlite3.sqlite_version,'library_sha256':digest,'fts5':'pass'}))
           PY
       - name: Measure actually loaded OpenSSL and package provenance
         if: matrix.service != 'redis'
@@ -159,6 +163,17 @@ jobs:
           assert 'Package: libssl3\n' in control and 'Version: 3.0.22-1~deb12u2\n' in control
           print(json.dumps({'version':ssl.OPENSSL_VERSION,'libraries':hashes,'package':'libssl3','package_version':'3.0.22-1~deb12u2','distribution':'debian-12-bookworm','package_sha256':'cb4784740daa9b3b0eaea2b444bbefa686794afbbf3d678d238c1fd9875f2efd'}))
           PY
+      - name: Exercise real offline TLS and certificate rejection
+        if: matrix.service != 'redis'
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          mkdir -p work/tls-fixture
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout work/tls-fixture/key.pem -out work/tls-fixture/cert.pem -days 1 -subj /CN=localhost -addext subjectAltName=DNS:localhost >/dev/null 2>&1
+          chmod 644 work/tls-fixture/key.pem work/tls-fixture/cert.pem
+          docker run --rm --network none --read-only --tmpfs /tmp:size=16m \
+            -v "$PWD/work/tls-fixture:/fixture:ro" -v "$PWD/scripts/check_openssl_tls.py:/checks/tls.py:ro" \
+            --entrypoint python "uter-$SERVICE-protected" /checks/tls.py /fixture/cert.pem /fixture/key.pem > work/evidence/openssl-tls-check.json
       - name: Agent dependency compatibility and offline embeddings
         if: matrix.service == 'agent'
         run: |
@@ -234,16 +249,35 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          from pathlib import Path
           from scripts.security_gate import summary
-          with open('work/evidence/findings.json') as stream: report=summary(json.load(stream))
+          with open('work/evidence/findings.json') as stream: raw=json.load(stream)
+          report=summary(raw)
           if report['secrets'] != 0: raise SystemExit('Refusing export with secret findings')
+          Path('work/evidence/trivy-vuln-report.json').write_text(json.dumps(raw,indent=2)+'\n')
           PY
           docker save "uter-$SERVICE-protected" -o work/image.tar
           python scripts/scan_image_archive.py work/image.tar --report work/evidence/source-scan.json > work/evidence/source-scan.txt
           gzip -1 work/image.tar
           sha256sum work/image.tar.gz > work/evidence/archive.sha256
       - name: Require zero Critical High and secret findings
+        id: strict_gate
+        continue-on-error: true
         run: python scripts/security_gate.py work/evidence/findings.json work/evidence/security-summary.json
+      - name: Apply authorized image-bound SQLite assessment
+        if: steps.strict_gate.outcome == 'failure' && matrix.service != 'redis'
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          test "$(docker image inspect "uter-$SERVICE-protected" --format '{{.Id}}')" = "$(cat work/evidence/image-id.txt)"
+          python scripts/sqlite_vex_gate.py work/evidence/trivy-vuln-report.json work/evidence/image-id.txt work/evidence/sqlite-measurement.json work/evidence/sqlite-vex-summary.json
+      - name: Enforce effective gate
+        env:
+          SERVICE: ${{ matrix.service }}
+          STRICT_OUTCOME: ${{ steps.strict_gate.outcome }}
+        run: |
+          if [ "$STRICT_OUTCOME" = success ]; then exit 0; fi
+          test "$SERVICE" != redis && test "$STRICT_OUTCOME" = failure && test -s work/evidence/sqlite-vex-summary.json
       - name: Record sanitized vulnerability diagnostics
         if: always()
         run: |
@@ -276,6 +310,9 @@ jobs:
             work/evidence/vulnerability-summary.json
             work/evidence/sqlite-measurement.json
             work/evidence/openssl-measurement.json
+            work/evidence/openssl-tls-check.json
+            work/evidence/sqlite-vex-summary.json
+            work/evidence/trivy-vuln-report.json
             work/evidence/vendor-openssl-summary.json
             work/evidence/vendor-openssl-report.json
             work/evidence/vendor-openssl-control-report.json

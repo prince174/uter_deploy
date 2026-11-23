@@ -8,7 +8,7 @@ class SQLiteVexGateTests(unittest.TestCase):
         self.image = 'sha256:' + 'a' * 64
         self.ref = 'ghcr.io/prince174/uter-agent@sha256:' + 'c' * 64
         self.measure = {'sqlite_version': '3.54.1', 'library_sha256': base.LIBRARY_SHA256, 'fts5': 'pass'}
-        self.report = {'Metadata': {'ImageID': self.image, 'OS': {'Family': 'debian'}},
+        self.report = {'Metadata': {'ImageID': self.image, 'OS': {'Family': 'debian', 'Name': '13.7'}},
                        'Results': [{'Class': 'os-pkgs', 'Type': 'debian', 'Vulnerabilities': [
                            {'VulnerabilityID': cve, 'PkgName': 'libsqlite3-0', 'Severity': 'HIGH',
                             'InstalledVersion': '3.54.1-2', 'PkgIdentifier': {'PURL':
@@ -43,6 +43,15 @@ class SQLiteVexGateTests(unittest.TestCase):
                                (self.image, dict(self.measure, library_sha256='b' * 64))]:
             with self.subTest(image=image, measure=measure), self.assertRaises(ValueError):
                 gate.build_vex(self.report, image, measure, self.ref)
+
+    def test_debian_release_must_match_package_identifier(self):
+        report = copy.deepcopy(self.report)
+        report['Metadata']['OS']['Name'] = '13.8'
+        with self.assertRaises(ValueError):
+            gate.assess_evidence(report, self.image, self.measure)
+        for item in report['Results'][0]['Vulnerabilities']:
+            item['PkgIdentifier']['PURL'] = item['PkgIdentifier']['PURL'].replace('13.7', '13.8')
+        self.assertTrue(gate.assess_evidence(report, self.image, self.measure)[1]['vex_gate_passed'])
 
     def test_unpinned_or_unrelated_registry_reference_rejected(self):
         for ref in ('ghcr.io/prince174/uter-agent:latest', 'ghcr.io/other/uter-agent@sha256:' + 'c' * 64):

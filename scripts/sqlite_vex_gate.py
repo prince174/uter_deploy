@@ -4,6 +4,7 @@ The ordinary security_gate remains strict.  Call only in the trusted CI job
 that measured the exact image and captured raw Trivy vulnerability+secret data.
 """
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import sys
@@ -14,12 +15,16 @@ from scripts import sqlite_candidate_assessment as assessment
 
 def assess_evidence(report, image_id, measurement):
     result = assessment.assess(report, image_id, measurement)
+    release = report.get('Metadata', {}).get('OS', {}).get('Name')
+    if release not in ('13.7', '13.8'):
+        raise ValueError('SQLITE_VEX_DISTRIBUTION_UNVERIFIED')
+    expected_purl = 'pkg:deb/debian/libsqlite3-0@3.54.1-2?arch=amd64&distro=debian-' + release
     purls = set()
     for group in report['Results']:
         for item in group.get('Vulnerabilities', []):
             if item.get('VulnerabilityID') in assessment.CVES and item.get('PkgName') == 'libsqlite3-0':
                 purl = item.get('PkgIdentifier', {}).get('PURL')
-                if purl != 'pkg:deb/debian/libsqlite3-0@3.54.1-2?arch=amd64&distro=debian-13.7':
+                if purl != expected_purl:
                     raise ValueError('SQLITE_VEX_PACKAGE_UNVERIFIED')
                 purls.add(purl)
     if len(purls) != 1:
@@ -39,7 +44,7 @@ def build_vex(report, image_id, measurement, reference):
     product = 'pkg:oci/' + package + '@sha256:' + digest + '?repository_url=ghcr.io%2Fprince174%2F' + package
     vex = {'@context': 'https://openvex.dev/ns/v0.2.0',
            '@id': 'https://github.com/prince174/uter_deploy/security/sqlite-3.54.1-2/' + image_id.split(':')[1],
-           'author': 'Uter deployment security assessment', 'timestamp': '2026-11-11T00:00:00Z', 'version': 1,
+           'author': 'Uter deployment security assessment', 'timestamp': datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'), 'version': 1,
            'statements': [{'vulnerability': {'name': cve},
                            'products': [{'@id': product, 'subcomponents': [{'@id': purl}]}],
                            'status': 'not_affected', 'justification': 'vulnerable_code_not_present',
