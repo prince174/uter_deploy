@@ -37,7 +37,13 @@ def validate_report(data, version):
         raise ValueError('OPENSSL_VENDOR_SCANNER_OS_UNVERIFIED')
     results = [r for r in data.get('Results', []) if r.get('Class') == 'os-pkgs']
     packages = [p for r in results for p in r.get('Packages', []) if p.get('Name') == 'libssl3']
-    if len(packages) != 1 or packages[0].get('Version') != version:
+    if len(packages) != 1:
+        raise ValueError('OPENSSL_VENDOR_SCANNER_PACKAGE_UNVERIFIED')
+    package = packages[0]
+    actual = package.get('Version', '')
+    if package.get('Release'):
+        actual += '-' + package['Release']
+    if actual != version or package.get('SrcName', 'openssl') != 'openssl':
         raise ValueError('OPENSSL_VENDOR_SCANNER_PACKAGE_UNVERIFIED')
     return [v for r in results for v in r.get('Vulnerabilities', []) or []
             if v.get('Severity') in ('HIGH', 'CRITICAL')]

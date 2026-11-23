@@ -154,6 +154,7 @@ jobs:
           libs={name:{line.split()[-1] for line in lines if name in line} for name in ('libssl.so.3','libcrypto.so.3')}
           assert all(len(paths)==1 and next(iter(paths)).startswith('/usr/local/lib/') for paths in libs.values())
           hashes={name:hashlib.sha256(Path(paths.pop()).read_bytes()).hexdigest() for name,paths in libs.items()}
+          assert hashes==json.loads(Path('/usr/local/share/uter-openssl-package/library-hashes.json').read_text())
           control=Path('/usr/local/share/uter-openssl-package/control.txt').read_text()
           assert 'Package: libssl3\n' in control and 'Version: 3.0.22-1~deb12u2\n' in control
           print(json.dumps({'version':ssl.OPENSSL_VERSION,'libraries':hashes,'package':'libssl3','package_version':'3.0.22-1~deb12u2','distribution':'debian-12-bookworm','package_sha256':'cb4784740daa9b3b0eaea2b444bbefa686794afbbf3d678d238c1fd9875f2efd'}))
@@ -257,7 +258,7 @@ jobs:
                   secrets += len(result.get('Secrets') or [])
                   for item in result.get('Vulnerabilities') or []:
                       if item.get('Severity') in ('HIGH','CRITICAL'):
-                          findings.append({key:item.get(key) for key in ('VulnerabilityID','Severity','PkgName','InstalledVersion','FixedVersion')})
+                          findings.append({**{key:item.get(key) for key in ('VulnerabilityID','Severity','PkgName','InstalledVersion','FixedVersion')},'purl':(item.get('PkgIdentifier') or {}).get('PURL')})
               Path('work/evidence/vulnerability-summary.json').write_text(json.dumps({'findings':findings,'secret_count':secrets},indent=2)+'\n')
           PY
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f

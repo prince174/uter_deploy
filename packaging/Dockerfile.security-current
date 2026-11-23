@@ -10,6 +10,7 @@ RUN apt-get update && cd /tmp \
     && dpkg-deb -x 'libssl3_3.0.22-1~deb12u2_amd64.deb' /vendor \
     && mkdir -p /vendor-evidence \
     && python -c "import json,os,sys; print(json.dumps({'version':list(sys.version_info[:3]),'cache_tag':sys.implementation.cache_tag,'source_sha256':os.environ['PYTHON_SHA256']}))" > /vendor-evidence/python.json \
+    && python -c "import hashlib,json,pathlib; d=pathlib.Path('/vendor/usr/lib/x86_64-linux-gnu'); print(json.dumps({n:hashlib.sha256((d/n).read_bytes()).hexdigest() for n in ('libssl.so.3','libcrypto.so.3')}))" > /vendor-evidence/library-hashes.json \
     && dpkg-deb -f 'libssl3_3.0.22-1~deb12u2_amd64.deb' > /vendor-evidence/control.txt \
     && cp /vendor/usr/share/doc/libssl3/copyright /vendor-evidence/copyright
 FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS builder

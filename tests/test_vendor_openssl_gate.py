@@ -45,6 +45,12 @@ class VendorOpenSSLTests(unittest.TestCase):
         actual.write_text(json.dumps(self.report(gate.VERSION, [{'Severity':'CRITICAL'}])))
         with self.assertRaises(ValueError): gate.verify(actual, negative)
 
+    def test_accepts_trivy_split_debian_version_and_release(self):
+        data = self.report('3.0.22', [])
+        package = data['Results'][0]['Packages'][0]
+        package.update({'Release':'1~deb12u2', 'SrcName':'openssl'})
+        self.assertEqual(gate.validate_report(data, gate.VERSION), [])
+
 
 if __name__ == '__main__':
     unittest.main()
