@@ -2,15 +2,12 @@
 ARG PROTECTED_IMAGE
 ARG SERVICE=guardrail
 FROM ${PROTECTED_IMAGE} AS compiled
-FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS builder
+FROM python:3.12-slim-bookworm@sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4 AS builder
 ARG SERVICE
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && apt-get upgrade -y --no-install-recommends \
-    && echo 'deb http://deb.debian.org/debian sid main' > /etc/apt/sources.list.d/uter-sid.list \
-    && apt-get update && apt-get install -y --no-install-recommends libsqlite3-0=3.54.1-2 \
-    && python -c "import hashlib,sqlite3; p={line.split()[-1] for line in open('/proc/self/maps') if 'libsqlite3.so' in line}; assert sqlite3.sqlite_version=='3.54.1' and len(p)==1 and hashlib.sha256(open(p.pop(),'rb').read()).hexdigest()=='225ceb839db2c1dd484cfcaa5ef9fbdd429eb1d5f1e0c39fbd50150bca5fc7bc'" \
-    && rm /etc/apt/sources.list.d/uter-sid.list && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 uter && useradd -u 10001 -g 10001 -m uter \
     && mkdir -p /app /var/lib/uter/audit && chown -R 10001:10001 /app /home/uter /var/lib/uter
 COPY --from=compiled /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages

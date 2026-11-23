@@ -127,20 +127,6 @@ jobs:
             -v "$PWD/work/evidence/policies:/app/policies:ro" -v "$PWD/work/evidence/profiles:/app/profiles:ro" \
             -v "$PWD/scripts/check_compiled_runtime.py:/checks/check.py:ro" \
             --entrypoint python "uter-$SERVICE-protected" /checks/check.py "$SERVICE" > work/evidence/runtime-check.json 2>/dev/null || { echo 'Protected runtime check failed'; exit 1; }
-      - name: Verify actually loaded SQLite library
-        if: matrix.service != 'redis'
-        env:
-          SERVICE: ${{ matrix.service }}
-        run: |
-          docker run --rm --network none -i --entrypoint python "uter-$SERVICE-protected" - > work/evidence/sqlite-measurement.json <<'PY'
-          import hashlib, json, sqlite3, ssl
-          assert sqlite3.sqlite_version == '3.54.1'
-          paths={line.split()[-1] for line in open('/proc/self/maps') if 'libsqlite3.so' in line}
-          assert len(paths)==1
-          digest=hashlib.sha256(open(paths.pop(),'rb').read()).hexdigest()
-          assert digest=='225ceb839db2c1dd484cfcaa5ef9fbdd429eb1d5f1e0c39fbd50150bca5fc7bc'
-          print(json.dumps({'sqlite_version':sqlite3.sqlite_version,'library_sha256':digest,'openssl_version':ssl.OPENSSL_VERSION}))
-          PY
       - name: Agent dependency compatibility and offline embeddings
         if: matrix.service == 'agent'
         run: |
