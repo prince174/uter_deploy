@@ -168,6 +168,23 @@ jobs:
           python scripts/scan_image_archive.py work/image.tar --report work/evidence/source-scan.json > work/evidence/source-scan.txt
           gzip -1 work/image.tar
           sha256sum work/image.tar.gz > work/evidence/archive.sha256
+      - name: Record sanitized vulnerability diagnostics
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path=Path('work/evidence/findings.json')
+          if path.is_file():
+              data=json.loads(path.read_text())
+              findings=[]; secrets=0
+              for result in data.get('Results', []):
+                  secrets += len(result.get('Secrets') or [])
+                  for item in result.get('Vulnerabilities') or []:
+                      if item.get('Severity') in ('HIGH','CRITICAL'):
+                          findings.append({key:item.get(key) for key in ('VulnerabilityID','Severity','PkgName','InstalledVersion','FixedVersion')})
+              Path('work/evidence/findings-safe.json').write_text(json.dumps({'findings':findings,'secret_count':secrets},indent=2)+'\n')
+          PY
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:
@@ -180,6 +197,7 @@ jobs:
             work/evidence/archive.sha256
             work/evidence/parent-image.txt
             work/evidence/security-summary.json
+            work/evidence/findings-safe.json
             work/evidence/policies/default.toml
             work/evidence/profiles/model_profiles.toml
           retention-days: 14
