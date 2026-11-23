@@ -9,6 +9,7 @@ RUN apt-get update && cd /tmp \
     && echo 'cb4784740daa9b3b0eaea2b444bbefa686794afbbf3d678d238c1fd9875f2efd  libssl3_3.0.22-1~deb12u2_amd64.deb' | sha256sum -c - \
     && dpkg-deb -x 'libssl3_3.0.22-1~deb12u2_amd64.deb' /vendor \
     && mkdir -p /vendor-evidence \
+    && python -c "import json,sys; print(json.dumps({'version':list(sys.version_info[:3]),'cache_tag':sys.implementation.cache_tag}))" > /vendor-evidence/python.json \
     && dpkg-deb -f 'libssl3_3.0.22-1~deb12u2_amd64.deb' > /vendor-evidence/control.txt \
     && cp /vendor/usr/share/doc/libssl3/copyright /vendor-evidence/copyright
 FROM python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f AS builder
@@ -29,8 +30,10 @@ COPY --from=openssl-package /vendor/usr/lib/x86_64-linux-gnu/libssl.so.3 /usr/lo
 COPY --from=openssl-package /vendor/usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/local/lib/libcrypto.so.3
 COPY --from=openssl-package /vendor/usr/lib/x86_64-linux-gnu/ossl-modules /usr/local/lib/ossl-modules
 COPY --from=openssl-package /vendor-evidence /usr/local/share/uter-openssl-package
+COPY --from=openssl-package /usr/local/lib/python3.12/lib-dynload/_ssl*.so /usr/local/lib/python3.12/lib-dynload/
+COPY --from=openssl-package /usr/local/lib/python3.12/lib-dynload/_hashlib*.so /usr/local/lib/python3.12/lib-dynload/
 ENV LD_LIBRARY_PATH=/usr/local/lib OPENSSL_MODULES=/usr/local/lib/ossl-modules
-RUN python -c "import ssl; assert ssl.OPENSSL_VERSION.startswith('OpenSSL 3.0.22 '), ssl.OPENSSL_VERSION"
+RUN python -c "import json,ssl,sys; x=json.load(open('/usr/local/share/uter-openssl-package/python.json')); assert x=={'version':list(sys.version_info[:3]),'cache_tag':sys.implementation.cache_tag} and ssl.OPENSSL_VERSION.startswith('OpenSSL 3.0.22 '), (x,sys.version,ssl.OPENSSL_VERSION)"
 RUN python -m ensurepip && case "$SERVICE" in \
       guardrail) python -m pip install --no-cache-dir PyJWT==2.14.0 certifi==2026.10.19 ;; \
       agent) python -m pip install --no-cache-dir Pillow==13.0.0 certifi==2026.10.19 ;; \
