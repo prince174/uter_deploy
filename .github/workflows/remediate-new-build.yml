@@ -189,6 +189,44 @@ jobs:
           output: work/evidence/sbom.cdx.json
           exit-code: '0'
           timeout: 10m
+      - name: Prepare independent vendor package inventory
+        if: matrix.service != 'redis'
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          container=$(docker create "uter-$SERVICE-protected")
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/usr/local/share/uter-openssl-package/control.txt" work/evidence/openssl-control.txt
+          python scripts/vendor_openssl_gate.py prepare work/evidence/openssl-measurement.json work/evidence/openssl-control.txt work/openssl-inventory
+      - name: Scan vendor OpenSSL package using its actual Debian release
+        if: matrix.service != 'redis'
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: work/openssl-inventory/actual
+          scanners: vuln
+          list-all-pkgs: true
+          format: json
+          output: work/evidence/vendor-openssl-report.json
+          exit-code: '0'
+          timeout: 10m
+      - name: Verify vendor scanner detects a vulnerable control
+        if: matrix.service != 'redis'
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: work/openssl-inventory/negative
+          scanners: vuln
+          list-all-pkgs: true
+          format: json
+          output: work/evidence/vendor-openssl-control-report.json
+          exit-code: '0'
+          timeout: 10m
+      - name: Enforce vendor package security check
+        if: matrix.service != 'redis'
+        run: python scripts/vendor_openssl_gate.py verify work/evidence/vendor-openssl-report.json work/evidence/vendor-openssl-control-report.json work/evidence/vendor-openssl-summary.json
       - name: Export source-scanned candidate for isolated verification
         env:
           SERVICE: ${{ matrix.service }}
@@ -237,6 +275,7 @@ jobs:
             work/evidence/vulnerability-summary.json
             work/evidence/sqlite-measurement.json
             work/evidence/openssl-measurement.json
+            work/evidence/vendor-openssl-summary.json
             work/evidence/policies/default.toml
             work/evidence/profiles/model_profiles.toml
           retention-days: 14
