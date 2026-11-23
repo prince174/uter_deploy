@@ -86,6 +86,13 @@ def preflight_candidates(images_root):
                                       '--entrypoint', 'python', '-v', str(script)+':/checks/measure.py:ro',
                                       image, '/checks/measure.py']))
         validated[service] = candidate_publication_evidence.verify(folder, service, actual, runtime)
+        if service != 'redis':
+            raw = json.loads((evidence/'trivy-vuln-report.json').read_text())
+            measured = json.loads((evidence/'sqlite-measurement.json').read_text())
+            _, checked = sqlite_vex_gate.build_vex(raw, actual, measured,
+                'ghcr.io/prince174/uter-'+service+'@sha256:'+'0'*64)
+            if checked != validated[service]['sqlite_vex']:
+                raise ValueError('PUBLICATION_VEX_PREFLIGHT_UNVERIFIED')
     return validated
 
 
