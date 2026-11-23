@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -20,6 +21,18 @@ REDIS = 'redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c
 
 def run(args):
     return subprocess.check_output(args, text=True).strip()
+
+
+def push_with_retry(tag, attempts=3):
+    for attempt in range(attempts):
+        try:
+            subprocess.run(['docker', 'push', tag], check=True, timeout=900)
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            if attempt + 1 == attempts:
+                raise
+            print('Registry push failed; retrying the same candidate tag.', flush=True)
+            time.sleep(3 * (attempt + 1))
 
 
 def anonymous_denied(name):
@@ -116,6 +129,13 @@ def main():
     snapshot_states = []
     output = Path('work/published')
     output.mkdir(parents=True)
+    security_output = Path('work/publication-evidence'); security_output.mkdir(parents=True, exist_ok=True)
+    progress = {'status':'in_progress', 'build_run_id':build, 'images':{}}
+    def save_progress():
+        target=security_output/'publication-progress.json'; temporary=target.with_suffix('.tmp')
+        temporary.write_text(json.dumps(progress,indent=2)+'\n')
+        os.replace(temporary,target)
+    save_progress()
     for service in ('guardrail', 'agent', 'redis'):
         package = f'{owner}/uter-{service}'
         if visibility == 'private': anonymous_denied(package)
@@ -160,14 +180,17 @@ def main():
             metadata[service] = dict(upstream=REDIS)
         tag = f'ghcr.io/{package}:build-{build}-{os.environ["GITHUB_RUN_ID"]}-{os.environ["GITHUB_RUN_ATTEMPT"]}'
         subprocess.run(['docker', 'tag', local, tag], check=True)
-        subprocess.run(['docker', 'push', tag], check=True)
+        progress['images'][service] = {'tag':tag, 'state':'push_started'}; save_progress()
+        push_with_retry(tag)
         refs = json.loads(run(['docker', 'image', 'inspect', tag, '--format', '{{json .RepoDigests}}']))
         images[service] = next(ref for ref in refs if ref.startswith(f'ghcr.io/{package}@sha256:'))
+        progress['images'][service] = {'tag':tag, 'reference':images[service], 'state':'pushed'}; save_progress()
         # Verify the requested visibility using an isolated client configuration.
         subprocess.run(['docker', 'pull', images[service]], check=True)
         verify_visibility(package, images[service], visibility)
         if remediated and run(['docker','image','inspect',images[service],'--format','{{.Id}}']) != metadata[service]['image_id']:
             raise ValueError('PUBLICATION_PULLED_IMAGE_MISMATCH')
+        progress['images'][service]['state'] = 'verified'; save_progress()
         if validated is not None and service != 'redis':
             evidence = folder/'evidence'
             vex, checked = sqlite_vex_gate.build_vex(
@@ -197,6 +220,7 @@ def main():
             shutil.copyfile(Path(f'work/images/protected-{service}/evidence/security-summary.json'), output / f'{service}-security-summary.json')
     shutil.copyfile(source / 'policies/default.toml', output / 'policy.toml')
     shutil.copyfile(source / 'profiles/model_profiles.toml', output / 'model_profiles.toml')
+    progress['status'] = 'complete'; save_progress()
     with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as report:
         report.write(f'{visibility.capitalize()} registry publication verified.\n\n```json\n' + json.dumps(images, indent=2) + '\n```\n')
 

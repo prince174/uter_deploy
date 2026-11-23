@@ -10,6 +10,16 @@ spec.loader.exec_module(m)
 
 
 class PublicationTests(unittest.TestCase):
+    def test_push_retry_is_bounded_and_keeps_the_same_tag(self):
+        failure = m.subprocess.CalledProcessError(1, ['docker', 'push'])
+        with patch.object(m.subprocess, 'run', side_effect=[failure, None]) as run, patch.object(m.time, 'sleep'):
+            m.push_with_retry('ghcr.io/example/image:test')
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0], run.call_args_list[1].args[0])
+        with patch.object(m.subprocess, 'run', side_effect=failure) as run, patch.object(m.time, 'sleep'):
+            with self.assertRaises(m.subprocess.CalledProcessError): m.push_with_retry('ghcr.io/example/image:test')
+            self.assertEqual(run.call_count, 3)
+
     def test_snapshot_identity_must_match_before_publication(self):
         import json, tempfile
         with tempfile.TemporaryDirectory() as temp:
