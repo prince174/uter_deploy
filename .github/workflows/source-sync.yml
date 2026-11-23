@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: prince174/uter
-          ref: ${{ vars.SOURCE_REF || 'master' }}
+          ref: b500913629cd8243834b0494a200bf80c6f515a7
           token: ${{ secrets.SOURCE_READ_TOKEN }}
           path: work/upstream
           persist-credentials: false
@@ -66,7 +66,7 @@ jobs:
           python -m unittest discover -s tests -v
   propose:
     needs: [source-test, deployment-test]
-    if: needs.source-test.outputs.changed == 'true'
+    if: ${{ false }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
