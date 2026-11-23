@@ -91,27 +91,10 @@ def _registry_image(service):
 
 def _patch_fixture(home, key):
     """Add a test-only secret mount; the released chart is never modified."""
-    chart = home/'charts/uter/templates/workloads.yaml'
-    content = chart.read_text(encoding='utf-8')
-    mount = '            - {name: tmp, mountPath: /tmp}\n'
-    volume = '        - name: tmp\n          emptyDir: {sizeLimit: 128Mi}\n'
-    if content.count(mount) != 1 or content.count(volume) != 1:
-        raise ProbeError('MAINTENANCE_KUBE_FIXTURE_UNVERIFIED')
-    content = content.replace(mount, mount+'''            {{- if ne $name "redis" }}
-            - {name: maintenance-key, mountPath: /run/uter-maintenance, readOnly: true}
-            {{- end }}
-''').replace(volume, volume+'''        {{- if ne $name "redis" }}
-        - name: maintenance-key
-          secret: {secretName: uter-maint-ci-maintenance, defaultMode: 288}
-        {{- end }}
-''')
-    chart.write_text(content, encoding='utf-8')
     values_path = home/'values.yaml'
     values = yaml.safe_load(values_path.read_text(encoding='utf-8'))
-    for field in ('guardrailEnv', 'agentEnv'):
-        values.setdefault(field, {}).update({'UTER_MAINTENANCE_ENABLED': 'true',
-                                             'UTER_MAINTENANCE_KEY_FILE': '/run/uter-maintenance/key',
-                                             'WEB_CONCURRENCY': '1'})
+    values['maintenanceEnabled'] = True
+    values['maintenanceSecret'] = SITE + '-maintenance'
     values_path.write_text(yaml.safe_dump(values), encoding='utf-8')
     resources_path = home/'resources.yaml'
     resources = list(yaml.safe_load_all(resources_path.read_text(encoding='utf-8')))
